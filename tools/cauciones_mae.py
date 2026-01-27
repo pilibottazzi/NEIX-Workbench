@@ -18,8 +18,8 @@ def _to_float_amount(s: str):
     """
     Convierte strings típicos AR:
       '1.000.000' -> 1000000
-      '68,75' -> 68.75
-      '100.000' -> 100000
+      '68,75'     -> 68.75
+      '100.000'   -> 100000
     """
     if s is None:
         return None
@@ -48,9 +48,36 @@ def _fmt_pct(x) -> str:
         return "-"
 
 
+def _normalize_colname(c: str) -> str:
+    # Normaliza columnas para comparar (mayúsculas + strip)
+    return str(c).strip().upper()
+
+
+def _find_col(df_cols, target: str):
+    """
+    Busca una columna "parecida" al target, para tolerar variantes:
+    - CONCENTRACION vs CONCENTRACIÓN
+    - espacios dobles, etc.
+    """
+    target_n = _normalize_colname(target)
+    for c in df_cols:
+        if _normalize_colname(c) == target_n:
+            return c
+
+    # fallback por contains (para acentos y variantes leves)
+    # ej: "CONCENTRACION" vs "CONCENTRACIÓN (EN PESOS)"
+    base = target_n.replace("Ó", "O").replace("Á", "A").replace("É", "E").replace("Í", "I").replace("Ú", "U")
+    for c in df_cols:
+        cn = _normalize_colname(c)
+        cn2 = cn.replace("Ó", "O").replace("Á", "A").replace("É", "E").replace("Í", "I").replace("Ú", "U")
+        if base in cn2:
+            return c
+    return None
+
+
 def _is_divide_by_100(tipo_activo: str) -> bool:
     """
-    Regla que venías usando:
+    Regla MAE que venías usando:
     - CEDEAR / ACCIONES: NO dividir por 100
     - resto: dividir por 100
     """
@@ -71,13 +98,36 @@ def cargar_aforos_mae() -> pd.DataFrame:
         )
 
     df = pd.read_excel(DATA_PATH)
-    df.columns = df.columns.astype(str).str.strip().str.upper()
 
-    missing = [c for c in REQUIRED_COLS if c not in df.columns]
+    # Normalizar columnas (pero sin destruir acentos originales)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Mapear columnas requeridas tolerando variantes
+    col_especie = _find_col(df.columns, "ESPECIE")
+    col_aforo = _find_col(df.columns, "AFORO")
+    col_conc = _find_col(df.columns, "CONCENTRACIÓN (EN PESOS)")
+    col_activo = _find_col(df.columns, "ACTIVO")
+
+    missing = []
+    if col_especie is None: missing.append("ESPECIE")
+    if col_aforo is None: missing.append("AFORO")
+    if col_conc is None: missing.append("CONCENTRACIÓN (EN PESOS)")
+    if col_activo is None: missing.append("ACTIVO")
+
     if missing:
-        raise ValueError(f"Faltan columnas requeridas {missing}. Columnas disponibles: {list(df.columns)}")
+        raise ValueError(
+            f"Faltan columnas requeridas {missing}. Columnas disponibles: {list(df.columns)}"
+        )
 
-    # Normalizaciones básicas
+    # Renombrar internamente a nombres canónicos (como vos ya usás)
+    df = df.rename(columns={
+        col_especie: "ESPECIE",
+        col_aforo: "AFORO",
+        col_conc: "CONCENTRACIÓN (EN PESOS)",
+        col_activo: "ACTIVO",
+    })
+
+    # Normalizaciones
     df["ESPECIE"] = df["ESPECIE"].astype(str).str.upper().str.strip()
     df["AFORO"] = pd.to_numeric(df["AFORO"], errors="coerce")
     df["CONCENTRACIÓN (EN PESOS)"] = pd.to_numeric(df["CONCENTRACIÓN (EN PESOS)"], errors="coerce")
@@ -102,7 +152,7 @@ def render(back_to_home=None):
     try:
         df_aforos = cargar_aforos_mae()
     except Exception as e:
-        st.error("No pude cargar el Excel de aforos.")
+        st.error("No pude cargar el Excel de aforos MAE.")
         st.exception(e)
         st.stop()
 
@@ -110,16 +160,16 @@ def render(back_to_home=None):
     if "mae_operaciones" not in st.session_state:
         st.session_state.mae_operaciones = []
 
-    # UI
     metodo = st.radio(
         "¿Cómo querés ingresar el valor?",
         ["Por monto", "Por precio y nominales"],
-        horizontal=True
+        horizontal=True,
+        key="mae_metodo"
     )
 
     with st.form("form_mae_operacion", clear_on_submit=True):
-        especies = [""] + sorted(df_aforos["ESPECIE"].unique().tolist())
-        especie = st.selectbox("Seleccioná la especie", options=especies, index=0)
+        especies = [""] + sorted(df_aforos["ESPECIE"].dropna().unique().tolist())
+        especie = st.selectbox("Seleccioná la especie", options=especies, index=0, key="mae_especie")
 
         tipo_activo = ""
         dividir_por_100 = True
@@ -132,12 +182,12 @@ def render(back_to_home=None):
                 dividir_por_100 = _is_divide_by_100(tipo_activo)
 
         if metodo == "Por monto":
-            monto_txt = st.text_input("Monto (AR$)", placeholder="Ej: 1.000.000")
+            monto_txt = st.text_input("Monto (AR$)", placeholder="Ej: 1.000.000", key="mae_monto")
             monto = _to_float_amount(monto_txt)
         else:
             c1, c2 = st.columns(2)
-            precio_txt = c1.text_input("Precio", placeholder="Ej: 68,75")
-            nominales_txt = c2.text_input("Nominales", placeholder="Ej: 100.000")
+            precio_txt = c1.text_input("Precio", placeholder="Ej: 68,75", key="mae_precio")
+            nominales_txt = c2.text_input("Nominales", placeholder="Ej: 100.000", key="mae_nominales")
 
             precio = _to_float_amount(precio_txt)
             nominales = _to_float_amount(nominales_txt)
@@ -167,8 +217,12 @@ def render(back_to_home=None):
                 else:
                     datos = row.iloc[0]
                     aforo = float(datos["AFORO"])
-                    limite = float(datos["CONCENTRACIÓN (EN PESOS)"]) if pd.notna(datos["CONCENTRACIÓN (EN PESOS)"]) else None
-                    garantia = monto * aforo
+                    limite = (
+                        float(datos["CONCENTRACIÓN (EN PESOS)"])
+                        if pd.notna(datos["CONCENTRACIÓN (EN PESOS)"])
+                        else None
+                    )
+                    garantia = float(monto) * aforo
 
                     st.session_state.mae_operaciones.append({
                         "Especie": especie,
@@ -182,14 +236,12 @@ def render(back_to_home=None):
 
     st.divider()
 
-    # Resultados
     ops = st.session_state.mae_operaciones
     if ops:
         st.subheader("Resultado del cálculo")
 
         df_res = pd.DataFrame(ops)
 
-        # Mostrar tabla formateada (sin Styler para cloud)
         show = df_res.copy()
         show["Monto"] = show["Monto"].map(_fmt_ars)
         show["Aforo"] = show["Aforo"].map(_fmt_pct)
@@ -202,8 +254,7 @@ def render(back_to_home=None):
         total = df_res["Garantía admitida"].sum()
         st.markdown(f"### Garantía total admitida: **AR$ {_fmt_ars(total)}**")
 
-    # Reiniciar
-    if st.button("Reiniciar cálculo"):
+    # Reiniciar (solo esto)
+    if st.button("Reiniciar cálculo", key="mae_reset"):
         st.session_state.mae_operaciones = []
         st.rerun()
-
