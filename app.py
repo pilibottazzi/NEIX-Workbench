@@ -1,9 +1,19 @@
+# app.py
 import streamlit as st
-from tools.registry import TOOL_TABS, run_tool
 
+# Import de tools (ajustá nombres si los tuyos están en /tools)
+from tools import ons
+from tools import backoffice
+from tools import cheques
+from tools import cauciones_mae
+from tools import cauciones_byma
+# from tools import alquileres  # si lo usás
+
+# =========================================================
+# CONFIG
+# =========================================================
 st.set_page_config(page_title="NEIX Workbench", page_icon="🧰", layout="wide")
 
-# =============== ESTÉTICA (TU CSS) ===============
 st.markdown(
     """
     <style>
@@ -25,66 +35,130 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ==================================================
-# Navegación
-# ==================================================
+# =========================================================
+# HELPERS NAV
+# =========================================================
 def go_home():
+    # limpia query params y re-renderiza home
     st.query_params.clear()
     st.rerun()
 
-def back_to_home(tool_id: str):
-    # ✅ key única por tool (evita StreamlitDuplicateElementKey)
-    if st.button("← Volver al Workbench", key=f"btn_back__{tool_id}"):
-        go_home()
+def back_to_home_factory(tool_key: str):
+    """
+    Devuelve una función back_to_home() con key único por tool,
+    evitando StreamlitDuplicateElementId.
+    """
+    def _back():
+        if st.button("← Volver al Workbench", key=f"btn_back_{tool_key}"):
+            go_home()
+    return _back
 
+# =========================================================
+# ROUTER
+# =========================================================
 q = st.query_params
 tool = (q.get("tool") or "").strip().lower()
 
-# =========================
-# ROUTER (tool view)
-# =========================
 if tool:
     st.markdown("<h2 style='text-align:center;'>N E I X &nbsp;&nbsp;Workbench</h2>", unsafe_allow_html=True)
-    st.markdown('<div class="top-note">Vista de herramienta</div>', unsafe_allow_html=True)
+    st.markdown('<div class="top-note">Vista de herramienta (pestaña independiente)</div>', unsafe_allow_html=True)
 
+    # Home link (por url) - siempre funciona, no crea widgets
     st.markdown('<a class="back-link" href="?">🏠 Ir a Home</a>', unsafe_allow_html=True)
     st.divider()
 
+    # botón volver con key único por tool (widget)
+    back_to_home = back_to_home_factory(tool_key=tool)
+    back_to_home()  # <- SOLO acá (una vez). Las tools no lo deben renderizar "por defecto".
+
+    st.divider()
+
     try:
-        ok = run_tool(tool, lambda: back_to_home(tool))
-        if not ok:
-            back_to_home(tool)
+        if tool == "ons":
+            ons.render(back_to_home)
+
+        elif tool == "bo_ppt_manana":
+            backoffice.render_ppt_manana(back_to_home)
+        elif tool == "bo_moc_tarde":
+            backoffice.render_moc_tarde(back_to_home)
+        elif tool == "bo_control_sliq":
+            backoffice.render_control_sliq(back_to_home)
+        elif tool == "bo_acreditacion_mav":
+            backoffice.render_acreditacion_mav(back_to_home)
+        elif tool == "bo_cauciones":
+            backoffice.render_cauciones(back_to_home)
+
+        elif tool == "cheques":
+            cheques.render(back_to_home)
+
+        elif tool in ("cauciones_mae", "cauciones-mae"):
+            cauciones_mae.render(back_to_home)
+
+        elif tool in ("cauciones_byma", "cauciones-byma"):
+            cauciones_byma.render(back_to_home)
+
+        # elif tool == "alquileres":
+        #     alquileres.render(back_to_home)
+
+        else:
             st.error("Herramienta no encontrada.")
+            st.caption("Volvé a Home y verificá el link.")
     except Exception as e:
-        back_to_home(tool)
         st.error("Error cargando la herramienta.")
         st.exception(e)
 
     st.stop()
 
-# =========================
+# =========================================================
 # HOME
-# =========================
+# =========================================================
 st.markdown("<h2 style='text-align:center;'>N E I X &nbsp;&nbsp;Workbench</h2>", unsafe_allow_html=True)
 st.caption("Navegación por áreas y proyectos")
 st.divider()
 
-tab_names = list(TOOL_TABS.keys())
-tabs = st.tabs(tab_names)
+tabs = st.tabs(["Mesa", "Backoffice", "Comerciales"])
 
-for i, tab_name in enumerate(tab_names):
-    with tabs[i]:
-        st.subheader(tab_name)
-        st.caption("Elegí una herramienta")
+with tabs[0]:
+    st.subheader("Mesa")
+    st.caption("Elegí una herramienta")
+    st.markdown(
+        """
+        <div class="tool-grid">
+          <a class="tool-btn" href="?tool=ons" target="_self">ON’s</a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-        buttons_html = '<div class="tool-grid">'
-        for t in TOOL_TABS[tab_name]:
-            buttons_html += (
-                f'<a class="tool-btn" href="?tool={t["id"]}" target="_blank">'
-                f'{t["label"]}'
-                f'</a>'
-            )
-        buttons_html += "</div>"
+with tabs[1]:
+    st.subheader("Backoffice")
+    st.caption("Elegí una herramienta")
+    st.markdown(
+        """
+        <div class="tool-grid">
+          <a class="tool-btn" href="?tool=bo_ppt_manana" target="_self">PPT Mañana</a>
+          <a class="tool-btn" href="?tool=bo_moc_tarde" target="_self">MOC Tarde</a>
+          <a class="tool-btn" href="?tool=bo_control_sliq" target="_self">Control SLIQ</a>
+          <a class="tool-btn" href="?tool=bo_acreditacion_mav" target="_self">Acreditación MAV</a>
+          <a class="tool-btn" href="?tool=bo_cauciones" target="_self">Cauciones</a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-        st.markdown(buttons_html, unsafe_allow_html=True)
+with tabs[2]:
+    st.subheader("Comerciales")
+    st.caption("Elegí una herramienta")
+    st.markdown(
+        """
+        <div class="tool-grid">
+          <a class="tool-btn" href="?tool=cheques" target="_self">Cheques</a>
+          <a class="tool-btn" href="?tool=cauciones_mae" target="_self">Cauciones MAE</a>
+          <a class="tool-btn" href="?tool=cauciones_byma" target="_self">Cauciones BYMA</a>
+          <a class="tool-btn" href="?tool=alquileres" target="_self">Alquileres</a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
 
