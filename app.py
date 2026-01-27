@@ -78,7 +78,7 @@ if tool:
         elif tool == "bo_moc_tarde":
             backoffice.render_moc_tarde(back_to_home)
         elif tool == "bo_control_sliq":
-            backoffice.render_control_sliq(back_to_home)
+            control_sliq.render(back_to_home)
         elif tool == "bo_acreditacion_mav":
             backoffice.render_acreditacion_mav(back_to_home)
         elif tool == "bo_cauciones":
