@@ -107,8 +107,6 @@ def _require_password_gate():
 # Render
 # =========================
 def render(back_to_home=None):
-    # IMPORTANTE: NO LLAMAR back_to_home() ACÁ.
-    # El botón volver ya lo renderiza app.py
 
     st.markdown("## Dashboard cheques y pagarés")
     st.caption("Carga obligatoria de Excel + cruce con Managers (MySQL)")
