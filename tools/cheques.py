@@ -33,7 +33,6 @@ def _fmt_money(x):
 
 
 def get_db_config() -> dict:
-    # lee secrets (local: .streamlit/secrets.toml / cloud: Settings -> Secrets)
     try:
         return {
             "host": st.secrets["mysql"]["host"],
@@ -44,9 +43,7 @@ def get_db_config() -> dict:
             "allow_local_infile": True,
         }
     except Exception:
-        st.error(
-            "Faltan secrets de MySQL. Configurá [mysql] en secrets (local o Streamlit Cloud)."
-        )
+        st.error("Faltan secrets de MySQL. Configurá [mysql] en secrets (local o Streamlit Cloud).")
         st.stop()
 
 
@@ -110,8 +107,8 @@ def _require_password_gate():
 # Render
 # =========================
 def render(back_to_home=None):
-    if callable(back_to_home):
-        back_to_home()
+    # IMPORTANTE: NO LLAMAR back_to_home() ACÁ.
+    # El botón volver ya lo renderiza app.py
 
     st.markdown("## Dashboard cheques y pagarés")
     st.caption("Carga obligatoria de Excel + cruce con Managers (MySQL)")
@@ -207,7 +204,6 @@ def render(back_to_home=None):
             .drop(columns=["NumeroComitente", "NumeroManager", "NumeroOficial"], errors="ignore")
         )
 
-    # Vista (simple)
     st.subheader("📊 Vista general")
     show_cols = [c for c in [
         COL_TIPO, COL_MONEDA, COL_CHEQUE,
@@ -223,8 +219,6 @@ def render(back_to_home=None):
 
     st.dataframe(out, use_container_width=True, hide_index=True)
 
-
-    # ========= Botón reiniciar =========
     if st.button("Reiniciar"):
         st.rerun()
 
