@@ -9,7 +9,6 @@ from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import numbers
 
-
 # =========================
 # Utils
 # =========================
@@ -506,7 +505,7 @@ def export_definitivo(
 # Streamlit render
 # =========================
 def render(back_to_home=None):
-    st.markdown("## ☀️ MOC MAÑANA — Papel de Trabajo Definitivo")
+    st.markdown("## ☀️ MOC MAÑANA")
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
