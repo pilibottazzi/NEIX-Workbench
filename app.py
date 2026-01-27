@@ -25,12 +25,15 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+# ==================================================
+# Navegación
+# ==================================================
 def go_home():
     st.query_params.clear()
     st.rerun()
 
 def back_to_home(tool_id: str):
-    # ✅ key única por herramienta => evita DuplicateElementKey
+    # ✅ key única por tool (evita StreamlitDuplicateElementKey)
     if st.button("← Volver al Workbench", key=f"btn_back__{tool_id}"):
         go_home()
 
@@ -48,7 +51,7 @@ if tool:
     st.divider()
 
     try:
-        ok = run_tool(tool, back_to_home)  # ✅ ahora run_tool acepta back_to_home
+        ok = run_tool(tool, lambda: back_to_home(tool))
         if not ok:
             back_to_home(tool)
             st.error("Herramienta no encontrada.")
@@ -76,7 +79,11 @@ for i, tab_name in enumerate(tab_names):
 
         buttons_html = '<div class="tool-grid">'
         for t in TOOL_TABS[tab_name]:
-            buttons_html += f'<a class="tool-btn" href="?tool={t["id"]}" target="_blank">{t["label"]}</a>'
+            buttons_html += (
+                f'<a class="tool-btn" href="?tool={t["id"]}" target="_blank">'
+                f'{t["label"]}'
+                f'</a>'
+            )
         buttons_html += "</div>"
 
         st.markdown(buttons_html, unsafe_allow_html=True)
