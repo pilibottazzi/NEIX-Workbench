@@ -63,10 +63,6 @@ if tool:
     st.markdown("<h2 style='text-align:center;'>N E I X &nbsp;&nbsp;Workbench</h2>", unsafe_allow_html=True)
     st.markdown('<div class="top-note">Vista de herramienta (pestaña independiente)</div>', unsafe_allow_html=True)
 
-    # Home link (por url) - siempre funciona, no crea widgets
-    st.markdown('<a class="back-link" href="?">🏠 Ir a Home</a>', unsafe_allow_html=True)
-    st.divider()
-
     # botón volver con key único por tool (widget)
     back_to_home = back_to_home_factory(tool_key=tool)
     back_to_home()  # <- SOLO acá (una vez). Las tools no lo deben renderizar "por defecto".
