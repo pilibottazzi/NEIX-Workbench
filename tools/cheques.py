@@ -11,16 +11,13 @@ import streamlit as st
 # Helpers
 # =========================
 def limpiar_monto(x):
-    """Normaliza montos con símbolos y separadores (AR/US). Devuelve float o NA."""
     if pd.isna(x):
         return pd.NA
     s = str(x)
-    s = re.sub(r"[^\d,.\-]", "", s)  # deja solo dígitos/coma/punto/signo
+    s = re.sub(r"[^\d,.\-]", "", s)
     if "," in s and "." in s:
-        # asume '.' miles y ',' decimal
         s = s.replace(".", "").replace(",", ".")
     elif "," in s and "." not in s:
-        # solo coma: coma decimal
         s = s.replace(",", ".")
     try:
         return float(s)
@@ -36,12 +33,7 @@ def _fmt_money(x):
 
 
 def get_db_config() -> dict:
-    """
-    Lee la config de MySQL desde st.secrets.
-    Espera:
-      [mysql]
-      host, user, password, database, (opcional port)
-    """
+    # lee secrets (local: .streamlit/secrets.toml / cloud: Settings -> Secrets)
     try:
         return {
             "host": st.secrets["mysql"]["host"],
@@ -52,7 +44,9 @@ def get_db_config() -> dict:
             "allow_local_infile": True,
         }
     except Exception:
-        st.error("Faltan secrets de MySQL. Configurá st.secrets['mysql'] en .streamlit/secrets.toml o en Cloud.")
+        st.error(
+            "Faltan secrets de MySQL. Configurá [mysql] en secrets (local o Streamlit Cloud)."
+        )
         st.stop()
 
 
@@ -104,47 +98,41 @@ def obtener_managers_cached() -> pd.DataFrame:
 
 
 def _require_password_gate():
-    """Gate simple por clave usando st.secrets (con fallback)."""
     expected = st.secrets.get("app_password", "ciclon")
     with st.expander("🔐 Sección protegida por clave"):
-        pwd = st.text_input("Ingresá la clave para acceder:", type="password")
+        pwd = st.text_input("Ingresá la clave para acceder:", type="password", key="cheques_pwd")
         if pwd != expected:
             st.warning("⚠️ Acceso restringido. Ingresá la clave correcta para ver el contenido.")
             st.stop()
 
 
 # =========================
-# Render (Workbench)
+# Render
 # =========================
 def render(back_to_home=None):
-    # Botón volver (si te lo pasan desde app.py)
     if callable(back_to_home):
         back_to_home()
 
-    st.markdown("## Cheques y Pagarés")
+    st.markdown("## Dashboard cheques y pagarés")
     st.caption("Carga obligatoria de Excel + cruce con Managers (MySQL)")
 
-    # Gate
     _require_password_gate()
 
-    # ========= Carga obligatoria =========
     st.subheader("📎 Carga de archivo (obligatoria)")
     archivo = st.file_uploader(
         "Subí el Excel de cheques / pagarés para continuar",
         type=["xlsx"],
         accept_multiple_files=False,
+        key="cheques_uploader",
     )
-
     if archivo is None:
         st.info("Debés subir un archivo Excel para habilitar el dashboard.")
         st.stop()
 
-    btn = st.button("Cargar datos", type="primary")
-    if not btn:
+    if not st.button("Cargar datos", type="primary", key="cheques_cargar"):
         st.caption("Una vez subido el archivo, tocá **Cargar datos**.")
         st.stop()
 
-    # ========= Leer Excel =========
     try:
         df = pd.read_excel(archivo, header=0)
     except Exception as e:
@@ -153,7 +141,6 @@ def render(back_to_home=None):
 
     df.columns = df.columns.astype(str).str.strip()
 
-    # ========= Columnas esperadas =========
     COL_TIPO = "TIPO INSTRUMENTO"
     COL_ESTADO = "ESTADO"
     COL_MONTO = "MONTO"
@@ -171,7 +158,6 @@ def render(back_to_home=None):
         st.error(f"Faltan columnas en el Excel: {missing}")
         st.stop()
 
-    # ========= Limpieza =========
     for c in [COL_FECHA_PAGO, COL_FECHA_COBRO, COL_FECHA_INGRESO]:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce", dayfirst=True)
@@ -182,14 +168,11 @@ def render(back_to_home=None):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64").astype(str).str.strip()
 
-    df["Mes Pago"] = df[COL_FECHA_PAGO].dt.month
-
-    # ========= Cruce Managers (MySQL) =========
+    # Cruce managers
     with st.spinner("Cargando Managers desde MySQL…"):
         df_manager = obtener_managers_cached()
 
     if not df_manager.empty:
-        # TENEDOR
         df = (
             df.merge(
                 df_manager[["NumeroComitente", "Comitente", "NumeroManager", "Manager", "NumeroOficial", "Oficial"]],
@@ -200,16 +183,13 @@ def render(back_to_home=None):
             .rename(
                 columns={
                     "Comitente": "Nombre Comitente TENEDOR",
-                    "NumeroManager": "NumeroManager TENEDOR",
                     "Manager": "Manager TENEDOR",
-                    "NumeroOficial": "NumeroOficial TENEDOR",
                     "Oficial": "Oficial TENEDOR",
                 }
             )
-            .drop(columns=["NumeroComitente"], errors="ignore")
+            .drop(columns=["NumeroComitente", "NumeroManager", "NumeroOficial"], errors="ignore")
         )
 
-        # INGRESANTE
         df = (
             df.merge(
                 df_manager[["NumeroComitente", "Comitente", "NumeroManager", "Manager", "NumeroOficial", "Oficial"]],
@@ -220,87 +200,29 @@ def render(back_to_home=None):
             .rename(
                 columns={
                     "Comitente": "Nombre Comitente INGRESANTE",
-                    "NumeroManager": "NumeroManager INGRESANTE",
                     "Manager": "Manager INGRESANTE",
-                    "NumeroOficial": "NumeroOficial INGRESANTE",
                     "Oficial": "Oficial INGRESANTE",
                 }
             )
-            .drop(columns=["NumeroComitente"], errors="ignore")
+            .drop(columns=["NumeroComitente", "NumeroManager", "NumeroOficial"], errors="ignore")
         )
-    else:
-        st.warning("No se pudo traer la tabla de Managers desde MySQL (vacía). Se mostrará sin cruce.")
 
-    # ========= Fechas base =========
-    hoy = datetime.today().date()
-    maniana = hoy + timedelta(days=1)
-    lunes = hoy - timedelta(days=hoy.weekday())
-    domingo = lunes + timedelta(days=6)
-    inicio_mes = hoy.replace(day=1)
-    fin_mes = (pd.Timestamp(inicio_mes) + pd.offsets.MonthEnd(1)).date()
+    # Vista (simple)
+    st.subheader("📊 Vista general")
+    show_cols = [c for c in [
+        COL_TIPO, COL_MONEDA, COL_CHEQUE,
+        "Nombre Comitente TENEDOR", COL_TENEDOR,
+        COL_MONTO, COL_FECHA_PAGO, COL_ESTADO,
+        "Nombre Comitente INGRESANTE", COL_INGRESANTE,
+    ] if c in df.columns]
 
-    # ========= Vista por Fecha de Pago =========
-    st.subheader("Vencimientos por **Fecha de PAGO**")
-    opciones_fecha = ["Hoy", "Mañana", "Esta Semana", "Este Mes"]
-    vista_pago = st.selectbox("Elegí la vista", opciones_fecha, key="vista_pago")
+    out = df[show_cols].copy()
+    if COL_FECHA_PAGO in out.columns:
+        out[COL_FECHA_PAGO] = pd.to_datetime(out[COL_FECHA_PAGO], errors="coerce").dt.date
+    out[COL_MONTO] = out[COL_MONTO].fillna(0).apply(_fmt_money)
 
-    if vista_pago == "Hoy":
-        df_pago = df[df[COL_FECHA_PAGO].dt.date == hoy].copy()
-    elif vista_pago == "Mañana":
-        df_pago = df[df[COL_FECHA_PAGO].dt.date == maniana].copy()
-    elif vista_pago == "Esta Semana":
-        df_pago = df[(df[COL_FECHA_PAGO].dt.date >= lunes) & (df[COL_FECHA_PAGO].dt.date <= domingo)].copy()
-    else:
-        df_pago = df[(df[COL_FECHA_PAGO].dt.date >= inicio_mes) & (df[COL_FECHA_PAGO].dt.date <= fin_mes)].copy()
+    st.dataframe(out, use_container_width=True, hide_index=True)
 
-    # ========= Filtros =========
-    col1, col2, col3 = st.columns(3)
-    monedas = sorted(df[COL_MONEDA].dropna().astype(str).unique().tolist())
-    estados = sorted(df[COL_ESTADO].dropna().astype(str).unique().tolist())
-    instrumentos = sorted(df[COL_TIPO].dropna().astype(str).unique().tolist())
-
-    with col1:
-        filtro_monedas = st.multiselect("Moneda", ["Todos"] + monedas, default=["Todos"])
-    with col2:
-        filtro_estados = st.multiselect("Estado", ["Todos"] + estados, default=["Todos"])
-    with col3:
-        filtro_instrumento = st.multiselect("Tipo Instrumento", ["Todos"] + instrumentos, default=["Todos"])
-
-    df_pago_f = df_pago.copy()
-    if "Todos" not in filtro_monedas:
-        df_pago_f = df_pago_f[df_pago_f[COL_MONEDA].astype(str).isin(filtro_monedas)]
-    if "Todos" not in filtro_estados:
-        df_pago_f = df_pago_f[df_pago_f[COL_ESTADO].astype(str).isin(filtro_estados)]
-    if "Todos" not in filtro_instrumento:
-        df_pago_f = df_pago_f[df_pago_f[COL_TIPO].astype(str).isin(filtro_instrumento)]
-
-    # ========= Columnas a mostrar =========
-    venc_cols = [
-        c for c in [
-            COL_FECHA_INGRESO, COL_TIPO, COL_MONEDA, COL_CHEQUE,
-            "Nombre Comitente TENEDOR", COL_TENEDOR,
-            "Manager TENEDOR", "Oficial TENEDOR",
-            COL_MONTO, COL_FECHA_PAGO, COL_FECHA_COBRO,
-            "Nombre Comitente INGRESANTE", COL_INGRESANTE,
-            "Manager INGRESANTE", "Oficial INGRESANTE",
-            COL_ESTADO,
-        ] if c in df_pago_f.columns
-    ]
-
-    # formateo display
-    disp = df_pago_f.copy()
-    for c in [COL_FECHA_PAGO, COL_FECHA_COBRO, COL_FECHA_INGRESO]:
-        if c in disp.columns:
-            disp[c] = pd.to_datetime(disp[c], errors="coerce").dt.date
-    disp[COL_MONTO] = disp[COL_MONTO].fillna(0).apply(_fmt_money)
-
-    st.dataframe(
-        disp[venc_cols] if not disp.empty else pd.DataFrame(columns=venc_cols),
-        hide_index=True,
-        use_container_width=True
-    )
-
-    st.divider()
 
     # ========= Botón reiniciar =========
     if st.button("Reiniciar"):
