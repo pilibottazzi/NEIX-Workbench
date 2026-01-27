@@ -172,9 +172,7 @@ def cargar_aforos_byma() -> pd.DataFrame:
 # Main render
 # =========================
 def render(back_to_home=None):
-    # En tu app nueva: el botón lo renderiza la tool
-    if callable(back_to_home):
-        back_to_home()
+    pass
 
     st.markdown("## 🧾 Calculadora de Garantías BYMA")
     st.caption("Calculá garantía admitida por especie según aforos BYMA (Excel pre-cargado en el repo).")
