@@ -3,10 +3,6 @@ from scipy import optimize
 import pandas as pd
 import numpy as np
 
-
-# ======================================================
-# 1) Funciones (las respeto, solo las hago más robustas)
-# ======================================================
 def xnpv(rate, cashflows):
     chron_order = sorted(cashflows, key=lambda x: x[0])
     t0 = chron_order[0][0]
