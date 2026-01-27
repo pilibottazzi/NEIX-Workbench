@@ -1,10 +1,13 @@
 # tools/cheques.py
+import os
 import re
-from datetime import datetime, timedelta
-
-import mysql.connector
 import pandas as pd
 import streamlit as st
+
+# =========================
+# Config
+# =========================
+MANAGERS_PATH = os.path.join("data", "managers_neix.xlsx")
 
 
 # =========================
@@ -32,66 +35,47 @@ def _fmt_money(x):
         return ""
 
 
-def get_db_config() -> dict:
-    try:
-        return {
-            "host": st.secrets["mysql"]["host"],
-            "user": st.secrets["mysql"]["user"],
-            "password": st.secrets["mysql"]["password"],
-            "database": st.secrets["mysql"]["database"],
-            "port": int(st.secrets["mysql"].get("port", 3306)),
-            "allow_local_infile": True,
-        }
-    except Exception:
-        st.error("Faltan secrets de MySQL. Configurá [mysql] en secrets (local o Streamlit Cloud).")
-        st.stop()
-
-
 @st.cache_data(ttl=60 * 30, show_spinner=False)
-def obtener_managers_cached() -> pd.DataFrame:
-    db_config = get_db_config()
-    cn = mysql.connector.connect(**db_config)
-    cur = cn.cursor(dictionary=True)
-
-    q = """
-        WITH ultimo AS (
-            SELECT t.*
-            FROM neix.principalLog t
-            JOIN (
-                SELECT principal_id, MAX(created_at) AS max_created
-                FROM neix.principalLog
-                GROUP BY principal_id
-            ) sub ON t.principal_id = sub.principal_id AND t.created_at = sub.max_created
-        )
-        SELECT 
-            p.id as NumeroComitente, 
-            p.description AS Comitente,
-            m.id AS NumeroManager,
-            m.description AS Manager,
-            o.id AS NumeroOficial,
-            o.description AS Oficial
-        FROM ultimo u
-        LEFT JOIN neix.principal as p ON u.principal_id = p.id
-        LEFT JOIN neix.manager as m ON u.manager_id = m.id
-        LEFT JOIN neix.officer as o ON u.officer_id = o.id
+def cargar_managers_excel() -> pd.DataFrame:
     """
-    cur.execute(q)
-    rows = cur.fetchall()
-    cur.close()
-    cn.close()
+    Espera un Excel en: data/managers_neix.xlsx
+    Columnas mínimas esperadas (idealmente):
+      NumeroComitente, Comitente (o Cliente), Manager, Oficial
+    (Si además trae NumeroManager/NumeroOficial, no molesta)
+    """
+    if not os.path.exists(MANAGERS_PATH):
+        raise FileNotFoundError(
+            f"No existe '{MANAGERS_PATH}'. Subilo al repo dentro de la carpeta 'data/'."
+        )
 
-    df_manager = pd.DataFrame(rows)
-    if df_manager.empty:
-        return df_manager
+    df = pd.read_excel(MANAGERS_PATH)
+    df.columns = df.columns.astype(str).str.strip()
 
-    df_manager.columns = df_manager.columns.astype(str).str.strip()
-    df_manager["NumeroComitente"] = (
-        pd.to_numeric(df_manager["NumeroComitente"], errors="coerce")
+    # Normalizaciones de nombres por si tu excel usa Cliente en vez de Comitente
+    if "Comitente" not in df.columns and "Cliente" in df.columns:
+        df = df.rename(columns={"Cliente": "Comitente"})
+
+    required = ["NumeroComitente"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"El archivo managers_neix.xlsx no tiene columnas requeridas: {missing}. "
+            f"Columnas disponibles: {list(df.columns)}"
+        )
+
+    df["NumeroComitente"] = (
+        pd.to_numeric(df["NumeroComitente"], errors="coerce")
         .astype("Int64")
         .astype(str)
         .str.strip()
     )
-    return df_manager
+
+    # Asegurar que existan estas columnas (aunque sea vacías)
+    for col in ["Comitente", "Manager", "Oficial"]:
+        if col not in df.columns:
+            df[col] = ""
+
+    return df
 
 
 def _require_password_gate():
@@ -107,9 +91,8 @@ def _require_password_gate():
 # Render
 # =========================
 def render(back_to_home=None):
-
     st.markdown("## Dashboard cheques y pagarés")
-    st.caption("Carga obligatoria de Excel + cruce con Managers (MySQL)")
+    st.caption("Carga obligatoria de Excel + cruce con Managers (Excel: data/managers_neix.xlsx)")
 
     _require_password_gate()
 
@@ -163,14 +146,24 @@ def render(back_to_home=None):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64").astype(str).str.strip()
 
-    # Cruce managers
-    with st.spinner("Cargando Managers desde MySQL…"):
-        df_manager = obtener_managers_cached()
+    # =========================
+    # Cruce managers desde EXCEL
+    # =========================
+    try:
+        with st.spinner("Cargando Managers desde managers_neix.xlsx…"):
+            df_manager = cargar_managers_excel()
+    except Exception as e:
+        st.error("No pude cargar managers_neix.xlsx")
+        st.exception(e)
+        df_manager = pd.DataFrame()
 
     if not df_manager.empty:
+        base_cols = ["NumeroComitente", "Comitente", "Manager", "Oficial"]
+        base_cols = [c for c in base_cols if c in df_manager.columns]
+
         df = (
             df.merge(
-                df_manager[["NumeroComitente", "Comitente", "NumeroManager", "Manager", "NumeroOficial", "Oficial"]],
+                df_manager[base_cols],
                 left_on=COL_TENEDOR,
                 right_on="NumeroComitente",
                 how="left",
@@ -182,15 +175,16 @@ def render(back_to_home=None):
                     "Oficial": "Oficial TENEDOR",
                 }
             )
-            .drop(columns=["NumeroComitente", "NumeroManager", "NumeroOficial"], errors="ignore")
+            .drop(columns=["NumeroComitente"], errors="ignore")
         )
 
         df = (
             df.merge(
-                df_manager[["NumeroComitente", "Comitente", "NumeroManager", "Manager", "NumeroOficial", "Oficial"]],
+                df_manager[base_cols],
                 left_on=COL_INGRESANTE,
                 right_on="NumeroComitente",
                 how="left",
+                suffixes=("", "_ING"),
             )
             .rename(
                 columns={
@@ -199,15 +193,21 @@ def render(back_to_home=None):
                     "Oficial": "Oficial INGRESANTE",
                 }
             )
-            .drop(columns=["NumeroComitente", "NumeroManager", "NumeroOficial"], errors="ignore")
+            .drop(columns=["NumeroComitente"], errors="ignore")
         )
 
+    # =========================
+    # Vista
+    # =========================
     st.subheader("📊 Vista general")
+
     show_cols = [c for c in [
         COL_TIPO, COL_MONEDA, COL_CHEQUE,
         "Nombre Comitente TENEDOR", COL_TENEDOR,
+        "Manager TENEDOR", "Oficial TENEDOR",
         COL_MONTO, COL_FECHA_PAGO, COL_ESTADO,
         "Nombre Comitente INGRESANTE", COL_INGRESANTE,
+        "Manager INGRESANTE", "Oficial INGRESANTE",
     ] if c in df.columns]
 
     out = df[show_cols].copy()
@@ -217,6 +217,5 @@ def render(back_to_home=None):
 
     st.dataframe(out, use_container_width=True, hide_index=True)
 
-    if st.button("Reiniciar"):
+    if st.button("Reiniciar", key="cheques_reset"):
         st.rerun()
-
