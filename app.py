@@ -7,7 +7,8 @@ from tools import backoffice
 from tools import cheques
 from tools import cauciones_mae
 from tools import cauciones_byma
-# from tools import alquileres  # si lo usás
+from tools import control_sliq
+from tools import alquileres 
 
 # =========================================================
 # CONFIG
