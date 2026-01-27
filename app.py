@@ -9,6 +9,8 @@ from tools import cauciones_mae
 from tools import cauciones_byma
 from tools import control_sliq
 from tools import alquileres 
+from tools import moc_tarde
+
 
 # =========================================================
 # CONFIG
@@ -76,7 +78,7 @@ if tool:
         elif tool == "bo_ppt_manana":
             backoffice.render_ppt_manana(back_to_home)
         elif tool == "bo_moc_tarde":
-            backoffice.render_moc_tarde(back_to_home)
+            moc_tarde.render(back_to_home)
         elif tool == "bo_control_sliq":
             control_sliq.render(back_to_home)
         elif tool == "bo_acreditacion_mav":
