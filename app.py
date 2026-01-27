@@ -61,7 +61,6 @@ tool = (q.get("tool") or "").strip().lower()
 
 if tool:
     st.markdown("<h2 style='text-align:center;'>N E I X &nbsp;&nbsp;Workbench</h2>", unsafe_allow_html=True)
-    st.markdown('<div class="top-note">Vista de herramienta (pestaña independiente)</div>', unsafe_allow_html=True)
 
     # botón volver con key único por tool (widget)
     back_to_home = back_to_home_factory(tool_key=tool)
