@@ -15,12 +15,6 @@ REQUIRED_COLS = ["ESPECIE", "AFORO", "CONCENTRACIÓN (EN PESOS)", "ACTIVO"]
 # Helpers
 # =========================
 def _to_float_amount(s: str):
-    """
-    Convierte strings típicos AR:
-      '1.000.000' -> 1000000
-      '68,75'     -> 68.75
-      '100.000'   -> 100000
-    """
     if s is None:
         return None
     s = str(s).strip()
@@ -49,23 +43,15 @@ def _fmt_pct(x) -> str:
 
 
 def _normalize_colname(c: str) -> str:
-    # Normaliza columnas para comparar (mayúsculas + strip)
     return str(c).strip().upper()
 
 
 def _find_col(df_cols, target: str):
-    """
-    Busca una columna "parecida" al target, para tolerar variantes:
-    - CONCENTRACION vs CONCENTRACIÓN
-    - espacios dobles, etc.
-    """
     target_n = _normalize_colname(target)
     for c in df_cols:
         if _normalize_colname(c) == target_n:
             return c
 
-    # fallback por contains (para acentos y variantes leves)
-    # ej: "CONCENTRACION" vs "CONCENTRACIÓN (EN PESOS)"
     base = target_n.replace("Ó", "O").replace("Á", "A").replace("É", "E").replace("Í", "I").replace("Ú", "U")
     for c in df_cols:
         cn = _normalize_colname(c)
@@ -76,11 +62,6 @@ def _find_col(df_cols, target: str):
 
 
 def _is_divide_by_100(tipo_activo: str) -> bool:
-    """
-    Regla MAE que venías usando:
-    - CEDEAR / ACCIONES: NO dividir por 100
-    - resto: dividir por 100
-    """
     t = (tipo_activo or "").upper().strip()
     if ("CEDEAR" in t) or ("ACCIÓN" in t) or ("ACCIONES" in t) or ("ACCION" in t):
         return False
@@ -89,20 +70,14 @@ def _is_divide_by_100(tipo_activo: str) -> bool:
 
 @st.cache_data(show_spinner=False)
 def cargar_aforos_mae() -> pd.DataFrame:
-    """
-    Lee el excel desde el repo: data/Garantia MAE.xlsx
-    """
     if not os.path.exists(DATA_PATH):
         raise FileNotFoundError(
             f"No existe el archivo '{DATA_PATH}'. Subilo al repo dentro de la carpeta 'data/'."
         )
 
     df = pd.read_excel(DATA_PATH)
-
-    # Normalizar columnas (pero sin destruir acentos originales)
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Mapear columnas requeridas tolerando variantes
     col_especie = _find_col(df.columns, "ESPECIE")
     col_aforo = _find_col(df.columns, "AFORO")
     col_conc = _find_col(df.columns, "CONCENTRACIÓN (EN PESOS)")
@@ -119,7 +94,6 @@ def cargar_aforos_mae() -> pd.DataFrame:
             f"Faltan columnas requeridas {missing}. Columnas disponibles: {list(df.columns)}"
         )
 
-    # Renombrar internamente a nombres canónicos (como vos ya usás)
     df = df.rename(columns={
         col_especie: "ESPECIE",
         col_aforo: "AFORO",
@@ -127,7 +101,6 @@ def cargar_aforos_mae() -> pd.DataFrame:
         col_activo: "ACTIVO",
     })
 
-    # Normalizaciones
     df["ESPECIE"] = df["ESPECIE"].astype(str).str.upper().str.strip()
     df["AFORO"] = pd.to_numeric(df["AFORO"], errors="coerce")
     df["CONCENTRACIÓN (EN PESOS)"] = pd.to_numeric(df["CONCENTRACIÓN (EN PESOS)"], errors="coerce")
@@ -141,14 +114,11 @@ def cargar_aforos_mae() -> pd.DataFrame:
 # Main render
 # =========================
 def render(back_to_home=None):
-    # Botón volver (si viene del Workbench)
-    if callable(back_to_home):
-        back_to_home()
-
+    # IMPORTANTE: NO llamar back_to_home() acá.
+    # El botón "Volver al Workbench" ya lo renderiza app.py
     st.markdown("## 🧾 Calculadora de Garantías MAE")
     st.caption("Calculá garantía admitida por especie según aforos MAE (Excel pre-cargado en el repo).")
 
-    # Cargar datos
     try:
         df_aforos = cargar_aforos_mae()
     except Exception as e:
@@ -156,7 +126,6 @@ def render(back_to_home=None):
         st.exception(e)
         st.stop()
 
-    # Estado
     if "mae_operaciones" not in st.session_state:
         st.session_state.mae_operaciones = []
 
@@ -239,7 +208,6 @@ def render(back_to_home=None):
     ops = st.session_state.mae_operaciones
     if ops:
         st.subheader("Resultado del cálculo")
-
         df_res = pd.DataFrame(ops)
 
         show = df_res.copy()
@@ -254,7 +222,6 @@ def render(back_to_home=None):
         total = df_res["Garantía admitida"].sum()
         st.markdown(f"### Garantía total admitida: **AR$ {_fmt_ars(total)}**")
 
-    # Reiniciar (solo esto)
     if st.button("Reiniciar cálculo", key="mae_reset"):
         st.session_state.mae_operaciones = []
         st.rerun()
