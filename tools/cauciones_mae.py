@@ -202,36 +202,6 @@ def render(back_to_home=None):
         total = df_res["Garantía admitida"].sum()
         st.markdown(f"### Garantía total admitida: **AR$ {_fmt_ars(total)}**")
 
-        # Descargar CSV (datos originales numéricos)
-        csv = df_res.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Descargar operaciones (CSV)",
-            csv,
-            file_name="garantias_mae_operaciones.csv",
-            mime="text/csv"
-        )
-
-        # Eliminar una fila
-        st.markdown("#### Administrar operaciones")
-        idx = st.selectbox(
-            "Eliminar operación (por índice)",
-            options=list(range(len(df_res))),
-            format_func=lambda i: f"{i} — {df_res.loc[i,'Especie']} — AR$ {_fmt_ars(df_res.loc[i,'Monto'])}"
-        )
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            if st.button("Eliminar seleccionada"):
-                try:
-                    st.session_state.mae_operaciones.pop(int(idx))
-                    st.rerun()
-                except Exception:
-                    st.warning("No pude eliminar esa fila.")
-        with col2:
-            st.caption("Tip: si querés borrar todo, usá “Reiniciar cálculo”.")
-
-    else:
-        st.info("Todavía no agregaste operaciones.")
-
     # Reiniciar
     if st.button("Reiniciar cálculo"):
         st.session_state.mae_operaciones = []
