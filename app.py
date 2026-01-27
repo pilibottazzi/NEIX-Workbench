@@ -49,7 +49,7 @@ def back_to_home_factory(tool_key: str):
     evitando StreamlitDuplicateElementId.
     """
     def _back():
-        if st.button("← Volver al Workbench", key=f"btn_back_{tool_key}"):
+        if st.button("← Volver", key=f"btn_back_{tool_key}"):
             go_home()
     return _back
 
