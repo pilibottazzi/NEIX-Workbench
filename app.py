@@ -29,8 +29,11 @@ def go_home():
     st.query_params.clear()
     st.rerun()
 
-def back_to_home():
-    if st.button("← Volver al Workbench"):
+def back_to_home(tool_id: str = "home"):
+    """
+    Botón volver con KEY ÚNICO por tool para evitar StreamlitDuplicateElementId.
+    """
+    if st.button("← Volver al Workbench", key=f"btn_back_{tool_id}"):
         go_home()
 
 q = st.query_params
@@ -41,18 +44,22 @@ tool = (q.get("tool") or "").strip().lower()
 # =========================
 if tool:
     st.markdown("<h2 style='text-align:center;'>N E I X &nbsp;&nbsp;Workbench</h2>", unsafe_allow_html=True)
-    st.markdown('<div class="top-note">Vista de herramienta </div>', unsafe_allow_html=True)
+    st.markdown('<div class="top-note">Vista de herramienta</div>', unsafe_allow_html=True)
 
+    # Link HOME (no widget)
     st.markdown('<a class="back-link" href="?">🏠 Ir a Home</a>', unsafe_allow_html=True)
     st.divider()
 
+    # ✅ Renderizar el botón UNA sola vez, con key único por tool
+    back_to_home(tool)
+
+    st.divider()
+
     try:
-        ok = run_tool(tool, back_to_home)
+        ok = run_tool(tool, lambda: back_to_home(tool))
         if not ok:
-            back_to_home()
             st.error("Herramienta no encontrada.")
     except Exception as e:
-        back_to_home()
         st.error("Error cargando la herramienta.")
         st.exception(e)
 
@@ -75,7 +82,7 @@ for i, tab_name in enumerate(tab_names):
 
         buttons_html = '<div class="tool-grid">'
         for t in TOOL_TABS[tab_name]:
-            # abre en nueva pestaña, como vos querías
+            # abre en nueva pestaña (como querías)
             buttons_html += f'<a class="tool-btn" href="?tool={t["id"]}" target="_blank">{t["label"]}</a>'
         buttons_html += "</div>"
 
