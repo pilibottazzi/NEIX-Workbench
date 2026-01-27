@@ -1,7 +1,6 @@
 # app.py
 import streamlit as st
 
-# Import de tools (ajustá nombres si los tuyos están en /tools)
 from tools import ons
 from tools import backoffice
 from tools import cheques
