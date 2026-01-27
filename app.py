@@ -2,13 +2,14 @@
 import streamlit as st
 
 from tools import ons
-from tools import backoffice
+from tools import cauciones
 from tools import cheques
 from tools import cauciones_mae
 from tools import cauciones_byma
 from tools import control_sliq
 from tools import alquileres 
 from tools import moc_tarde
+from tools import bo_ppt_manana
 
 
 # =========================================================
@@ -73,27 +74,22 @@ if tool:
     try:
         if tool == "ons":
             ons.render(back_to_home)
-
         elif tool == "bo_ppt_manana":
-            backoffice.render_ppt_manana(back_to_home)
+            bo_ppt_manana.render(back_to_home)
         elif tool == "bo_moc_tarde":
             moc_tarde.render(back_to_home)
         elif tool == "bo_control_sliq":
             control_sliq.render(back_to_home)
         elif tool == "bo_acreditacion_mav":
-            backoffice.render_acreditacion_mav(back_to_home)
+            bo_acreditacion_mav.render(back_to_home)
         elif tool == "bo_cauciones":
-            backoffice.render_cauciones(back_to_home)
-
+            cauciones.render(back_to_home)
         elif tool == "cheques":
             cheques.render(back_to_home)
-
         elif tool in ("cauciones_mae", "cauciones-mae"):
             cauciones_mae.render(back_to_home)
-
         elif tool in ("cauciones_byma", "cauciones-byma"):
             cauciones_byma.render(back_to_home)
-
         elif tool == "alquileres":
             alquileres.render(back_to_home)
             
