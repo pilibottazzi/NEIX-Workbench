@@ -93,9 +93,9 @@ if tool:
         elif tool in ("cauciones_byma", "cauciones-byma"):
             cauciones_byma.render(back_to_home)
 
-        # elif tool == "alquileres":
-        #     alquileres.render(back_to_home)
-
+        elif tool == "alquileres":
+            alquileres.render(back_to_home)
+            
         else:
             st.error("Herramienta no encontrada.")
             st.caption("Volvé a Home y verificá el link.")
