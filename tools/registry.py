@@ -1,53 +1,53 @@
-from __future__ import annotations
-from importlib import import_module
-from typing import Callable, Dict, List
+import importlib
 
-# Tabs + botones (UI)
-TOOL_TABS: Dict[str, List[dict]] = {
-    "Mesa": [
-        {"id": "ons", "label": "ON’s"},
+# -------------------------
+# Tabs del Workbench
+# -------------------------
+TOOL_TABS = {
+    "Mesa / Trading": [
+        {"id": "ons", "label": "ONs — Screener"},
+    ],
+    "Middle Office": [
+        {"id": "cheques", "label": "Cheques y Pagarés"},
+        {"id": "cauciones_mae", "label": "Garantías MAE"},
+        {"id": "cauciones_byma", "label": "Garantías BYMA"},
     ],
     "Backoffice": [
-        {"id": "bo_ppt_manana", "label": "PPT Mañana"},
-        {"id": "bo_moc_tarde", "label": "MOC Tarde"},
-        {"id": "bo_control_sliq", "label": "Control SLIQ"},
-        {"id": "bo_acreditacion_mav", "label": "Acreditación MAV"},
-        {"id": "bo_cauciones", "label": "Cauciones"},
+        {"id": "backoffice", "label": "Backoffice"},
     ],
-    "Comerciales": [
-        {"id": "cheques", "label": "Cheques"},
-        {"id": "cauciones_mae", "label": "Cauciones MAE"},
-        {"id": "cauciones_byma", "label": "Cauciones BYMA"},
+    "Admin": [
         {"id": "alquileres", "label": "Alquileres"},
     ],
 }
 
-# Router: tool_id -> (modulo, funcion)
-ROUTES = {
-    "ons": ("tools.ons", "render"),
-    "cheques": ("tools.cheques", "render"),
-    "cauciones_mae": ("tools.cauciones_mae", "render"),
-    "cauciones-byma": ("tools.cauciones_byma", "render"),
-    "cauciones_byma": ("tools.cauciones_byma", "render"),
-
-    # Backoffice “sub-tools”
-    "bo_ppt_manana": ("tools.backoffice", "render_ppt_manana"),
-    "bo_moc_tarde": ("tools.backoffice", "render_moc_tarde"),
-    "bo_control_sliq": ("tools.backoffice", "render_control_sliq"),
-    "bo_acreditacion_mav": ("tools.backoffice", "render_acreditacion_mav"),
-    "bo_cauciones": ("tools.backoffice", "render_cauciones"),
-
-    # Placeholder por ahora
-    "alquileres": ("tools.alquileres", "render"),
-}
-
-def run_tool(tool_id: str) -> bool:
-    t = TOOL_MAP.get(tool_id)
-    if not t:
+# -------------------------
+# Router
+# -------------------------
+def run_tool(tool_id: str, back_to_home=None) -> bool:
+    """
+    Carga tools.<tool_id> y ejecuta render().
+    - Si render acepta back_to_home => render(back_to_home)
+    - Si no => render()
+    """
+    module_name = f"tools.{tool_id}"
+    try:
+        mod = importlib.import_module(module_name)
+    except Exception:
         return False
 
-    module = t["module"]
-    # ✅ cada tool expone render() sin argumentos
-    module.render()
+    render_fn = getattr(mod, "render", None)
+    if not callable(render_fn):
+        return False
+
+    # ✅ Llamada tolerante a firmas distintas
+    try:
+        if back_to_home is None:
+            render_fn()
+        else:
+            render_fn(lambda: back_to_home(tool_id))  # back button con key única por herramienta
+    except TypeError:
+        # render() sin parámetros
+        render_fn()
+
     return True
 
