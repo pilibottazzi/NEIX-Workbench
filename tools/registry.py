@@ -41,14 +41,13 @@ ROUTES = {
     "alquileres": ("tools.alquileres", "render"),
 }
 
-def run_tool(tool_id: str, back_to_home_cb: Callable[[], None]) -> bool:
-    """Lazy import para que el Workbench no se rompa por un módulo."""
-    key = tool_id.strip().lower()
-    if key not in ROUTES:
+def run_tool(tool_id: str) -> bool:
+    t = TOOL_MAP.get(tool_id)
+    if not t:
         return False
 
-    module_path, fn_name = ROUTES[key]
-    mod = import_module(module_path)
-    fn = getattr(mod, fn_name)
-    fn(back_to_home_cb)
+    module = t["module"]
+    # ✅ cada tool expone render() sin argumentos
+    module.render()
     return True
+
