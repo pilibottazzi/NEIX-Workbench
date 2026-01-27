@@ -44,13 +44,12 @@ def _fmt_pct(x) -> str:
 
 def _is_divide_by_100(tipo_activo: str) -> bool:
     """
-    Regla BYMA de tu script:
+    Regla BYMA:
     - Divide por 100 si es: TÍTULO/OBLIGACIÓN/BONO/LETRA/LECAP
     - NO divide si es CEDEAR o ACCIONES
     """
     t = (tipo_activo or "").upper().strip()
 
-    # Excluir explícitamente
     if ("CEDEAR" in t) or ("ACCIÓN" in t) or ("ACCIONES" in t) or ("ACCION" in t):
         return False
 
@@ -66,8 +65,6 @@ def cargar_aforos_byma() -> pd.DataFrame:
         )
 
     df = pd.read_excel(DATA_PATH)
-
-    # Normalizar columnas a MAYÚSCULAS para que no dependa de cómo venga el Excel
     df.columns = df.columns.astype(str).str.strip().str.upper()
 
     missing = [c for c in REQUIRED_COLS if c not in df.columns]
@@ -76,7 +73,6 @@ def cargar_aforos_byma() -> pd.DataFrame:
             f"Faltan columnas requeridas {missing}. Columnas disponibles: {list(df.columns)}"
         )
 
-    # Normalizaciones
     df["ESPECIE"] = df["ESPECIE"].astype(str).str.upper().str.strip()
     df["AFORO"] = pd.to_numeric(df["AFORO"], errors="coerce")
     df["MARGEN"] = pd.to_numeric(df["MARGEN"], errors="coerce")
@@ -91,13 +87,12 @@ def cargar_aforos_byma() -> pd.DataFrame:
 # Main render
 # =========================
 def render(back_to_home=None):
-    if callable(back_to_home):
-        back_to_home()
+    # IMPORTANTE: NO LLAMAR back_to_home() ACÁ.
+    # El botón "Volver al Workbench" ya lo renderiza app.py
 
     st.markdown("## 🧾 Calculadora de Garantías BYMA")
     st.caption("Calculá garantía admitida por especie según aforos BYMA (Excel pre-cargado en el repo).")
 
-    # Cargar datos
     try:
         df_aforos = cargar_aforos_byma()
     except Exception as e:
@@ -105,7 +100,6 @@ def render(back_to_home=None):
         st.exception(e)
         st.stop()
 
-    # Estado
     if "byma_operaciones" not in st.session_state:
         st.session_state.byma_operaciones = []
 
@@ -188,7 +182,6 @@ def render(back_to_home=None):
 
         df_res = pd.DataFrame(ops)
 
-        # tabla formateada simple (cloud-friendly)
         show = df_res.copy()
         show["Monto"] = show["Monto"].map(_fmt_ars)
         show["Aforo"] = show["Aforo"].map(_fmt_pct)
@@ -213,8 +206,6 @@ def render(back_to_home=None):
     else:
         st.info("Todavía no agregaste operaciones.")
 
-    # Reiniciar (solo esto, como pediste)
     if st.button("Reiniciar cálculo"):
         st.session_state.byma_operaciones = []
         st.rerun()
-
