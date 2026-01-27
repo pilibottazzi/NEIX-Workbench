@@ -7,7 +7,14 @@ import pandas as pd
 # =========================
 # Config
 # =========================
-DATA_PATH = os.path.join("data", "Garantia Byma.xlsx")
+DATA_DIR = "data"
+DATA_FILENAME_CANDIDATES = [
+    "Garantia Byma.xlsx",
+    "Garantia BYMA.xlsx",
+    "GARANTIA BYMA.xlsx",
+    "Garantía Byma.xlsx",
+    "Garantía BYMA.xlsx",
+]
 REQUIRED_COLS = ["ESPECIE", "AFORO", "MARGEN", "MÁXIMO POR ESPECIE", "LISTA"]
 
 
@@ -42,6 +49,59 @@ def _fmt_pct(x) -> str:
         return "-"
 
 
+def _normalize_colname(c: str) -> str:
+    return str(c).strip().upper()
+
+
+def _strip_accents(s: str) -> str:
+    # Normalización simple para matchear con/sin tildes
+    return (
+        s.replace("Ó", "O").replace("Á", "A").replace("É", "E")
+         .replace("Í", "I").replace("Ú", "U")
+         .replace("Ü", "U").replace("Ñ", "N")
+    )
+
+
+def _find_col(df_cols, target: str):
+    target_n = _normalize_colname(target)
+
+    # match exacto
+    for c in df_cols:
+        if _normalize_colname(c) == target_n:
+            return c
+
+    # match “sin tildes”
+    base = _strip_accents(target_n)
+    for c in df_cols:
+        cn = _strip_accents(_normalize_colname(c))
+        if cn == base:
+            return c
+
+    return None
+
+
+def _resolve_data_path() -> str:
+    """
+    En Cloud (Linux) el nombre del archivo es case-sensitive.
+    Esto busca el Excel real dentro de /data con varios nombres comunes.
+    """
+    # 1) candidatos directos
+    for name in DATA_FILENAME_CANDIDATES:
+        p = os.path.join(DATA_DIR, name)
+        if os.path.exists(p):
+            return p
+
+    # 2) fallback: buscar por contains "garantia" y "byma" ignorando mayúsc/minúsc
+    if os.path.isdir(DATA_DIR):
+        for fn in os.listdir(DATA_DIR):
+            low = fn.lower()
+            if "garantia" in low and "byma" in low and low.endswith(".xlsx"):
+                return os.path.join(DATA_DIR, fn)
+
+    # si no encuentra, devolvemos el “default” (para que el error sea claro)
+    return os.path.join(DATA_DIR, DATA_FILENAME_CANDIDATES[0])
+
+
 def _is_divide_by_100(tipo_activo: str) -> bool:
     """
     Regla BYMA:
@@ -59,19 +119,44 @@ def _is_divide_by_100(tipo_activo: str) -> bool:
 
 @st.cache_data(show_spinner=False)
 def cargar_aforos_byma() -> pd.DataFrame:
-    if not os.path.exists(DATA_PATH):
+    data_path = _resolve_data_path()
+
+    if not os.path.exists(data_path):
         raise FileNotFoundError(
-            f"No existe el archivo '{DATA_PATH}'. Subilo al repo dentro de la carpeta 'data/'."
+            f"No existe el archivo '{data_path}'.\n"
+            f"En Streamlit Cloud el nombre es case-sensitive.\n"
+            f"Revisá que el Excel esté en '{DATA_DIR}/' y se llame como corresponde."
         )
 
-    df = pd.read_excel(DATA_PATH)
-    df.columns = df.columns.astype(str).str.strip().str.upper()
+    df = pd.read_excel(data_path)
+    df.columns = [str(c).strip() for c in df.columns]
 
-    missing = [c for c in REQUIRED_COLS if c not in df.columns]
+    # detectar columnas robusto (con/sin tildes)
+    col_especie = _find_col(df.columns, "ESPECIE")
+    col_aforo = _find_col(df.columns, "AFORO")
+    col_margen = _find_col(df.columns, "MARGEN")
+    col_max = _find_col(df.columns, "MÁXIMO POR ESPECIE")
+    col_lista = _find_col(df.columns, "LISTA")
+
+    missing = []
+    if col_especie is None: missing.append("ESPECIE")
+    if col_aforo is None: missing.append("AFORO")
+    if col_margen is None: missing.append("MARGEN")
+    if col_max is None: missing.append("MÁXIMO POR ESPECIE")
+    if col_lista is None: missing.append("LISTA")
+
     if missing:
         raise ValueError(
             f"Faltan columnas requeridas {missing}. Columnas disponibles: {list(df.columns)}"
         )
+
+    df = df.rename(columns={
+        col_especie: "ESPECIE",
+        col_aforo: "AFORO",
+        col_margen: "MARGEN",
+        col_max: "MÁXIMO POR ESPECIE",
+        col_lista: "LISTA",
+    })
 
     df["ESPECIE"] = df["ESPECIE"].astype(str).str.upper().str.strip()
     df["AFORO"] = pd.to_numeric(df["AFORO"], errors="coerce")
@@ -87,8 +172,9 @@ def cargar_aforos_byma() -> pd.DataFrame:
 # Main render
 # =========================
 def render(back_to_home=None):
-    # IMPORTANTE: NO LLAMAR back_to_home() ACÁ.
-    # El botón "Volver al Workbench" ya lo renderiza app.py
+    # En tu app nueva: el botón lo renderiza la tool
+    if callable(back_to_home):
+        back_to_home()
 
     st.markdown("## 🧾 Calculadora de Garantías BYMA")
     st.caption("Calculá garantía admitida por especie según aforos BYMA (Excel pre-cargado en el repo).")
@@ -106,12 +192,13 @@ def render(back_to_home=None):
     metodo = st.radio(
         "¿Cómo querés ingresar el valor?",
         ["Por monto", "Por precio y nominales"],
-        horizontal=True
+        horizontal=True,
+        key="byma_metodo"
     )
 
     with st.form("form_byma_operacion", clear_on_submit=True):
-        especies = [""] + sorted(df_aforos["ESPECIE"].unique().tolist())
-        especie = st.selectbox("Seleccioná la especie", options=especies, index=0)
+        especies = [""] + sorted(df_aforos["ESPECIE"].dropna().unique().tolist())
+        especie = st.selectbox("Seleccioná la especie", options=especies, index=0, key="byma_especie")
 
         monto = None
         tipo_activo = ""
@@ -124,12 +211,12 @@ def render(back_to_home=None):
                 dividir_por_100 = _is_divide_by_100(tipo_activo)
 
         if metodo == "Por monto":
-            monto_txt = st.text_input("Monto (AR$)", placeholder="Ej: 1.000.000")
+            monto_txt = st.text_input("Monto (AR$)", placeholder="Ej: 1.000.000", key="byma_monto")
             monto = _to_float_amount(monto_txt)
         else:
             c1, c2 = st.columns(2)
-            precio_txt = c1.text_input("Precio", placeholder="Ej: 68,75")
-            nominales_txt = c2.text_input("Nominales", placeholder="Ej: 100.000")
+            precio_txt = c1.text_input("Precio", placeholder="Ej: 68,75", key="byma_precio")
+            nominales_txt = c2.text_input("Nominales", placeholder="Ej: 100.000", key="byma_nominales")
 
             precio = _to_float_amount(precio_txt)
             nominales = _to_float_amount(nominales_txt)
@@ -161,7 +248,7 @@ def render(back_to_home=None):
                     aforo = float(datos["AFORO"])
                     margen = float(datos["MARGEN"]) if pd.notna(datos["MARGEN"]) else None
                     maximo = float(datos["MÁXIMO POR ESPECIE"]) if pd.notna(datos["MÁXIMO POR ESPECIE"]) else None
-                    garantia = monto * aforo
+                    garantia = float(monto) * aforo
 
                     st.session_state.byma_operaciones.append({
                         "Especie": especie,
@@ -179,7 +266,6 @@ def render(back_to_home=None):
     ops = st.session_state.byma_operaciones
     if ops:
         st.subheader("Resultado del cálculo")
-
         df_res = pd.DataFrame(ops)
 
         show = df_res.copy()
@@ -201,11 +287,13 @@ def render(back_to_home=None):
             "Descargar operaciones (CSV)",
             csv,
             file_name="garantias_byma_operaciones.csv",
-            mime="text/csv"
+            mime="text/csv",
+            key="byma_download"
         )
     else:
         st.info("Todavía no agregaste operaciones.")
 
-    if st.button("Reiniciar cálculo"):
+    if st.button("Reiniciar cálculo", key="byma_reset"):
         st.session_state.byma_operaciones = []
         st.rerun()
+
