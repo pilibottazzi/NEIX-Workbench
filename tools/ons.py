@@ -319,7 +319,7 @@ def render(back_to_home=None):
             <div class="head">
               <div>
                 <div class="title">ONs · Rendimientos</div>
-                <div class="sub">Tabs por ley (ARG / NYC). Precios desde IOL por <b>root_key</b>. Solo ONs con precio.</div>
+                <div class="sub">Tabs por ley (ARG / NYC)</div>
               </div>
             </div>
             """,
