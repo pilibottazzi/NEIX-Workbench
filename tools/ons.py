@@ -1,244 +1,223 @@
 import datetime as dt
-from scipy import optimize
-import pandas as pd
 import numpy as np
+import pandas as pd
+from scipy import optimize
 
-def xnpv(rate, cashflows):
-    chron_order = sorted(cashflows, key=lambda x: x[0])
-    t0 = chron_order[0][0]
-    # Evitar (1+rate)<=0 (explota con tasas muy negativas)
+
+# ======================================================
+# 1) Funciones financieras (las tuyas, prolijas)
+# ======================================================
+def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
+    chron = sorted(cashflows, key=lambda x: x[0])
+    t0 = chron[0][0]
+    # Evitar problemas cuando (1+rate)<=0
     if rate <= -0.999999:
         return np.nan
-    return sum(cf / (1 + rate) ** ((t - t0).days / 365.0) for (t, cf) in chron_order)
+    return sum(cf / (1 + rate) ** ((t - t0).days / 365.0) for (t, cf) in chron)
 
-def xirr(cashflows, guess=0.1):
-    # Newton puede fallar: dejamos que el caller capture excepción
-    return optimize.newton(lambda r: xnpv(r, cashflows), guess) * 100
 
-def tir(cashflow: pd.DataFrame, precio: float, plazo: int = 1) -> float:
-    """
-    cashflow: DF con [fecha, flujo]
-    precio: precio en unidad monetaria (ej: 0.85 si es 85% en dólares)
-    plazo: días que corrés la fecha de compra (CI=0, 24hs=1, 48hs=2)
-    """
-    hoy = dt.datetime.today()
-    t_compra = hoy + dt.timedelta(days=plazo)
+def xirr(cashflows: list[tuple[dt.datetime, float]], guess: float = 0.10) -> float:
+    # Newton con multi-guess (más robusto)
+    def f(r): 
+        return xnpv(r, cashflows)
 
-    flujo_total = [(t_compra, -float(precio))]
-
-    # Asegurar tipos
-    cf = cashflow.copy()
-    cf.iloc[:, 0] = pd.to_datetime(cf.iloc[:, 0], errors="coerce", dayfirst=True)
-    cf.iloc[:, 1] = pd.to_numeric(cf.iloc[:, 1], errors="coerce")
-
-    for i in range(len(cf)):
-        fecha = cf.iloc[i, 0]
-        monto = cf.iloc[i, 1]
-        if pd.isna(fecha) or pd.isna(monto):
+    for g in [guess, 0.05, 0.20, 0.50, -0.10]:
+        try:
+            r = optimize.newton(f, g, maxiter=200)
+            if np.isfinite(r):
+                return r * 100
+        except Exception:
             continue
-        fecha_dt = fecha.to_pydatetime()
-        if fecha_dt > t_compra:
-            flujo_total.append((fecha_dt, float(monto)))
+    return np.nan
 
-    if len(flujo_total) < 2:
-        return np.nan
 
-    return round(xirr(flujo_total, guess=0.1), 2)
-
-def duration(cashflow: pd.DataFrame, precio: float, plazo: int = 2) -> float:
-    r = tir(cashflow, precio, plazo=plazo)
-    if pd.isna(r):
-        return np.nan
-
+def tir(cashflow_df: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
+    """
+    cashflow_df: columnas ['Fecha','Cupon'] (Fecha datetime, Cupon float)
+    precio: precio sucio/limpio según estés usando, en misma unidad que cupones
+    plazo_dias: 0=CI, 1=24hs, 2=48hs (como venías usando)
+    """
     hoy = dt.datetime.today()
-    t_compra = hoy + dt.timedelta(days=plazo)
+    settlement = hoy + dt.timedelta(days=plazo_dias)
 
-    denom = []
-    numer = []
+    flujo_total = [(settlement, -float(precio))]
 
-    cf = cashflow.copy()
-    cf.iloc[:, 0] = pd.to_datetime(cf.iloc[:, 0], errors="coerce", dayfirst=True)
-    cf.iloc[:, 1] = pd.to_numeric(cf.iloc[:, 1], errors="coerce")
-
-    for i in range(len(cf)):
-        fecha = cf.iloc[i, 0]
-        cupon = cf.iloc[i, 1]
+    for _, r in cashflow_df.iterrows():
+        fecha = pd.to_datetime(r["Fecha"], errors="coerce")
+        cupon = r["Cupon"]
         if pd.isna(fecha) or pd.isna(cupon):
             continue
-        fecha_dt = fecha.to_pydatetime()
-        if fecha_dt > t_compra:
-            tiempo = (fecha_dt - hoy).days / 365.0
-            pv = float(cupon) / (1 + r / 100) ** tiempo
-            denom.append(pv)
-            numer.append(tiempo * pv)
+        fecha = fecha.to_pydatetime()
+        if fecha > settlement:
+            flujo_total.append((fecha, float(cupon)))
 
-    if sum(denom) == 0:
+    out = xirr(flujo_total, guess=0.10)
+    return np.round(out, 2) if np.isfinite(out) else np.nan
+
+
+def duration(cashflow_df: pd.DataFrame, precio: float, plazo_dias: int = 2) -> float:
+    r = tir(cashflow_df, precio, plazo_dias=plazo_dias)
+    if not np.isfinite(r):
         return np.nan
 
-    return round(sum(numer) / sum(denom), 2)
+    hoy = dt.datetime.today()
+    settlement = hoy + dt.timedelta(days=plazo_dias)
 
-def modified_duration(cashflow: pd.DataFrame, precio: float, plazo: int = 2) -> float:
-    dur = duration(cashflow, precio, plazo=plazo)
-    ytm = tir(cashflow, precio, plazo=plazo)
-    if pd.isna(dur) or pd.isna(ytm):
-        return np.nan
-    return round(dur / (1 + ytm / 100), 2)
+    denom = 0.0
+    numer = 0.0
 
-
-# ======================================================
-# 2) Utilidades de mercado + lectura de Excel de CFs
-# ======================================================
-def parse_ar_number(series: pd.Series) -> pd.Series:
-    """
-    Convierte números estilo AR: '1.234.567,89' -> 1234567.89
-    """
-    s = series.astype(str)
-    s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
-    s = s.str.replace("nan", "", regex=False)
-    return pd.to_numeric(s, errors="coerce")
-
-def get_precios_on_iol() -> pd.DataFrame:
-    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"
-    on = pd.read_html(url)[0]
-
-    # Normalizar columnas esperadas
-    # (si IOL cambia nombres, este bloque es el primero a tocar)
-    precios = pd.DataFrame({
-        "Ticker": on["Símbolo"],
-        "UltimoOperado": parse_ar_number(on["Último Operado"]),
-    })
-
-    if "Monto Operado" in on.columns:
-        precios["MontoOperado"] = parse_ar_number(on["Monto Operado"])
-    else:
-        precios["MontoOperado"] = 0.0
-
-    precios = precios.dropna(subset=["Ticker"])
-    precios["Ticker"] = precios["Ticker"].astype(str).str.strip()
-    precios = precios.set_index("Ticker")
-
-    return precios[["UltimoOperado", "MontoOperado"]]
-
-def load_cashflows_excel(path_excel: str, sheet_data: str = "Data_ON"):
-    """
-    Lee Data_ON y todas las hojas de cashflows en una sola pasada.
-    Devuelve:
-      - data_on (DF)
-      - cashflows dict[ticker_pesos] = DF(cashflow)
-    """
-    xls = pd.ExcelFile(path_excel)
-
-    data_on = pd.read_excel(xls, sheet_name=sheet_data)
-    data_on.columns = data_on.columns.astype(str).str.strip()
-
-    # Normalizar columnas tickers
-    for col in ["ticker_dolares", "ticker_pesos"]:
-        if col in data_on.columns:
-            data_on[col] = data_on[col].astype(str).str.strip()
-        else:
-            data_on[col] = ""
-
-    # Cargar cashflows por cada ticker_pesos (si existe la hoja)
-    cashflows = {}
-    tickers_pesos = (
-        data_on["ticker_pesos"]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .unique()
-        .tolist()
-    )
-
-    for tkr in tickers_pesos:
-        if tkr in xls.sheet_names:
-            cf = pd.read_excel(xls, sheet_name=tkr)
-            if cf.shape[1] >= 2:
-                cashflows[tkr] = cf.iloc[:, :2].copy()
-        # si no está la hoja, lo dejamos fuera y luego quedará NaN
-
-    return data_on, cashflows
-
-
-# ======================================================
-# 3) Pipeline principal
-# ======================================================
-def build_tabla_ons(
-    excel_cashflows: str = "cashflows_ON.xlsx",
-    sheet_data: str = "Data_ON",
-    plazo_tir: int = 2,
-    plazo_md: int = 2,
-) -> pd.DataFrame:
-    # 1) precios mercado
-    precios = get_precios_on_iol()
-
-    # 2) data base + cashflows
-    data_on, cashflows = load_cashflows_excel(excel_cashflows, sheet_data=sheet_data)
-
-    # 3) Intersección de tickers dólar con los que están en IOL
-    comunes = sorted(list(set(precios.index) & set(data_on["ticker_dolares"].dropna().astype(str))))
-    data_on = data_on.loc[data_on["ticker_dolares"].isin(comunes)].copy()
-
-    # 4) Precio USD (IOL suele venir como % del VN => /100)
-    data_on["Precio_dolares"] = (precios.loc[comunes, "UltimoOperado"].values / 100.0)
-    data_on["Volumen"] = precios.loc[comunes, "MontoOperado"].values
-
-    # 5) Precio pesos (si existe el ticker y está en precios)
-    data_on["Precio_pesos"] = np.nan
-    for idx, row in data_on.iterrows():
-        tkr_p = str(row.get("ticker_pesos", "")).strip()
-        if tkr_p and tkr_p in precios.index:
-            data_on.at[idx, "Precio_pesos"] = precios.at[tkr_p, "UltimoOperado"]
-
-    # Fix puntual tuyo
-    if "ticker_pesos" in data_on.columns:
-        data_on.loc[data_on["ticker_pesos"] == "CAC2O", "Precio_pesos"] = 8
-
-    # 6) Limpieza de amortización
-    if "Amortizacion" in data_on.columns:
-        data_on["Amortizacion"] = data_on["Amortizacion"].fillna("No Bullet")
-
-    # 7) Set index a ticker_pesos (como tu versión)
-    if "ticker_pesos" in data_on.columns:
-        data_on = data_on.set_index("ticker_pesos", drop=True)
-
-    # 8) Calcular métricas por ticker_pesos usando Precio_dolares
-    resultados = []
-    for tkr_pesos in data_on.index:
-        precio = data_on.loc[tkr_pesos, "Precio_dolares"]
-
-        cf = cashflows.get(tkr_pesos)
-        if cf is None or pd.isna(precio) or precio == 0:
-            resultados.append((tkr_pesos, np.nan, np.nan, np.nan))
+    for _, row in cashflow_df.iterrows():
+        fecha = pd.to_datetime(row["Fecha"], errors="coerce")
+        cupon = row["Cupon"]
+        if pd.isna(fecha) or pd.isna(cupon):
+            continue
+        fecha = fecha.to_pydatetime()
+        if fecha <= settlement:
             continue
 
-        try:
-            ytm = tir(cf, precio, plazo=plazo_tir)
-            dur = duration(cf, precio, plazo=plazo_tir)
-            md  = modified_duration(cf, precio, plazo=plazo_md)
-            resultados.append((tkr_pesos, md, dur, ytm))
-        except Exception as e:
-            print(f"[WARN] {tkr_pesos}: {e}")
-            resultados.append((tkr_pesos, np.nan, np.nan, np.nan))
+        t = (fecha - hoy).days / 365.0
+        pv = float(cupon) / (1 + r / 100) ** t
+        denom += pv
+        numer += t * pv
 
-    tir_df = pd.DataFrame(resultados, columns=["ticker_pesos", "MD", "Duration", "TIR"]).set_index("ticker_pesos")
+    if denom == 0:
+        return np.nan
+    return np.round(numer / denom, 2)
 
-    out = pd.concat([data_on, tir_df], axis=1)
+
+def modified_duration(cashflow_df: pd.DataFrame, precio: float, plazo_dias: int = 2) -> float:
+    dur = duration(cashflow_df, precio, plazo_dias=plazo_dias)
+    r = tir(cashflow_df, precio, plazo_dias=plazo_dias)
+    if not np.isfinite(dur) or not np.isfinite(r):
+        return np.nan
+    return np.round(dur / (1 + r / 100), 2)
+
+
+# ======================================================
+# 2) Leer cashflows "largos" desde Excel
+# ======================================================
+def load_cashflows_long(path_xlsx: str, sheet_name: str | None = None) -> pd.DataFrame:
+    df = pd.read_excel(path_xlsx, sheet_name=sheet_name)
+    df.columns = df.columns.astype(str).str.strip()
+
+    required = {"ticker_original", "root_key", "Fecha", "Cupon"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Faltan columnas en cashflows: {sorted(missing)}")
+
+    df["ticker_original"] = df["ticker_original"].astype(str).str.strip()
+    df["root_key"] = df["root_key"].astype(str).str.strip()
+    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
+    df["Cupon"] = pd.to_numeric(df["Cupon"], errors="coerce")
+
+    df = df.dropna(subset=["ticker_original", "Fecha", "Cupon"])
+    df = df.sort_values(["ticker_original", "Fecha"]).reset_index(drop=True)
+    return df
+
+
+def build_cashflow_dict(df_cf: pd.DataFrame, key_col: str = "ticker_original") -> dict[str, pd.DataFrame]:
+    """
+    Devuelve dict: {ticker: df[['Fecha','Cupon']]}
+    """
+    out = {}
+    for k, g in df_cf.groupby(key_col, sort=False):
+        out[str(k)] = g[["Fecha", "Cupon"]].copy().sort_values("Fecha")
     return out
 
 
-def main():
-    df = build_tabla_ons(
-        excel_cashflows="cashflows_ON.xlsx",
-        sheet_data="Data_ON",
-        plazo_tir=2,   # 48hs
-        plazo_md=2,
-    )
-    print(df)
-    # opcional: guardar salida
-    df.to_excel("ONs_tir_duration.xlsx")
+# ======================================================
+# 3) Precios desde IOL (opcional)
+# ======================================================
+def fetch_iol_on_prices() -> pd.DataFrame:
+    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"
+    on = pd.read_html(url)[0]
+
+    # Normalización de números AR
+    def to_float_ar(s):
+        if pd.isna(s):
+            return np.nan
+        s = str(s).replace(".", "").replace(",", ".")
+        try:
+            return float(s)
+        except Exception:
+            return np.nan
+
+    df = pd.DataFrame({
+        "Ticker": on["Símbolo"].astype(str).str.strip(),
+        "UltimoOperado": on["Último Operado"].apply(to_float_ar),
+        "MontoOperado": on.get("Monto Operado", pd.Series([0]*len(on))).apply(to_float_ar).fillna(0),
+    })
+
+    df = df.dropna(subset=["UltimoOperado"])
+    df = df.set_index("Ticker")
+    return df
+
+
+# ======================================================
+# 4) Cálculo final para una lista de tickers
+# ======================================================
+def calcular_metricas_on(
+    cashflows_long_path: str,
+    tickers: list[str] | None = None,
+    sheet_name: str | None = None,
+    usar_iol: bool = True,
+    precio_col: str = "Precio_dolares",
+    plazo_tir: int = 2,
+) -> pd.DataFrame:
+
+    df_cf = load_cashflows_long(cashflows_long_path, sheet_name=sheet_name)
+    cashflows = build_cashflow_dict(df_cf, key_col="ticker_original")
+
+    # Universo de tickers
+    all_tickers = list(cashflows.keys())
+    if tickers is None:
+        tickers = all_tickers
+    else:
+        tickers = [t for t in tickers if t in cashflows]
+
+    # Traer precios
+    if usar_iol:
+        precios = fetch_iol_on_prices()
+        # tu lógica: precio en dólares = ultimo/100
+        # (si tu precio viene en % par)
+        df_prices = pd.DataFrame({
+            "Ticker": tickers,
+            "Precio": [ (precios.loc[t, "UltimoOperado"] / 100) if t in precios.index else np.nan for t in tickers ],
+            "Volumen": [ precios.loc[t, "MontoOperado"] if t in precios.index else np.nan for t in tickers ],
+        }).set_index("Ticker")
+    else:
+        # Si no usás IOL, acá podrías leer un Excel de precios.
+        df_prices = pd.DataFrame(index=tickers, data={"Precio": np.nan, "Volumen": np.nan})
+
+    # Calcular métricas
+    rows = []
+    for t in tickers:
+        cf = cashflows[t]
+        precio = df_prices.loc[t, "Precio"]
+        if not np.isfinite(precio) or precio <= 0:
+            rows.append({"Ticker": t, "Precio": precio, "TIR": np.nan, "Duration": np.nan, "MD": np.nan})
+            continue
+
+        tir_v = tir(cf, precio, plazo_dias=plazo_tir)
+        dur_v = duration(cf, precio, plazo_dias=plazo_tir)
+        md_v  = modified_duration(cf, precio, plazo_dias=plazo_tir)
+
+        rows.append({
+            "Ticker": t,
+            "Precio": precio,
+            "TIR": tir_v,
+            "Duration": dur_v,
+            "MD": md_v,
+            "Volumen": df_prices.loc[t, "Volumen"],
+        })
+
+    out = pd.DataFrame(rows).set_index("Ticker").sort_index()
+    return out
 
 
 if __name__ == "__main__":
-    main()
-
-
+    # Ejemplo:
+    path_cf = "cashflows_ON.xlsx"  # <-- tu archivo long
+    df_out = calcular_metricas_on(path_cf, usar_iol=True, plazo_tir=2)
+    print(df_out.head(20))
+    df_out.to_excel("ON_metricas.xlsx")
