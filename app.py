@@ -11,6 +11,7 @@ from tools import alquileres
 from tools import moc_tarde
 from tools import bo_ppt_manana
 from tools import bo_acreditacion_mav
+from tools import vencimientos
 
 
 # =========================================================
@@ -93,6 +94,8 @@ if tool:
             cauciones_byma.render(back_to_home)
         elif tool == "alquileres":
             alquileres.render(back_to_home)
+        elif tool == "vencimientos":
+            alquileres.render(back_to_home)
             
         else:
             st.error("Herramienta no encontrada.")
@@ -150,6 +153,7 @@ with tabs[2]:
           <a class="tool-btn" href="?tool=cauciones_mae" target="_self">Cauciones MAE</a>
           <a class="tool-btn" href="?tool=cauciones_byma" target="_self">Cauciones BYMA</a>
           <a class="tool-btn" href="?tool=alquileres" target="_self">Alquileres</a>
+          <a class="tool-btn" href="?tool=vencimientos" target="_self">Tenencias</a>
         </div>
         """,
         unsafe_allow_html=True
