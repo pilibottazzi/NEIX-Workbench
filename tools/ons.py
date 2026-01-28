@@ -116,18 +116,12 @@ def normalize_law(x: str) -> str:
     s = s.replace(".", "").replace("-", " ").replace("_", " ")
     s = " ".join(s.split())
 
-    # Local / Argentina
     if s in {"ARG", "AR", "LOCAL", "LEY LOCAL", "ARGENTINA"}:
         return "ARG"
-
-    # New York
     if s in {"NYC", "NY", "NEW YORK", "NEWYORK", "LEY NY", "LEY NEW YORK", "N Y", "N Y C"}:
         return "NY"
-
-    # si viene vacío
     if s in {"", "NA", "NONE", "NAN"}:
         return "NA"
-
     return s
 
 
@@ -272,8 +266,13 @@ def _ui_css():
       .sub{ color:rgba(17,24,39,.60); font-size:13px; margin-top:2px; }
       .muted{ color:rgba(17,24,39,.55); font-size:12px; }
       div[data-baseweb="tag"]{ border-radius:999px !important; }
-      /* un poco más compacto */
-      .stButton > button { border-radius: 10px; padding: 0.55rem 0.9rem; }
+
+      /* Compactar */
+      .block-container { padding-top: 1.2rem; }
+      label { margin-bottom: 0.25rem !important; }
+
+      /* Botones / selects */
+      .stButton > button { border-radius: 12px; padding: 0.60rem 1.0rem; }
       .stSelectbox div[data-baseweb="select"]{ border-radius: 12px; }
     </style>
     """,
@@ -332,7 +331,13 @@ def render(back_to_home=None):
     h1, h2 = st.columns([0.78, 0.22])
     with h1:
         st.markdown('<div class="title">NEIX · ONs</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub">Tabs por ley (ARG / NY).</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="sub">Tabs por ley (ARG / NY).</div>',
+            unsafe_allow_html=True,
+        )
+    with h2:
+        if back_to_home is not None:
+            st.button("← Volver", on_click=back_to_home)
 
     st.divider()
 
@@ -349,15 +354,16 @@ def render(back_to_home=None):
     df_cf["law_norm"] = df_cf["law"].apply(normalize_law)
 
     # --------
-    # Filtros: Plazo + Actualizar + Calcular (alineados)
+    # Filtros: Plazo + Actualizar + Calcular + Fuente
     # --------
-    f1, f2, f3, f4 = st.columns([0.20, 0.18, 0.18, 0.44])
+    f1, f2, f3, f4 = st.columns([0.22, 0.18, 0.18, 0.42], vertical_alignment="bottom")
+
     with f1:
         plazo = st.selectbox("Plazo", [0, 1], index=0, format_func=lambda x: f"T{x}")
     with f2:
-        traer_precios = st.button("Actualizar IOL")
+        traer_precios = st.button("Actualizar PRECIOS", use_container_width=True)
     with f3:
-        calcular_global = st.button("Calcular", type="primary")
+        calcular_global = st.button("Calcular", type="primary", use_container_width=True)
     with f4:
         st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
 
@@ -388,9 +394,9 @@ def render(back_to_home=None):
                 continue
 
             tickers = sorted(df_law["species"].unique().tolist())
+
             sel = st.multiselect("Ticker", tickers, default=tickers, key=f"tick_{law_norm}")
 
-            # ✅ usa botón global “Calcular” (arriba) para los tabs
             if calcular_global:
                 df_use = df_law[df_law["species"].isin(sel)].copy()
                 out = _compute_table(df_use, prices, plazo)
@@ -426,10 +432,17 @@ def render(back_to_home=None):
                 show = out.copy()
                 show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
 
+                # ✅ más alto: se ven muchas más filas (aprox el doble)
+                base = 420
+                row_h = 28
+                max_h = 900
+                height_df = int(min(max_h, base + row_h * len(show)))
+
                 st.dataframe(
                     show[cols_pick],
                     hide_index=True,
                     use_container_width=True,
+                    height=height_df,
                     column_config={
                         "Ticker": st.column_config.TextColumn("Ticker"),
                         "USD": st.column_config.TextColumn("USD (D/C)"),
@@ -441,4 +454,3 @@ def render(back_to_home=None):
                         "Volumen": st.column_config.NumberColumn("Volumen", format="%.0f"),
                     },
                 )
-
