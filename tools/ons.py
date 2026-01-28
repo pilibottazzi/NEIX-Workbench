@@ -335,9 +335,6 @@ def render(back_to_home=None):
             '<div class="sub">Tabs por ley (ARG / NY).</div>',
             unsafe_allow_html=True,
         )
-    with h2:
-        if back_to_home is not None:
-            st.button("← Volver", on_click=back_to_home)
 
     st.divider()
 
