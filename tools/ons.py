@@ -8,7 +8,9 @@ import pandas as pd
 import streamlit as st
 from scipy import optimize
 
-CASHFLOW_PATH = os.path.join("data", "cashflows_ON.xlsx")
+# ✅ OJO: apuntá al archivo que realmente subiste al repo
+# En tu captura el nombre era cashflows_ON.xlsx / cashflows_ON_full.xlsx, elegí el correcto.
+CASHFLOW_PATH = os.path.join("data", "cashflows_ON.xlsx")  # <-- ajustalo si tu archivo se llama distinto
 
 
 # ======================================================
@@ -36,7 +38,7 @@ def xirr(cashflows: list[tuple[dt.datetime, float]], guess: float = 0.10) -> flo
 
 
 # ======================================================
-# 2) Cashflows (nuevo formato con LAW)
+# 2) Cashflows (FORMATO NUEVO: species + FlujoTotal + law)
 # ======================================================
 def _settlement(plazo_dias: int) -> dt.datetime:
     return dt.datetime.today() + dt.timedelta(days=int(plazo_dias))
@@ -53,8 +55,12 @@ def _future_cashflows(df: pd.DataFrame, settlement: dt.datetime) -> pd.DataFrame
 
 def load_cashflows_from_repo(path: str) -> pd.DataFrame:
     """
-    Espera el Excel "nuevo" que generaste (como la captura):
-    species | root_key | Fecha | FlujoTotal (o Cupon) | law (ej: ARG / NYC) | ...
+    Lee el excel NUEVO (como tu captura):
+      - species
+      - root_key
+      - Fecha
+      - FlujoTotal (o Cupon si viniera)
+      - law (ARG / NYC) opcional
     """
     if not os.path.exists(path):
         raise FileNotFoundError(
@@ -64,24 +70,20 @@ def load_cashflows_from_repo(path: str) -> pd.DataFrame:
     df = pd.read_excel(path)
     df.columns = df.columns.astype(str).str.strip()
 
-    # columnas mínimas
-    if "species" not in df.columns:
-        raise ValueError("Falta columna 'species' en el cashflow.")
-    if "root_key" not in df.columns:
-        raise ValueError("Falta columna 'root_key' en el cashflow.")
-    if "Fecha" not in df.columns:
-        raise ValueError("Falta columna 'Fecha' en el cashflow.")
+    req_min = {"species", "root_key", "Fecha"}
+    missing = req_min - set(df.columns)
+    if missing:
+        raise ValueError(f"Faltan columnas en {path}: {sorted(missing)} (mínimas: {sorted(req_min)})")
 
-    # flujo total: puede venir como FlujoTotal (tu export) o como Cupon (viejo)
+    # flujo: FlujoTotal preferido, si no Cupon
     if "FlujoTotal" in df.columns:
         flujo_col = "FlujoTotal"
     elif "Cupon" in df.columns:
         flujo_col = "Cupon"
     else:
-        raise ValueError("Falta columna 'FlujoTotal' o 'Cupon' en el cashflow.")
+        raise ValueError("Falta columna 'FlujoTotal' (recomendado) o 'Cupon' en el cashflow.")
 
     if "law" not in df.columns:
-        # si no está, igual funciona pero no habrá tabs por ley
         df["law"] = "NA"
 
     df["species"] = df["species"].astype(str).str.strip().str.upper()
@@ -96,9 +98,7 @@ def load_cashflows_from_repo(path: str) -> pd.DataFrame:
 
 
 def build_cashflow_dict(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """
-    Cashflows por especie (species) para calcular TIR/Duration.
-    """
+    """Cashflow por species (ticker)."""
     out: dict[str, pd.DataFrame] = {}
     for k, g in df.groupby("species", sort=False):
         out[str(k)] = g[["Fecha", "Cupon"]].copy().sort_values("Fecha")
@@ -106,12 +106,7 @@ def build_cashflow_dict(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
 
 def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Meta por species:
-    - root_key más frecuente
-    - law más frecuente
-    - vencimiento (max Fecha)
-    """
+    """Meta por species: root_key/law más frecuentes y vencimiento."""
     meta = (
         df.groupby("species")
         .agg(
@@ -141,7 +136,11 @@ def to_float_iol(x) -> float:
             s = s.replace(",", "")
     elif "," in s:
         s = s.replace(".", "").replace(",", ".")
-    return float(s)
+
+    try:
+        return float(s)
+    except Exception:
+        return np.nan
 
 
 def fetch_iol_on_prices() -> pd.DataFrame:
@@ -230,7 +229,7 @@ def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0
 
 
 # ======================================================
-# 5) UI (tabs por ley + selector columnas)
+# 5) UI (tabs por ley + selector columnas + filtro TIR)
 # ======================================================
 def _ui_css():
     st.markdown(
@@ -267,10 +266,6 @@ def _law_label(law: str) -> str:
 
 
 def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.DataFrame:
-    """
-    df_cf: cashflows completo (con species/root_key/law/Fecha/Cupon)
-    prices: tabla de IOL index=TICKER
-    """
     cashflows = build_cashflow_dict(df_cf)
     meta = build_species_meta(df_cf).set_index("species")
 
@@ -290,13 +285,15 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
         if cf is None or cf.empty:
             continue
 
+        t = tir(cf, px, plazo_dias=plazo)
+
         rows.append(
             {
                 "Ticker": species,
                 "Ley": law,
                 "USD": src,
                 "Precio USD": px,
-                "TIR (%)": tir(cf, px, plazo_dias=plazo),
+                "TIR (%)": t,
                 "MD": modified_duration(cf, px, plazo_dias=plazo),
                 "Duration": duration(cf, px, plazo_dias=plazo),
                 "Vencimiento": venc,
@@ -324,7 +321,7 @@ def render(back_to_home=None):
             <div class="head">
               <div>
                 <div class="title">ONs · Rendimientos</div>
-                <div class="sub">Tabs por ley (ARG / NYC). Precios desde IOL por <b>root_key</b>: rootD (MEP) o rootC (Cable). Solo se muestran ONs con precio.</div>
+                <div class="sub">Tabs por ley (ARG / NYC). Precios desde IOL por <b>root_key</b>. Solo ONs con precio.</div>
               </div>
             </div>
             """,
@@ -345,12 +342,15 @@ def render(back_to_home=None):
         return
 
     # filtros globales
-    c1, c2, c3 = st.columns([0.22, 0.22, 0.56])
+    c1, c2, c3, c4 = st.columns([0.18, 0.18, 0.24, 0.40])
     with c1:
         plazo = st.selectbox("Plazo", [0, 1], index=0, format_func=lambda x: f"T{x}")
     with c2:
         traer_precios = st.button("Actualizar IOL")
     with c3:
+        # ✅ filtro TIR fijo -10 a 15 (lo pediste así)
+        st.text_input("Filtro TIR (%)", value="-10 a 15", disabled=True)
+    with c4:
         st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
 
     # cache precios
@@ -363,7 +363,6 @@ def render(back_to_home=None):
                 st.session_state["ons_iol_prices"] = None
 
     prices = st.session_state.get("ons_iol_prices")
-
     if prices is None:
         st.warning("No hay precios cargados.")
         st.markdown("</div></div>", unsafe_allow_html=True)
@@ -371,7 +370,6 @@ def render(back_to_home=None):
 
     # tabs por ley
     laws_present = sorted(df_cf["law"].dropna().astype(str).str.upper().unique().tolist())
-    # orden preferido
     ordered = []
     for x in ["ARG", "NYC"]:
         if x in laws_present:
@@ -379,66 +377,72 @@ def render(back_to_home=None):
     for x in laws_present:
         if x not in ordered:
             ordered.append(x)
-
     if not ordered:
         ordered = ["NA"]
 
-    tab_objs = st.tabs([_law_label(x) for x in ordered])
+    tabs = st.tabs([_law_label(x) for x in ordered])
 
-    for tab, law in zip(tab_objs, ordered):
+    for tab, law in zip(tabs, ordered):
         with tab:
             df_law = df_cf[df_cf["law"].astype(str).str.upper() == law].copy()
 
-            # filtro ticker dentro de la ley (para no llenar de chips rojos)
             tickers = sorted(df_law["species"].unique().tolist())
-            sel = st.multiselect("Ticker", tickers, default=tickers)
+            sel = st.multiselect("Ticker", tickers, default=tickers, key=f"tick_{law}")
 
-            # calcular tabla final
-            if st.button("Calcular", type="primary", key=f"calc_{law}"):
-                df_use = df_law[df_law["species"].isin(sel)].copy()
-                out = _compute_table(df_use, prices, plazo)
+            calcular = st.button("Calcular", type="primary", key=f"calc_{law}")
+            if not calcular:
+                continue
 
-                if out.empty:
-                    st.info("No hay ONs con precio para esta ley / selección.")
-                    continue
+            df_use = df_law[df_law["species"].isin(sel)].copy()
+            out = _compute_table(df_use, prices, plazo)
 
-                # selector de columnas
-                base_cols = ["Ticker", "USD", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
-                # siempre mostramos Ticker y Vencimiento por defecto
-                defaults = ["Ticker", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento"]
+            if out.empty:
+                st.info("No hay ONs con precio para esta ley / selección.")
+                continue
 
-                cols_pick = st.multiselect(
-                    "Columnas a mostrar",
-                    options=base_cols,
-                    default=defaults,
-                    key=f"cols_{law}",
-                )
+            # ✅ filtro TIR -10 a 15
+            out = out[out["TIR (%)"].between(-10, 15, inclusive="both")].copy()
 
-                if "Ticker" not in cols_pick:
-                    cols_pick = ["Ticker"] + cols_pick
-                if "Vencimiento" not in cols_pick:
-                    cols_pick = cols_pick + ["Vencimiento"]
+            if out.empty:
+                st.info("Con el filtro de TIR (-10% a 15%), no quedaron ONs para mostrar.")
+                continue
 
-                title = f"Tabla comercial · {_law_label(law)}"
-                st.markdown(f"### {title}")
+            # selector de columnas (vos elegís qué ver)
+            all_cols = ["Ticker", "USD", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
+            defaults = ["Ticker", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento"]
 
-                show = out.copy()
-                show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
+            cols_pick = st.multiselect(
+                "Columnas a mostrar",
+                options=all_cols,
+                default=defaults,
+                key=f"cols_{law}",
+            )
+            if "Ticker" not in cols_pick:
+                cols_pick = ["Ticker"] + cols_pick
+            if "Vencimiento" not in cols_pick:
+                cols_pick = cols_pick + ["Vencimiento"]
 
-                st.dataframe(
-                    show[cols_pick],
-                    hide_index=True,
-                    use_container_width=True,
-                    column_config={
-                        "Ticker": st.column_config.TextColumn("Ticker"),
-                        "USD": st.column_config.TextColumn("USD (D/C)"),
-                        "Precio USD": st.column_config.NumberColumn("Precio USD", format="%.2f"),
-                        "TIR (%)": st.column_config.NumberColumn("TIR (%)", format="%.2f"),
-                        "MD": st.column_config.NumberColumn("MD", format="%.2f"),
-                        "Duration": st.column_config.NumberColumn("Duration", format="%.2f"),
-                        "Vencimiento": st.column_config.DateColumn("Vencimiento", format="DD/MM/YYYY"),
-                        "Volumen": st.column_config.NumberColumn("Volumen", format="%.0f"),
-                    },
-                )
+            title = f"Tabla comercial · {_law_label(law)}"
+            st.markdown(f"### {title}")
+
+            show = out.copy()
+            show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
+
+            st.dataframe(
+                show[cols_pick],
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Ticker": st.column_config.TextColumn("Ticker"),
+                    "USD": st.column_config.TextColumn("USD (D/C)"),
+                    "Precio USD": st.column_config.NumberColumn("Precio USD", format="%.2f"),
+                    "TIR (%)": st.column_config.NumberColumn("TIR (%)", format="%.2f"),
+                    "MD": st.column_config.NumberColumn("MD", format="%.2f"),
+                    "Duration": st.column_config.NumberColumn("Duration", format="%.2f"),
+                    "Vencimiento": st.column_config.DateColumn("Vencimiento", format="DD/MM/YYYY"),
+                    "Volumen": st.column_config.NumberColumn("Volumen", format="%.0f"),
+                },
+            )
 
     st.markdown("</div></div>", unsafe_allow_html=True)
+
