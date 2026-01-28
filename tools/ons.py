@@ -65,9 +65,7 @@ def load_cashflows_from_repo(path: str) -> pd.DataFrame:
       - law (ARG / NYC / NY / etc.) opcional
     """
     if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"No existe el archivo: {path}. Subilo al repo (ej: data/cashflows_ON.xlsx)."
-        )
+        raise FileNotFoundError(f"No existe el archivo: {path}. Subilo al repo (ej: data/cashflows_ON.xlsx).")
 
     df = pd.read_excel(path)
     df.columns = df.columns.astype(str).str.strip()
@@ -105,12 +103,53 @@ def build_cashflow_dict(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return out
 
 
+# ======================================================
+# 3) Ley: normalización ROBUSTA (arregla NYC)
+# ======================================================
+def normalize_law(x: str) -> str:
+    """
+    Unifica variantes:
+    - ARG / AR / LOCAL -> ARG
+    - NYC / NY / NEW YORK / variants -> NY
+    """
+    s = (x or "").strip().upper()
+    s = s.replace(".", "").replace("-", " ").replace("_", " ")
+    s = " ".join(s.split())
+
+    # Local / Argentina
+    if s in {"ARG", "AR", "LOCAL", "LEY LOCAL", "ARGENTINA"}:
+        return "ARG"
+
+    # New York
+    if s in {"NYC", "NY", "NEW YORK", "NEWYORK", "LEY NY", "LEY NEW YORK", "N Y", "N Y C"}:
+        return "NY"
+
+    # si viene vacío
+    if s in {"", "NA", "NONE", "NAN"}:
+        return "NA"
+
+    return s
+
+
+def law_label(norm: str) -> str:
+    if norm == "ARG":
+        return "Ley Local (ARG)"
+    if norm == "NY":
+        return "Ley NY (NY/NYC)"
+    if norm == "NA":
+        return "Sin Ley"
+    return f"Ley {norm}"
+
+
 def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    IMPORTANTÍSIMO: usa law_norm (no law) para que NYC/NY se unan bien.
+    """
     meta = (
         df.groupby("species")
         .agg(
             root_key=("root_key", lambda s: s.value_counts().index[0]),
-            law=("law", lambda s: s.value_counts().index[0]),
+            law_norm=("law_norm", lambda s: s.value_counts().index[0]),
             Vencimiento=("Fecha", "max"),
         )
         .reset_index()
@@ -119,7 +158,7 @@ def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ======================================================
-# 3) Precios IOL (por root_keyD/root_keyC)
+# 4) Precios IOL (por root_keyD/root_keyC)
 # ======================================================
 def to_float_iol(x) -> float:
     if pd.isna(x):
@@ -159,24 +198,18 @@ def fetch_iol_on_prices() -> pd.DataFrame:
 
 def pick_usd_price_by_root(prices: pd.DataFrame, root_key: str) -> tuple[float, float, str]:
     rk = str(root_key).strip().upper()
-    candidates = [(f"{rk}D", "D"), (f"{rk}C", "C")]
-
-    for sym, src in candidates:
+    for sym, src in [(f"{rk}D", "D"), (f"{rk}C", "C")]:
         if sym in prices.index:
             px = float(prices.loc[sym, "UltimoOperado"])
             vol = float(prices.loc[sym, "MontoOperado"])
-
-            # normalización escala (si quedó x100)
             if np.isfinite(px) and px > 1000:
                 px = px / 100.0
-
             return px, vol, src
-
     return np.nan, np.nan, ""
 
 
 # ======================================================
-# 4) Métricas
+# 5) Métricas
 # ======================================================
 def tir(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0) -> float:
     if not np.isfinite(precio) or precio <= 0:
@@ -228,7 +261,7 @@ def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0
 
 
 # ======================================================
-# 5) UI
+# 6) UI
 # ======================================================
 def _ui_css():
     st.markdown(
@@ -238,41 +271,14 @@ def _ui_css():
       .title{ font-size:22px; font-weight:800; letter-spacing:.04em; color:#111827; }
       .sub{ color:rgba(17,24,39,.60); font-size:13px; margin-top:2px; }
       .muted{ color:rgba(17,24,39,.55); font-size:12px; }
-      /* tags más suaves (opcional) */
       div[data-baseweb="tag"]{ border-radius:999px !important; }
-      /* compactar un poco márgenes de widgets */
-      .stSelectbox, .stMultiSelect, .stButton{ padding-top: 0px; }
+      /* un poco más compacto */
+      .stButton > button { border-radius: 10px; padding: 0.55rem 0.9rem; }
+      .stSelectbox div[data-baseweb="select"]{ border-radius: 12px; }
     </style>
     """,
         unsafe_allow_html=True,
     )
-
-
-def normalize_law(x: str) -> str:
-    """
-    Unifica variantes:
-    - ARG / AR / LOCAL -> ARG
-    - NYC / NY / NEW YORK / NEWYORK -> NY
-    """
-    s = (x or "").strip().upper()
-    s = s.replace(".", "").replace("-", " ").replace("_", " ")
-    s = " ".join(s.split())
-
-    if s in {"ARG", "AR", "LOCAL", "LEY LOCAL"}:
-        return "ARG"
-    if s in {"NYC", "NY", "NEW YORK", "NEWYORK", "LEY NY", "LEY NEW YORK"}:
-        return "NY"
-    return s if s else "NA"
-
-
-def law_label(norm: str) -> str:
-    if norm == "ARG":
-        return "Ley Local (ARG)"
-    if norm == "NY":
-        return "Ley NY (NY/NYC)"
-    if norm == "NA":
-        return "Sin Ley"
-    return f"Ley {norm}"
 
 
 def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.DataFrame:
@@ -282,7 +288,7 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
     rows = []
     for species in meta.index:
         rk = meta.loc[species, "root_key"]
-        law = meta.loc[species, "law"]
+        law_norm = meta.loc[species, "law_norm"]
         venc = meta.loc[species, "Vencimiento"]
 
         px, vol, src = pick_usd_price_by_root(prices, rk)
@@ -298,7 +304,7 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
         rows.append(
             {
                 "Ticker": species,
-                "Ley": law,
+                "Ley": law_norm,
                 "USD": src,
                 "Precio USD": px,
                 "TIR (%)": t,
@@ -322,16 +328,18 @@ def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
 
-    header_left, header_right = st.columns([0.78, 0.22])
-    with header_left:
-        st.markdown('<div class="title">ONs · Rendimientos</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub">Tabs por ley (ARG / NY). Precios desde IOL por <b>root_key</b>. Solo ONs con precio.</div>', unsafe_allow_html=True)
-    with header_right:
+    # Header
+    h1, h2 = st.columns([0.78, 0.22])
+    with h1:
+        st.markdown('<div class="title">NEIX · ONs</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub">Tabs por ley (ARG / NY). Precios desde IOL por root_key. Solo ONs con precio.</div>', unsafe_allow_html=True)
+    with h2:
         if back_to_home is not None:
             st.button("← Volver", on_click=back_to_home)
 
     st.divider()
 
+    # Load cashflows
     try:
         df_cf = load_cashflows_from_repo(CASHFLOW_PATH)
     except Exception as e:
@@ -339,19 +347,21 @@ def render(back_to_home=None):
         st.info("El Excel debe tener: species, root_key, Fecha y FlujoTotal/Cupon (+ law opcional).")
         return
 
-    # Normalizo law para unir NYC/NY/etc
+    # ✅ normalizo ley y trabajo todo con law_norm
     df_cf = df_cf.copy()
     df_cf["law_norm"] = df_cf["law"].apply(normalize_law)
 
     # --------
-    # Filtros (sin “barra rara”, layout nativo)
+    # Filtros: Plazo + Actualizar + Calcular (alineados)
     # --------
-    f1, f2, f3 = st.columns([0.20, 0.18, 0.62])
+    f1, f2, f3, f4 = st.columns([0.20, 0.18, 0.18, 0.44])
     with f1:
         plazo = st.selectbox("Plazo", [0, 1], index=0, format_func=lambda x: f"T{x}")
     with f2:
         traer_precios = st.button("Actualizar IOL")
     with f3:
+        calcular_global = st.button("Calcular", type="primary")
+    with f4:
         st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
 
     # Cache precios
@@ -370,23 +380,21 @@ def render(back_to_home=None):
 
     st.divider()
 
-    # --------
-    # Tabs fijas: ARG y NY (unificadas)
-    # --------
+    # Tabs: ARG / NY
     tab_arg, tab_ny = st.tabs([law_label("ARG"), law_label("NY")])
 
     for tab, law_norm in [(tab_arg, "ARG"), (tab_ny, "NY")]:
         with tab:
             df_law = df_cf[df_cf["law_norm"] == law_norm].copy()
-
             if df_law.empty:
-                st.info("No hay instrumentos para esta ley.")
+                st.info("No hay instrumentos para esta ley (revisá columna law en el cashflow).")
                 continue
 
             tickers = sorted(df_law["species"].unique().tolist())
             sel = st.multiselect("Ticker", tickers, default=tickers, key=f"tick_{law_norm}")
 
-            if st.button("Calcular", type="primary", key=f"calc_{law_norm}"):
+            # ✅ usa botón global “Calcular” (arriba) para los tabs
+            if calcular_global:
                 df_use = df_law[df_law["species"].isin(sel)].copy()
                 out = _compute_table(df_use, prices, plazo)
 
@@ -394,14 +402,13 @@ def render(back_to_home=None):
                     st.info("No hay ONs con precio para esta selección.")
                     continue
 
-                # ✅ Filtro TIR interno (NO se muestra)
+                # ✅ filtro interno TIR (NO se muestra)
                 out = out[out["TIR (%)"].between(TIR_MIN, TIR_MAX, inclusive="both")].copy()
-
                 if out.empty:
                     st.info("No quedaron ONs tras aplicar filtros internos.")
                     continue
 
-                # Columnas a mostrar (editable)
+                # columnas configurables
                 all_cols = ["Ticker", "USD", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
                 defaults = ["Ticker", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento"]
 
@@ -412,13 +419,12 @@ def render(back_to_home=None):
                     key=f"cols_{law_norm}",
                 )
 
-                # Seguridad mínima
                 if "Ticker" not in cols_pick:
                     cols_pick = ["Ticker"] + cols_pick
                 if "Vencimiento" not in cols_pick:
                     cols_pick = cols_pick + ["Vencimiento"]
 
-                st.markdown(f"### Tabla comercial · {law_label(law_norm)}")
+                st.markdown(f"### NEIX · ONs · {law_label(law_norm)}")
 
                 show = out.copy()
                 show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
@@ -438,3 +444,4 @@ def render(back_to_home=None):
                         "Volumen": st.column_config.NumberColumn("Volumen", format="%.0f"),
                     },
                 )
+
