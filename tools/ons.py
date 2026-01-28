@@ -8,10 +8,8 @@ import pandas as pd
 import streamlit as st
 from scipy import optimize
 
-# ✅ OJO: apuntá al archivo que realmente subiste al repo
-# En tu captura el nombre era cashflows_ON.xlsx / cashflows_ON_full.xlsx, elegí el correcto.
-CASHFLOW_PATH = os.path.join("data", "cashflows_ON.xlsx")  # <-- ajustalo si tu archivo se llama distinto
 
+CASHFLOW_PATH = os.path.join("data", "cashflows_ON.xlsx")  # <-- ajustalo si tu archivo se llama distinto
 
 # ======================================================
 # 1) XNPV / XIRR
@@ -329,7 +327,7 @@ def render(back_to_home=None):
         )
     with right:
         if back_to_home is not None:
-            st.button("← Volver", on_click=back_to_home)
+            st.button("← ", on_click=back_to_home)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
 
