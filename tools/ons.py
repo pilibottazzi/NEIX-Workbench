@@ -61,16 +61,17 @@ def load_cashflows_from_repo(path: str) -> pd.DataFrame:
     df = pd.read_excel(path)
     df.columns = df.columns.astype(str).str.strip()
 
-    req = {"ticker_original", "Fecha", "Cupon"}
+    req = {"ticker_original", "root_key", "Fecha", "Cupon"}
     missing = req - set(df.columns)
     if missing:
         raise ValueError(f"Faltan columnas en {path}: {sorted(missing)}")
 
     df["ticker_original"] = df["ticker_original"].astype(str).str.strip().str.upper()
+    df["root_key"] = df["root_key"].astype(str).str.strip().str.upper()
     df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
     df["Cupon"] = pd.to_numeric(df["Cupon"], errors="coerce")
 
-    df = df.dropna(subset=["ticker_original", "Fecha", "Cupon"]).sort_values(
+    df = df.dropna(subset=["ticker_original", "root_key", "Fecha", "Cupon"]).sort_values(
         ["ticker_original", "Fecha"]
     )
     return df
@@ -83,8 +84,20 @@ def build_cashflow_dict(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return out
 
 
+def build_root_map(df: pd.DataFrame) -> dict[str, str]:
+    """
+    ticker_original -> root_key (toma el root_key más frecuente por ticker).
+    """
+    mp = (
+        df.groupby("ticker_original")["root_key"]
+        .agg(lambda s: s.value_counts().index[0])
+        .to_dict()
+    )
+    return {str(k).upper(): str(v).upper() for k, v in mp.items()}
+
+
 # ======================================================
-# 3) Precios desde IOL (buscamos en USD: tickerD, si no tickerC)
+# 3) Precios desde IOL (buscamos USD usando root_key: rootD o rootC)
 # ======================================================
 def fetch_iol_on_prices() -> pd.DataFrame:
     url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"
@@ -110,19 +123,28 @@ def fetch_iol_on_prices() -> pd.DataFrame:
     return df.set_index("Ticker")
 
 
-def pick_usd_price(prices: pd.DataFrame, base_ticker: str) -> tuple[float, float, str]:
+def pick_usd_price_by_root(prices: pd.DataFrame, root_key: str) -> tuple[float, float, str]:
     """
-    Intenta conseguir precio USD:
-    1) ticker + 'D' (MEP)
-    2) ticker + 'C' (Cable)
-    Si no existe, devuelve NaN y source=""
+    Intenta precio USD en IOL usando root_key:
+    1) root_key + 'D' (MEP)
+    2) root_key + 'C' (Cable)
+    Si no existe, devuelve NaN, NaN, "".
     """
-    t = str(base_ticker).strip().upper()
-    for sym, source in [(f"{t}D", "D"), (f"{t}C", "C")]:
+    rk = str(root_key).strip().upper()
+
+    # si ya viniera con sufijo, lo respetamos
+    candidates = []
+    if rk.endswith("D") or rk.endswith("C"):
+        candidates.append((rk, rk[-1]))
+    else:
+        candidates.extend([(f"{rk}D", "D"), (f"{rk}C", "C")])
+
+    for sym, src in candidates:
         if sym in prices.index:
             px = float(prices.loc[sym, "UltimoOperado"])
             vol = float(prices.loc[sym, "MontoOperado"])
-            return px, vol, source
+            return px, vol, src
+
     return np.nan, np.nan, ""
 
 
@@ -199,7 +221,7 @@ def render(back_to_home=None):
     st.markdown(
         """
       <div class="neix-title">NEIX · ONs</div>
-      <div class="neix-sub">USD: busca precio en IOL como TickerD (MEP) o TickerC (Cable). Si no hay precio USD, no se muestra.</div>
+      <div class="neix-sub">Cashflow USD. Precio IOL se busca por <b>root_key</b>: rootD (MEP) o rootC (Cable). Si no hay precio USD, no se muestra.</div>
     """,
         unsafe_allow_html=True,
     )
@@ -221,13 +243,14 @@ def render(back_to_home=None):
     try:
         df_cf = load_cashflows_from_repo(CASHFLOW_PATH)
         cashflows = build_cashflow_dict(df_cf)
+        root_map = build_root_map(df_cf)
     except Exception as e:
         st.error(str(e))
-        st.info("Solución: asegurate de tener columnas ticker_original, Fecha, Cupon.")
+        st.info("Solución: columnas requeridas: ticker_original, root_key, Fecha, Cupon.")
         return
 
     tickers_all = sorted(cashflows.keys())
-    tickers_sel = st.multiselect("Tickers", tickers_all, default=tickers_all)
+    tickers_sel = st.multiselect("Tickers (ticker_original)", tickers_all, default=tickers_all)
 
     # Precios IOL cacheados
     if traer_precios or "ons_iol_prices" not in st.session_state:
@@ -255,14 +278,17 @@ def render(back_to_home=None):
             cf = cashflows[t]
             cf_future = _future_cashflows(cf, settlement)
 
-            # ✅ precio USD: tD o tC
-            px, vol, src = pick_usd_price(prices, t)
+            rk = root_map.get(t, "")
+            px, vol, src = (np.nan, np.nan, "")
+            if rk:
+                px, vol, src = pick_usd_price_by_root(prices, rk)
 
             rows.append(
                 {
-                    "Ticker": t,
+                    "Ticker": t,          # ticker_original
+                    "Root": rk,           # root_key (para referencia)
+                    "USD": src,           # D o C
                     "Precio": px,
-                    "Fuente": src,  # D o C (opcional, ayuda)
                     "TIR (%)": tir(cf, px, plazo_dias=plazo),
                     "MD": modified_duration(cf, px, plazo_dias=plazo),
                     "Duration": duration(cf, px, plazo_dias=plazo),
@@ -274,7 +300,7 @@ def render(back_to_home=None):
         out = pd.DataFrame(rows)
         out["Vencimiento"] = pd.to_datetime(out["Vencimiento"], errors="coerce")
 
-        # ✅ SOLO CON PRECIO USD (si no existe D/C => afuera)
+        # ✅ SOLO CON PRECIO USD (rootD o rootC)
         out = out[
             out["Precio"].notna()
             & np.isfinite(out["Precio"])
@@ -294,12 +320,13 @@ def render(back_to_home=None):
         show["Vencimiento"] = show["Vencimiento"].dt.date
 
         st.dataframe(
-            show[["Ticker", "Fuente", "Precio", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]],
+            show[["Ticker", "Root", "USD", "Precio", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]],
             hide_index=True,
             use_container_width=True,
             column_config={
                 "Ticker": st.column_config.TextColumn("Ticker"),
-                "Fuente": st.column_config.TextColumn("USD (D/C)"),
+                "Root": st.column_config.TextColumn("Root"),
+                "USD": st.column_config.TextColumn("USD (D/C)"),
                 "Precio": st.column_config.NumberColumn("Precio USD", format="%.2f"),
                 "TIR (%)": st.column_config.NumberColumn("TIR (%)", format="%.2f"),
                 "MD": st.column_config.NumberColumn("MD", format="%.2f"),
