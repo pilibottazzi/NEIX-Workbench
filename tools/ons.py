@@ -9,10 +9,6 @@ import streamlit as st
 
 CASHFLOW_PATH = os.path.join("data", "cashflows_ON.xlsx")
 
-
-# ======================================================
-# 1) Cálculo XIRR sin SciPy (robusto)
-# ======================================================
 def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
     chron = sorted(cashflows, key=lambda x: x[0])
     t0 = chron[0][0]
@@ -26,48 +22,8 @@ def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
     return out
 
 
-def xirr(cashflows: list[tuple[dt.datetime, float]]) -> float:
-    """
-    XIRR en % (sin SciPy).
-    - busca bracket con cambio de signo
-    - bisección
-    """
-    vals = [cf for _, cf in cashflows]
-    if not (any(v < 0 for v in vals) and any(v > 0 for v in vals)):
-        return np.nan
-
-    def f(r):
-        return xnpv(r, cashflows)
-
-    a, b = -0.90, 5.0  # -90% a 500%
-    fa, fb = f(a), f(b)
-    if not (np.isfinite(fa) and np.isfinite(fb)):
-        return np.nan
-
-    tries = 0
-    while fa * fb > 0 and tries < 30:
-        b *= 1.5
-        fb = f(b)
-        tries += 1
-        if not np.isfinite(fb):
-            return np.nan
-
-    if fa * fb > 0:
-        return np.nan
-
-    for _ in range(250):
-        m = (a + b) / 2
-        fm = f(m)
-        if not np.isfinite(fm):
-            return np.nan
-        if abs(fm) < 1e-9:
-            return m * 100
-        if fa * fm < 0:
-            b, fb = m, fm
-        else:
-            a, fa = m, fm
-
-    return ((a + b) / 2) * 100
+def xirr(cashflows,guess=0.1):
+    return optimize.newton(lambda r: xnpv(r,cashflows),guess)*100 #Con esto te itera
 
 
 def _settlement(plazo_dias: int) -> dt.datetime:
@@ -83,58 +39,34 @@ def _future_cashflows(df: pd.DataFrame, settlement: dt.datetime) -> pd.DataFrame
     return df
 
 
-def tir(df_cf: pd.DataFrame, precio: float, plazo_dias: int = 2) -> float:
-    settlement = _settlement(plazo_dias)
-    df_fut = _future_cashflows(df_cf, settlement)
+def tir(cashflow, precio, plazo=1):
+    flujo_total=[(datetime.datetime.today()+ datetime.timedelta(days=plazo) , -precio)] #para que arranque como que compras el bono hoy
+    for i in range (len(cashflow)):
+      if cashflow.iloc[i,0].to_pydatetime()>datetime.datetime.today()+ datetime.timedelta(days=plazo):
+        flujo_total.append((cashflow.iloc[i,0].to_pydatetime(),cashflow.iloc[i,1])) #lista de cashflows
 
-    if df_fut.empty or not np.isfinite(precio) or precio <= 0:
-        return np.nan
-
-    flows = [(settlement, -float(precio))]
-    flows += [(d.to_pydatetime(), float(c)) for d, c in zip(df_fut["Fecha"], df_fut["Cupon"])]
-
-    out = xirr(flows)
-    return round(out, 2) if np.isfinite(out) else np.nan
+    return round(xirr(flujo_total,guess=0.1),2)
 
 
-def duration(df_cf: pd.DataFrame, precio: float, plazo_dias: int = 2) -> float:
-    r = tir(df_cf, precio, plazo_dias=plazo_dias)
-    if not np.isfinite(r):
-        return np.nan
+def duration(cashflow,precio,plazo=2):
+  r=tir(cashflow,precio,plazo=plazo)
+  denom=[]
+  numer=[]
+  for i in range (len(cashflow)):
+    if cashflow.iloc[i,0].to_pydatetime()>datetime.datetime.today()+ datetime.timedelta(days=plazo):
+      tiempo=(cashflow.iloc[i,0]-datetime.datetime.today()).days/365 #tiempo al cupon en años
+      cupon=cashflow.iloc[i,1]
+      denom.append(cupon/(1+r/100)**tiempo) #sum (C(1+r)^t)
+      numer.append(tiempo*(cupon/(1+r/100)**tiempo))
 
-    hoy = dt.datetime.today()
-    settlement = _settlement(plazo_dias)
-    df_fut = _future_cashflows(df_cf, settlement)
-    if df_fut.empty:
-        return np.nan
-
-    denom, numer = 0.0, 0.0
-    for _, row in df_fut.iterrows():
-        fecha = row["Fecha"].to_pydatetime()
-        cupon = float(row["Cupon"])
-        t = (fecha - hoy).days / 365.0
-        pv = cupon / (1 + r / 100) ** t
-        denom += pv
-        numer += t * pv
-
-    if denom == 0:
-        return np.nan
-    return round(numer / denom, 2)
+  return round(sum(numer)/sum(denom),2)
 
 
-def modified_duration(df_cf: pd.DataFrame, precio: float, plazo_dias: int = 2) -> float:
-    dur = duration(df_cf, precio, plazo_dias=plazo_dias)
-    r = tir(df_cf, precio, plazo_dias=plazo_dias)
-    if not np.isfinite(dur) or not np.isfinite(r):
-        return np.nan
-    return round(dur / (1 + r / 100), 2)
+def modified_duration(cashflow,precio,plazo=2):
+  dur=duration(cashflow,precio,plazo)
+  return round(dur/(1+tir(cashflow,precio,plazo)/100),2)
 
 
-# ======================================================
-# 2) Cashflows desde el repo (curva_on)
-#    Formato esperado: “largo”
-#    columnas: ticker_original, root_key, Fecha, Cupon
-# ======================================================
 def load_cashflows_from_repo(path: str) -> pd.DataFrame:
     if not os.path.exists(path):
         raise FileNotFoundError(f"No existe el archivo: {path}. Subilo al repo (ej: data/curva_on.xlsx).")
@@ -187,9 +119,7 @@ def fetch_iol_on_prices() -> pd.DataFrame:
     return df.set_index("Ticker")
 
 
-# ======================================================
-# 4) Escala precio vs cupones (CLAVE para que TIR no “explote”)
-# ======================================================
+
 def detect_price_scale(df_cf_one: pd.DataFrame, precio_iol: float) -> str:
     """
     Si cupones parecen VN100 (ej 1.386) el precio debería estar ~80-110, NO 0.80-1.10.
@@ -207,9 +137,7 @@ def detect_price_scale(df_cf_one: pd.DataFrame, precio_iol: float) -> str:
     return "ok"
 
 
-# ======================================================
-# 5) UI (Front NEIX)
-# ======================================================
+
 def _neix_css():
     st.markdown("""
     <style>
@@ -333,32 +261,11 @@ def render(back_to_home=None):
                 "MD": md_v,
                 "Ticker": t,
                 "Precio": px,
-                "Volumen": vol,
-                "Flujos_futuros": int(len(cf_future)),
-            })
+                "Volumen": vol  })
 
         out = pd.DataFrame(rows)
         out["Vencimiento"] = pd.to_datetime(out["Vencimiento"], errors="coerce")
         out = out.sort_values(["Vencimiento", "Ticker"], na_position="last").reset_index(drop=True)
-
-        # KPIs
-        ok_tir = out["TIR"].dropna()
-        ok_md = out["MD"].dropna()
-
-        k1, k2, k3, k4 = st.columns(4)
-        with k1:
-            st.markdown(f'<div class="card"><div class="kpi-label">ONs</div><div class="kpi-val">{len(out)}</div></div>', unsafe_allow_html=True)
-        with k2:
-            st.markdown(f'<div class="card"><div class="kpi-label">TIR Prom.</div><div class="kpi-val">{ok_tir.mean():.2f}%</div></div>' if len(ok_tir) else
-                        '<div class="card"><div class="kpi-label">TIR Prom.</div><div class="kpi-val">—</div></div>', unsafe_allow_html=True)
-        with k3:
-            st.markdown(f'<div class="card"><div class="kpi-label">TIR Mediana</div><div class="kpi-val">{ok_tir.median():.2f}%</div></div>' if len(ok_tir) else
-                        '<div class="card"><div class="kpi-label">TIR Mediana</div><div class="kpi-val">—</div></div>', unsafe_allow_html=True)
-        with k4:
-            st.markdown(f'<div class="card"><div class="kpi-label">MD Prom.</div><div class="kpi-val">{ok_md.mean():.2f}</div></div>' if len(ok_md) else
-                        '<div class="card"><div class="kpi-label">MD Prom.</div><div class="kpi-val">—</div></div>', unsafe_allow_html=True)
-
-        st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
         # Tabla comercial
         show = out.copy()
@@ -366,22 +273,5 @@ def render(back_to_home=None):
         st.markdown("### Tabla comercial")
         st.dataframe(show, use_container_width=True)
 
-        # Export
-        st.markdown("### Exportar")
-        csv = show.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("⬇️ Descargar CSV", data=csv, file_name=f"ONs_{dt.datetime.now():%Y%m%d}.csv", mime="text/csv")
 
-        # Alertas
-        if alerts:
-            with st.expander("⚠️ Alertas / Controles"):
-                for t, msg in alerts:
-                    st.markdown(f"- **{t}**: {msg}")
-
-        # Texto para enviar
-        st.markdown("### Texto listo para enviar")
-        lines = [f"📌 ONs Ley NY – Rendimientos USD ({dt.datetime.now():%d/%m/%Y})"]
-        for _, r in out.dropna(subset=["TIR","MD"]).head(12).iterrows():
-            vto = r["Vencimiento"].strftime("%d/%m/%Y") if pd.notna(r["Vencimiento"]) else "-"
-            lines.append(f"• {r['Ticker']}: TIR {r['TIR']:.2f}% | MD {r['MD']:.2f} | Vto {vto}")
-        st.code("\n".join(lines), language="text")
 
