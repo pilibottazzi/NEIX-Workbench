@@ -22,7 +22,7 @@ def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
 
     out = 0.0
     for t, cf in chron:
-        years = (t - t0).days / 365.0
+        years = (t - known_t0).days / 365.0 if False else (t - t0).days / 365.0
         out += cf / (1.0 + rate) ** years
     return out
 
@@ -95,24 +95,52 @@ def build_root_map(df: pd.DataFrame) -> dict[str, str]:
 # ======================================================
 # 3) Precios IOL (USD por root_key: rootD o rootC)
 # ======================================================
+def to_float_iol(x) -> float:
+    """
+    Convierte números en formato:
+    - 101,65
+    - 101.65
+    - 10.165,00
+    - 10,165.00 (raro, pero lo soporta)
+    """
+    if pd.isna(x):
+        return np.nan
+    s = str(x).strip()
+
+    # Si viene vacío o algo raro
+    if s == "" or s.lower() in {"nan", "none", "-"}:
+        return np.nan
+
+    # Si tiene ambos separadores, asumimos que el último es el decimal
+    if "," in s and "." in s:
+        # ejemplo típico AR: 10.165,00  -> decimal ","
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            # ejemplo US: 10,165.00 -> decimal "."
+            s = s.replace(",", "")
+    elif "," in s:
+        # decimal ","
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        # solo "." o sin separadores: lo dejamos como está
+        pass
+
+    try:
+        return float(s)
+    except Exception:
+        return np.nan
+
+
 def fetch_iol_on_prices() -> pd.DataFrame:
     url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"
     on = pd.read_html(url)[0]
 
-    def to_float_ar(s):
-        if pd.isna(s):
-            return np.nan
-        s = str(s).replace(".", "").replace(",", ".")
-        try:
-            return float(s)
-        except Exception:
-            return np.nan
-
     df = pd.DataFrame(
         {
             "Ticker": on["Símbolo"].astype(str).str.strip().str.upper(),
-            "UltimoOperado": on["Último Operado"].apply(to_float_ar),
-            "MontoOperado": on.get("Monto Operado", pd.Series([0] * len(on))).apply(to_float_ar).fillna(0),
+            "UltimoOperado": on["Último Operado"].apply(to_float_iol),
+            "MontoOperado": on.get("Monto Operado", pd.Series([0] * len(on))).apply(to_float_iol).fillna(0),
         }
     ).dropna(subset=["UltimoOperado"])
 
@@ -132,6 +160,11 @@ def pick_usd_price_by_root(prices: pd.DataFrame, root_key: str) -> tuple[float, 
         if sym in prices.index:
             px = float(prices.loc[sym, "UltimoOperado"])
             vol = float(prices.loc[sym, "MontoOperado"])
+
+            # ✅ Si quedó x100 por formato (ej 10165), lo normalizamos sin mostrar alertas
+            if np.isfinite(px) and px > 1000:
+                px = px / 100.0
+
             return px, vol, src
 
     return np.nan, np.nan, ""
@@ -153,7 +186,8 @@ def tir(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0) -> float:
     for _, r in cf.iterrows():
         flujos.append((r["Fecha"].to_pydatetime(), float(r["Cupon"])))
 
-    return round(xirr(flujos, guess=0.10), 2)
+    v = xirr(flujos, guess=0.10)
+    return round(v, 2) if np.isfinite(v) else np.nan
 
 
 def duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0) -> float:
@@ -207,10 +241,7 @@ def _ui_css():
         box-shadow: 0 8px 26px rgba(17,24,39,0.05);
       }
       .muted{ color:rgba(17,24,39,.55); font-size:12px; }
-      /* Reduce padding in multiselect tags a bit */
-      div[data-baseweb="tag"]{
-        border-radius:999px !important;
-      }
+      div[data-baseweb="tag"]{ border-radius:999px !important; }
     </style>
     """,
         unsafe_allow_html=True,
@@ -219,10 +250,8 @@ def _ui_css():
 
 def render(back_to_home=None):
     _ui_css()
-
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
 
-    # Header
     left, right = st.columns([0.75, 0.25])
     with left:
         st.markdown(
@@ -230,16 +259,18 @@ def render(back_to_home=None):
             <div class="head">
               <div>
                 <div class="title">ONs · Rendimientos</div>
-                <div class="sub">Cashflow en USD. Precio desde IOL por <b>root_key</b>: rootD (MEP) o rootC (Cable). Si no hay precio USD, no se muestra.</div>
+                <div class="sub">Cashflow USD. Precio IOL por <b>root_key</b>: rootD (MEP) o rootC (Cable). Si no hay precio USD, no se muestra.</div>
               </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+    with right:
+        if back_to_home is not None:
+            st.button("← Volver", on_click=back_to_home)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
 
-    # Cargar cashflows
     try:
         df_cf = load_cashflows_from_repo(CASHFLOW_PATH)
         cashflows = build_cashflow_dict(df_cf)
@@ -252,7 +283,6 @@ def render(back_to_home=None):
 
     tickers_all = sorted(cashflows.keys())
 
-    # Controls (solo plazo + ticker)
     c1, c2, c3, c4 = st.columns([0.18, 0.52, 0.17, 0.13])
     with c1:
         plazo = st.selectbox("Plazo", [0, 1], index=0, format_func=lambda x: f"T{x}")
@@ -265,7 +295,6 @@ def render(back_to_home=None):
 
     st.caption(f"Fuente cashflows: `{CASHFLOW_PATH}`")
 
-    # Precios cacheados
     if traer_precios or "ons_iol_prices" not in st.session_state:
         with st.spinner("Leyendo precios desde IOL..."):
             try:
@@ -301,7 +330,7 @@ def render(back_to_home=None):
             rows.append(
                 {
                     "Ticker": t,
-                    "USD": src,  # D o C
+                    "USD": src,
                     "Precio USD": px,
                     "TIR (%)": tir(cf, px, plazo_dias=plazo),
                     "MD": modified_duration(cf, px, plazo_dias=plazo),
@@ -314,7 +343,6 @@ def render(back_to_home=None):
         out = pd.DataFrame(rows)
         out["Vencimiento"] = pd.to_datetime(out["Vencimiento"], errors="coerce")
 
-        # ✅ SOLO con precio USD (si no hay rootD/rootC => afuera)
         out = out[
             out["Precio USD"].notna()
             & np.isfinite(out["Precio USD"])
@@ -323,7 +351,6 @@ def render(back_to_home=None):
 
         out = out.sort_values(["Vencimiento", "Ticker"], na_position="last").reset_index(drop=True)
 
-        # Tabla
         st.markdown("<div class='muted' style='margin-top:8px;'>Resultados</div>", unsafe_allow_html=True)
 
         show = out.copy()
