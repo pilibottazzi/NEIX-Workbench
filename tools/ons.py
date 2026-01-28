@@ -28,7 +28,6 @@ def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
 
 
 def xirr(cashflows: list[tuple[dt.datetime, float]], guess: float = 0.10) -> float:
-    """TIR anual en % (ej: 12.34)."""
     try:
         r = optimize.newton(lambda rr: xnpv(rr, cashflows), guess, maxiter=200)
         return float(r) * 100.0
@@ -85,9 +84,6 @@ def build_cashflow_dict(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
 
 def build_root_map(df: pd.DataFrame) -> dict[str, str]:
-    """
-    ticker_original -> root_key (toma el root_key más frecuente por ticker).
-    """
     mp = (
         df.groupby("ticker_original")["root_key"]
         .agg(lambda s: s.value_counts().index[0])
@@ -97,7 +93,7 @@ def build_root_map(df: pd.DataFrame) -> dict[str, str]:
 
 
 # ======================================================
-# 3) Precios desde IOL (buscamos USD usando root_key: rootD o rootC)
+# 3) Precios IOL (USD por root_key: rootD o rootC)
 # ======================================================
 def fetch_iol_on_prices() -> pd.DataFrame:
     url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"
@@ -124,17 +120,10 @@ def fetch_iol_on_prices() -> pd.DataFrame:
 
 
 def pick_usd_price_by_root(prices: pd.DataFrame, root_key: str) -> tuple[float, float, str]:
-    """
-    Intenta precio USD en IOL usando root_key:
-    1) root_key + 'D' (MEP)
-    2) root_key + 'C' (Cable)
-    Si no existe, devuelve NaN, NaN, "".
-    """
     rk = str(root_key).strip().upper()
 
-    # si ya viniera con sufijo, lo respetamos
-    candidates = []
-    if rk.endswith("D") or rk.endswith("C"):
+    candidates: list[tuple[str, str]] = []
+    if rk.endswith(("D", "C")):
         candidates.append((rk, rk[-1]))
     else:
         candidates.extend([(f"{rk}D", "D"), (f"{rk}C", "C")])
@@ -149,7 +138,7 @@ def pick_usd_price_by_root(prices: pd.DataFrame, root_key: str) -> tuple[float, 
 
 
 # ======================================================
-# 4) Métricas (TIR / Duration / Modified Duration)
+# 4) Métricas
 # ======================================================
 def tir(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0) -> float:
     if not np.isfinite(precio) or precio <= 0:
@@ -200,15 +189,28 @@ def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0
 
 
 # ======================================================
-# 5) UI
+# 5) UI (minimal)
 # ======================================================
-def _neix_css():
+def _ui_css():
     st.markdown(
         """
     <style>
-      .neix-title{ font-size:28px; font-weight:800; letter-spacing:0.06em; color:#111827; }
-      .neix-sub{ margin-top:2px; color:rgba(17,24,39,.62); }
-      .hr{ height:1px; background:rgba(17,24,39,0.08); margin:14px 0; }
+      .wrap{ max-width: 1200px; margin: 0 auto; }
+      .head{ display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:10px; }
+      .title{ font-size:22px; font-weight:800; letter-spacing:.04em; color:#111827; }
+      .sub{ color:rgba(17,24,39,.60); font-size:13px; margin-top:2px; }
+      .card{
+        border:1px solid rgba(17,24,39,0.08);
+        border-radius:14px;
+        padding:14px 14px;
+        background:#fff;
+        box-shadow: 0 8px 26px rgba(17,24,39,0.05);
+      }
+      .muted{ color:rgba(17,24,39,.55); font-size:12px; }
+      /* Reduce padding in multiselect tags a bit */
+      div[data-baseweb="tag"]{
+        border-radius:999px !important;
+      }
     </style>
     """,
         unsafe_allow_html=True,
@@ -216,28 +218,29 @@ def _neix_css():
 
 
 def render(back_to_home=None):
-    _neix_css()
+    _ui_css()
 
-    st.markdown(
-        """
-      <div class="neix-title">NEIX · ONs</div>
-      <div class="neix-sub">Cashflow USD. Precio IOL se busca por <b>root_key</b>: rootD (MEP) o rootC (Cable). Si no hay precio USD, no se muestra.</div>
-    """,
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="wrap">', unsafe_allow_html=True)
 
-    if back_to_home is not None:
-        st.button("← Volver", on_click=back_to_home)
+    # Header
+    left, right = st.columns([0.75, 0.25])
+    with left:
+        st.markdown(
+            """
+            <div class="head">
+              <div>
+                <div class="title">ONs · Rendimientos</div>
+                <div class="sub">Cashflow en USD. Precio desde IOL por <b>root_key</b>: rootD (MEP) o rootC (Cable). Si no hay precio USD, no se muestra.</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with right:
+        if back_to_home is not None:
+            st.button("← Volver", on_click=back_to_home)
 
-    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
-
-    c1, c2, c3 = st.columns([0.18, 0.26, 0.56])
-    with c1:
-        plazo = st.selectbox("Plazo", [0, 1], index=0, format_func=lambda x: f"T{x}")
-    with c2:
-        traer_precios = st.button("🔄 Actualizar precios IOL")
-    with c3:
-        st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
+    st.markdown('<div class="card">', unsafe_allow_html=True)
 
     # Cargar cashflows
     try:
@@ -247,12 +250,25 @@ def render(back_to_home=None):
     except Exception as e:
         st.error(str(e))
         st.info("Solución: columnas requeridas: ticker_original, root_key, Fecha, Cupon.")
+        st.markdown("</div></div>", unsafe_allow_html=True)
         return
 
     tickers_all = sorted(cashflows.keys())
-    tickers_sel = st.multiselect("Tickers (ticker_original)", tickers_all, default=tickers_all)
 
-    # Precios IOL cacheados
+    # Controls (solo plazo + ticker)
+    c1, c2, c3, c4 = st.columns([0.18, 0.52, 0.17, 0.13])
+    with c1:
+        plazo = st.selectbox("Plazo", [0, 1], index=0, format_func=lambda x: f"T{x}")
+    with c2:
+        tickers_sel = st.multiselect("Ticker", tickers_all, default=tickers_all)
+    with c3:
+        traer_precios = st.button("Actualizar IOL")
+    with c4:
+        calcular = st.button("Calcular", type="primary")
+
+    st.caption(f"Fuente cashflows: `{CASHFLOW_PATH}`")
+
+    # Precios cacheados
     if traer_precios or "ons_iol_prices" not in st.session_state:
         with st.spinner("Leyendo precios desde IOL..."):
             try:
@@ -263,12 +279,14 @@ def render(back_to_home=None):
 
     prices = st.session_state.get("ons_iol_prices")
 
-    if st.button("▶️ Calcular", type="primary"):
+    if calcular:
         if not tickers_sel:
             st.warning("Elegí al menos 1 ticker.")
+            st.markdown("</div></div>", unsafe_allow_html=True)
             return
         if prices is None:
-            st.warning("No hay precios cargados.")
+            st.warning("No hay precios cargados. Probá 'Actualizar IOL'.")
+            st.markdown("</div></div>", unsafe_allow_html=True)
             return
 
         settlement = _settlement(plazo)
@@ -285,10 +303,9 @@ def render(back_to_home=None):
 
             rows.append(
                 {
-                    "Ticker": t,          # ticker_original
-                    "Root": rk,           # root_key (para referencia)
-                    "USD": src,           # D o C
-                    "Precio": px,
+                    "Ticker": t,
+                    "USD": src,  # D o C
+                    "Precio USD": px,
                     "TIR (%)": tir(cf, px, plazo_dias=plazo),
                     "MD": modified_duration(cf, px, plazo_dias=plazo),
                     "Duration": duration(cf, px, plazo_dias=plazo),
@@ -300,34 +317,29 @@ def render(back_to_home=None):
         out = pd.DataFrame(rows)
         out["Vencimiento"] = pd.to_datetime(out["Vencimiento"], errors="coerce")
 
-        # ✅ SOLO CON PRECIO USD (rootD o rootC)
+        # ✅ SOLO con precio USD (si no hay rootD/rootC => afuera)
         out = out[
-            out["Precio"].notna()
-            & np.isfinite(out["Precio"])
-            & (out["Precio"] > 0)
+            out["Precio USD"].notna()
+            & np.isfinite(out["Precio USD"])
+            & (out["Precio USD"] > 0)
         ].copy()
 
         out = out.sort_values(["Vencimiento", "Ticker"], na_position="last").reset_index(drop=True)
 
-        # KPIs
-        k1, k2 = st.columns(2)
-        k1.metric("ONs con precio USD", f"{len(out)}")
-        k2.metric("Plazo", f"T{plazo}")
-
-        st.markdown("### ON´s")
+        # Tabla
+        st.markdown("<div class='muted' style='margin-top:8px;'>Resultados</div>", unsafe_allow_html=True)
 
         show = out.copy()
         show["Vencimiento"] = show["Vencimiento"].dt.date
 
         st.dataframe(
-            show[["Ticker", "Root", "USD", "Precio", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]],
+            show[["Ticker", "USD", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]],
             hide_index=True,
             use_container_width=True,
             column_config={
                 "Ticker": st.column_config.TextColumn("Ticker"),
-                "Root": st.column_config.TextColumn("Root"),
                 "USD": st.column_config.TextColumn("USD (D/C)"),
-                "Precio": st.column_config.NumberColumn("Precio USD", format="%.2f"),
+                "Precio USD": st.column_config.NumberColumn("Precio USD", format="%.2f"),
                 "TIR (%)": st.column_config.NumberColumn("TIR (%)", format="%.2f"),
                 "MD": st.column_config.NumberColumn("MD", format="%.2f"),
                 "Duration": st.column_config.NumberColumn("Duration", format="%.2f"),
@@ -335,3 +347,5 @@ def render(back_to_home=None):
                 "Volumen": st.column_config.NumberColumn("Volumen", format="%.0f"),
             },
         )
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
