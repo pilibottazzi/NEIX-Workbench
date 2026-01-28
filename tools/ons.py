@@ -10,7 +10,6 @@ from scipy import optimize
 
 CASHFLOW_PATH = os.path.join("data", "cashflows_ON.xlsx")
 
-
 # ======================================================
 # 1) XNPV / XIRR
 # ======================================================
@@ -265,9 +264,6 @@ def render(back_to_home=None):
             """,
             unsafe_allow_html=True,
         )
-    with right:
-        if back_to_home is not None:
-            st.button("← Volver", on_click=back_to_home)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
 
