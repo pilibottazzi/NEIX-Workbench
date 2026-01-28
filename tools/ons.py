@@ -8,8 +8,12 @@ import pandas as pd
 import streamlit as st
 from scipy import optimize
 
+CASHFLOW_PATH = os.path.join("data", "cashflows_ON.xlsx")
 
-CASHFLOW_PATH = os.path.join("data", "cashflows_ON.xlsx")  # <-- ajustalo si tu archivo se llama distinto
+# ✅ Filtro interno (NO se muestra en UI)
+TIR_MIN = -10.0
+TIR_MAX = 15.0
+
 
 # ======================================================
 # 1) XNPV / XIRR
@@ -53,12 +57,12 @@ def _future_cashflows(df: pd.DataFrame, settlement: dt.datetime) -> pd.DataFrame
 
 def load_cashflows_from_repo(path: str) -> pd.DataFrame:
     """
-    Lee el excel NUEVO (como tu captura):
+    Lee el excel NUEVO:
       - species
       - root_key
       - Fecha
-      - FlujoTotal (o Cupon si viniera)
-      - law (ARG / NYC) opcional
+      - FlujoTotal (o Cupon)
+      - law (ARG / NYC / NY / etc.) opcional
     """
     if not os.path.exists(path):
         raise FileNotFoundError(
@@ -73,7 +77,6 @@ def load_cashflows_from_repo(path: str) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Faltan columnas en {path}: {sorted(missing)} (mínimas: {sorted(req_min)})")
 
-    # flujo: FlujoTotal preferido, si no Cupon
     if "FlujoTotal" in df.columns:
         flujo_col = "FlujoTotal"
     elif "Cupon" in df.columns:
@@ -96,7 +99,6 @@ def load_cashflows_from_repo(path: str) -> pd.DataFrame:
 
 
 def build_cashflow_dict(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """Cashflow por species (ticker)."""
     out: dict[str, pd.DataFrame] = {}
     for k, g in df.groupby("species", sort=False):
         out[str(k)] = g[["Fecha", "Cupon"]].copy().sort_values("Fecha")
@@ -104,7 +106,6 @@ def build_cashflow_dict(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
 
 def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
-    """Meta por species: root_key/law más frecuentes y vencimiento."""
     meta = (
         df.groupby("species")
         .agg(
@@ -227,40 +228,51 @@ def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0
 
 
 # ======================================================
-# 5) UI (tabs por ley + selector columnas + filtro TIR)
+# 5) UI
 # ======================================================
 def _ui_css():
     st.markdown(
         """
     <style>
       .wrap{ max-width: 1200px; margin: 0 auto; }
-      .head{ display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:10px; }
       .title{ font-size:22px; font-weight:800; letter-spacing:.04em; color:#111827; }
       .sub{ color:rgba(17,24,39,.60); font-size:13px; margin-top:2px; }
-      .card{
-        border:1px solid rgba(17,24,39,0.08);
-        border-radius:14px;
-        padding:14px 14px;
-        background:#fff;
-        box-shadow: 0 8px 26px rgba(17,24,39,0.05);
-      }
       .muted{ color:rgba(17,24,39,.55); font-size:12px; }
+      /* tags más suaves (opcional) */
       div[data-baseweb="tag"]{ border-radius:999px !important; }
+      /* compactar un poco márgenes de widgets */
+      .stSelectbox, .stMultiSelect, .stButton{ padding-top: 0px; }
     </style>
     """,
         unsafe_allow_html=True,
     )
 
 
-def _law_label(law: str) -> str:
-    law = (law or "").strip().upper()
-    if law == "ARG":
+def normalize_law(x: str) -> str:
+    """
+    Unifica variantes:
+    - ARG / AR / LOCAL -> ARG
+    - NYC / NY / NEW YORK / NEWYORK -> NY
+    """
+    s = (x or "").strip().upper()
+    s = s.replace(".", "").replace("-", " ").replace("_", " ")
+    s = " ".join(s.split())
+
+    if s in {"ARG", "AR", "LOCAL", "LEY LOCAL"}:
+        return "ARG"
+    if s in {"NYC", "NY", "NEW YORK", "NEWYORK", "LEY NY", "LEY NEW YORK"}:
+        return "NY"
+    return s if s else "NA"
+
+
+def law_label(norm: str) -> str:
+    if norm == "ARG":
         return "Ley Local (ARG)"
-    if law in {"NYC", "NY", "NEW YORK"}:
-        return "Ley NY (NYC)"
-    if law == "NA":
+    if norm == "NY":
+        return "Ley NY (NY/NYC)"
+    if norm == "NA":
         return "Sin Ley"
-    return f"Ley {law}"
+    return f"Ley {norm}"
 
 
 def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.DataFrame:
@@ -274,8 +286,6 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
         venc = meta.loc[species, "Vencimiento"]
 
         px, vol, src = pick_usd_price_by_root(prices, rk)
-
-        # solo con precio
         if not np.isfinite(px) or px <= 0:
             continue
 
@@ -312,42 +322,39 @@ def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
 
-    left, right = st.columns([0.75, 0.25])
-    with left:
-        st.markdown(
-            """
-            <div class="head">
-              <div>
-                <div class="title">ONs · Rendimientos</div>
-                <div class="sub">Tabs por ley (ARG / NYC)</div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True, )
+    header_left, header_right = st.columns([0.78, 0.22])
+    with header_left:
+        st.markdown('<div class="title">ONs · Rendimientos</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub">Tabs por ley (ARG / NY). Precios desde IOL por <b>root_key</b>. Solo ONs con precio.</div>', unsafe_allow_html=True)
+    with header_right:
+        if back_to_home is not None:
+            st.button("← Volver", on_click=back_to_home)
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.divider()
 
     try:
         df_cf = load_cashflows_from_repo(CASHFLOW_PATH)
     except Exception as e:
         st.error(str(e))
-        st.info("Solución: el Excel debe tener columnas: species, root_key, Fecha y FlujoTotal/Cupon (+ law opcional).")
-        st.markdown("</div></div>", unsafe_allow_html=True)
+        st.info("El Excel debe tener: species, root_key, Fecha y FlujoTotal/Cupon (+ law opcional).")
         return
 
-    # filtros globales
-    c1, c2, c3, c4 = st.columns([0.18, 0.18, 0.24, 0.40])
-    with c1:
+    # Normalizo law para unir NYC/NY/etc
+    df_cf = df_cf.copy()
+    df_cf["law_norm"] = df_cf["law"].apply(normalize_law)
+
+    # --------
+    # Filtros (sin “barra rara”, layout nativo)
+    # --------
+    f1, f2, f3 = st.columns([0.20, 0.18, 0.62])
+    with f1:
         plazo = st.selectbox("Plazo", [0, 1], index=0, format_func=lambda x: f"T{x}")
-    with c2:
+    with f2:
         traer_precios = st.button("Actualizar IOL")
-    with c3:
-        # ✅ filtro TIR fijo -10 a 15 (lo pediste así)
-        st.text_input("Filtro TIR (%)", value="-10 a 15", disabled=True)
-    with c4:
+    with f3:
         st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
 
-    # cache precios
+    # Cache precios
     if traer_precios or "ons_iol_prices" not in st.session_state:
         with st.spinner("Leyendo precios desde IOL..."):
             try:
@@ -359,84 +366,75 @@ def render(back_to_home=None):
     prices = st.session_state.get("ons_iol_prices")
     if prices is None:
         st.warning("No hay precios cargados.")
-        st.markdown("</div></div>", unsafe_allow_html=True)
         return
 
-    # tabs por ley
-    laws_present = sorted(df_cf["law"].dropna().astype(str).str.upper().unique().tolist())
-    ordered = []
-    for x in ["ARG", "NYC"]:
-        if x in laws_present:
-            ordered.append(x)
-    for x in laws_present:
-        if x not in ordered:
-            ordered.append(x)
-    if not ordered:
-        ordered = ["NA"]
+    st.divider()
 
-    tabs = st.tabs([_law_label(x) for x in ordered])
+    # --------
+    # Tabs fijas: ARG y NY (unificadas)
+    # --------
+    tab_arg, tab_ny = st.tabs([law_label("ARG"), law_label("NY")])
 
-    for tab, law in zip(tabs, ordered):
+    for tab, law_norm in [(tab_arg, "ARG"), (tab_ny, "NY")]:
         with tab:
-            df_law = df_cf[df_cf["law"].astype(str).str.upper() == law].copy()
+            df_law = df_cf[df_cf["law_norm"] == law_norm].copy()
+
+            if df_law.empty:
+                st.info("No hay instrumentos para esta ley.")
+                continue
 
             tickers = sorted(df_law["species"].unique().tolist())
-            sel = st.multiselect("Ticker", tickers, default=tickers, key=f"tick_{law}")
+            sel = st.multiselect("Ticker", tickers, default=tickers, key=f"tick_{law_norm}")
 
-            calcular = st.button("Calcular", type="primary", key=f"calc_{law}")
-            if not calcular:
-                continue
+            if st.button("Calcular", type="primary", key=f"calc_{law_norm}"):
+                df_use = df_law[df_law["species"].isin(sel)].copy()
+                out = _compute_table(df_use, prices, plazo)
 
-            df_use = df_law[df_law["species"].isin(sel)].copy()
-            out = _compute_table(df_use, prices, plazo)
+                if out.empty:
+                    st.info("No hay ONs con precio para esta selección.")
+                    continue
 
-            if out.empty:
-                st.info("No hay ONs con precio para esta ley / selección.")
-                continue
+                # ✅ Filtro TIR interno (NO se muestra)
+                out = out[out["TIR (%)"].between(TIR_MIN, TIR_MAX, inclusive="both")].copy()
 
-            # ✅ filtro TIR -10 a 15
-            out = out[out["TIR (%)"].between(-10, 15, inclusive="both")].copy()
+                if out.empty:
+                    st.info("No quedaron ONs tras aplicar filtros internos.")
+                    continue
 
-            if out.empty:
-                st.info("Con el filtro de TIR (-10% a 15%), no quedaron ONs para mostrar.")
-                continue
+                # Columnas a mostrar (editable)
+                all_cols = ["Ticker", "USD", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
+                defaults = ["Ticker", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento"]
 
-            # selector de columnas (vos elegís qué ver)
-            all_cols = ["Ticker", "USD", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
-            defaults = ["Ticker", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento"]
+                cols_pick = st.multiselect(
+                    "Columnas a mostrar",
+                    options=all_cols,
+                    default=defaults,
+                    key=f"cols_{law_norm}",
+                )
 
-            cols_pick = st.multiselect(
-                "Columnas a mostrar",
-                options=all_cols,
-                default=defaults,
-                key=f"cols_{law}",
-            )
-            if "Ticker" not in cols_pick:
-                cols_pick = ["Ticker"] + cols_pick
-            if "Vencimiento" not in cols_pick:
-                cols_pick = cols_pick + ["Vencimiento"]
+                # Seguridad mínima
+                if "Ticker" not in cols_pick:
+                    cols_pick = ["Ticker"] + cols_pick
+                if "Vencimiento" not in cols_pick:
+                    cols_pick = cols_pick + ["Vencimiento"]
 
-            title = f"Tabla comercial · {_law_label(law)}"
-            st.markdown(f"### {title}")
+                st.markdown(f"### Tabla comercial · {law_label(law_norm)}")
 
-            show = out.copy()
-            show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
+                show = out.copy()
+                show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
 
-            st.dataframe(
-                show[cols_pick],
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Ticker": st.column_config.TextColumn("Ticker"),
-                    "USD": st.column_config.TextColumn("USD (D/C)"),
-                    "Precio USD": st.column_config.NumberColumn("Precio USD", format="%.2f"),
-                    "TIR (%)": st.column_config.NumberColumn("TIR (%)", format="%.2f"),
-                    "MD": st.column_config.NumberColumn("MD", format="%.2f"),
-                    "Duration": st.column_config.NumberColumn("Duration", format="%.2f"),
-                    "Vencimiento": st.column_config.DateColumn("Vencimiento", format="DD/MM/YYYY"),
-                    "Volumen": st.column_config.NumberColumn("Volumen", format="%.0f"),
-                },
-            )
-
-    st.markdown("</div></div>", unsafe_allow_html=True)
-
+                st.dataframe(
+                    show[cols_pick],
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "Ticker": st.column_config.TextColumn("Ticker"),
+                        "USD": st.column_config.TextColumn("USD (D/C)"),
+                        "Precio USD": st.column_config.NumberColumn("Precio USD", format="%.2f"),
+                        "TIR (%)": st.column_config.NumberColumn("TIR (%)", format="%.2f"),
+                        "MD": st.column_config.NumberColumn("MD", format="%.2f"),
+                        "Duration": st.column_config.NumberColumn("Duration", format="%.2f"),
+                        "Vencimiento": st.column_config.DateColumn("Vencimiento", format="DD/MM/YYYY"),
+                        "Volumen": st.column_config.NumberColumn("Volumen", format="%.0f"),
+                    },
+                )
