@@ -4,10 +4,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-
-# =========================
-# Matemática (SIN scipy)
-# =========================
 def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
     chron = sorted(cashflows, key=lambda x: x[0])
     t0 = chron[0][0]
