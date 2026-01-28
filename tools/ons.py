@@ -323,11 +323,7 @@ def render(back_to_home=None):
               </div>
             </div>
             """,
-            unsafe_allow_html=True,
-        )
-    with right:
-        if back_to_home is not None:
-            st.button("← ", on_click=back_to_home)
+            unsafe_allow_html=True, )
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
 
