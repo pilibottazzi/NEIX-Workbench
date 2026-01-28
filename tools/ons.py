@@ -2,11 +2,11 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 from scipy import optimize
+import streamlit as st
 
+def render(back_to_home=None):
+    st.markdown("## ONs")
 
-# ======================================================
-# 1) Funciones financieras (las tuyas, prolijas)
-# ======================================================
 def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
     chron = sorted(cashflows, key=lambda x: x[0])
     t0 = chron[0][0]
