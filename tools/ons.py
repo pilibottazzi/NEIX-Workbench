@@ -332,10 +332,7 @@ def render(back_to_home=None):
     h1, h2 = st.columns([0.78, 0.22])
     with h1:
         st.markdown('<div class="title">NEIX · ONs</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub">Tabs por ley (ARG / NY). Precios desde IOL por root_key. Solo ONs con precio.</div>', unsafe_allow_html=True)
-    with h2:
-        if back_to_home is not None:
-            st.button("← Volver", on_click=back_to_home)
+        st.markdown('<div class="sub">Tabs por ley (ARG / NY).</div>', unsafe_allow_html=True)
 
     st.divider()
 
