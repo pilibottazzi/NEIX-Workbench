@@ -23,7 +23,6 @@ def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
     t0 = chron[0][0]
     if rate <= -0.999999:
         return np.nan
-
     out = 0.0
     for t, cf in chron:
         years = (t - t0).days / 365.0
@@ -65,9 +64,7 @@ def load_cashflows_from_repo(path: str) -> pd.DataFrame:
       - law (ARG / NYC / NY / etc.) opcional
     """
     if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"No existe el archivo: {path}. Subilo al repo (ej: data/cashflows_ON.xlsx)."
-        )
+        raise FileNotFoundError(f"No existe el archivo: {path}. Subilo al repo (ej: data/cashflows_ON.xlsx).")
 
     df = pd.read_excel(path)
     df.columns = df.columns.astype(str).str.strip()
@@ -75,9 +72,7 @@ def load_cashflows_from_repo(path: str) -> pd.DataFrame:
     req_min = {"species", "root_key", "Fecha"}
     missing = req_min - set(df.columns)
     if missing:
-        raise ValueError(
-            f"Faltan columnas en {path}: {sorted(missing)} (mínimas: {sorted(req_min)})"
-        )
+        raise ValueError(f"Faltan columnas en {path}: {sorted(missing)} (mínimas: {sorted(req_min)})")
 
     if "FlujoTotal" in df.columns:
         flujo_col = "FlujoTotal"
@@ -96,9 +91,7 @@ def load_cashflows_from_repo(path: str) -> pd.DataFrame:
     df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
     df["Cupon"] = pd.to_numeric(df[flujo_col], errors="coerce")
 
-    df = df.dropna(subset=["species", "root_key", "Fecha", "Cupon"]).sort_values(
-        ["species", "Fecha"]
-    )
+    df = df.dropna(subset=["species", "root_key", "Fecha", "Cupon"]).sort_values(["species", "Fecha"])
     return df
 
 
@@ -253,7 +246,7 @@ def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0
 
 
 # ======================================================
-# 6) UI (layout prolijo + buscador + seleccionar todo)
+# 6) UI helpers
 # ======================================================
 def _ui_css():
     st.markdown(
@@ -262,27 +255,39 @@ def _ui_css():
   .wrap{ max-width: 1250px; margin: 0 auto; }
   .title{ font-size:22px; font-weight:800; letter-spacing:.05em; color:#111827; }
   .sub{ color:rgba(17,24,39,.65); font-size:13px; margin-top:2px; }
-  .muted{ color:rgba(17,24,39,.55); font-size:12px; }
+  .soft-hr{ height:1px; background:rgba(17,24,39,.08); margin: 14px 0 18px; }
 
   .block-container { padding-top: 1.2rem; }
   label { margin-bottom: 0.25rem !important; }
 
-  /* Inputs */
   .stSelectbox div[data-baseweb="select"]{ border-radius: 12px; }
   .stMultiSelect div[data-baseweb="select"]{ border-radius: 12px; }
-
-  /* Tags pills */
   div[data-baseweb="tag"]{ border-radius:999px !important; }
 
-  /* Buttons */
   .stButton > button { border-radius: 14px; padding: 0.60rem 1.0rem; }
 
-  /* Subtle separators */
-  .soft-hr{ height:1px; background:rgba(17,24,39,.08); margin: 10px 0 14px; }
+  /* Expander prolijo */
+  details summary { font-size: 14px; }
 </style>
 """,
         unsafe_allow_html=True,
     )
+
+
+def _select_all_multiselect(label: str, options: list[str], key_base: str, default_all: bool = True) -> list[str]:
+    """
+    Multiselect con buscador + checkbox "Seleccionar todo".
+    Se ve prolijo dentro de un expander.
+    """
+    # Estado inicial
+    if f"{key_base}_all" not in st.session_state:
+        st.session_state[f"{key_base}_all"] = bool(default_all)
+
+    sel_all = st.checkbox("Seleccionar todo", key=f"{key_base}_all")
+
+    default = options if sel_all else options  # dejamos default = options para que arranque completo y el user quite
+    picked = st.multiselect(label, options=options, default=default, key=f"{key_base}_ms")
+    return picked
 
 
 def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.DataFrame:
@@ -315,6 +320,7 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
                 "Duration": duration(cf, px, plazo_dias=plazo),
                 "Vencimiento": venc,
                 "Volumen": vol,
+                "Ley": law_norm,
             }
         )
 
@@ -327,23 +333,9 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
     return out
 
 
-def _select_all_multiselect(label: str, options: list[str], default: list[str], key_base: str) -> list[str]:
-    """
-    Multiselect con:
-    - buscador (nativo del multiselect)
-    - checkbox "Seleccionar todo" (sin emoji)
-    """
-    c1, c2 = st.columns([0.22, 0.78], vertical_alignment="bottom")
-    with c1:
-        sel_all = st.checkbox("Seleccionar todo", value=(len(default) == len(options)), key=f"{key_base}_all")
-    with c2:
-        if sel_all:
-            picked = st.multiselect(label, options=options, default=options, key=f"{key_base}_ms")
-        else:
-            picked = st.multiselect(label, options=options, default=default, key=f"{key_base}_ms")
-    return picked
-
-
+# ======================================================
+# 7) Render
+# ======================================================
 def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
@@ -370,18 +362,42 @@ def render(back_to_home=None):
     df_cf = df_cf.copy()
     df_cf["law_norm"] = df_cf["law"].apply(normalize_law)
 
-    # ======================================================
-    # Controles en la MISMA FILA: Ticker + Plazo + Columnas
-    # (y debajo: botones actualizar precios / calcular)
-    # ======================================================
-    # Tabs ABAJO (como pediste): primero el panel de controles, luego tabs.
-    st.markdown("### Controles")
+    # -------------------------
+    # 1) Filtros ARRIBA (compactos con solapa)
+    # -------------------------
+    st.markdown("### Filtros")
 
-    c_ticker, c_plazo, c_cols = st.columns([0.46, 0.18, 0.36], vertical_alignment="bottom")
+    all_tickers = sorted(df_cf["species"].dropna().astype(str).str.upper().unique().tolist())
 
-    # Placeholder de selecciones por ley (se resuelve dentro de cada tab, pero mantenemos UI consistente)
-    # Mostramos una ayuda arriba, y en cada tab se maneja el detalle.
-    with c_plazo:
+    with st.expander("Ticker (selección)", expanded=True):
+        sel_tickers = _select_all_multiselect("Ticker", options=all_tickers, key_base="tickers", default_all=True)
+
+    # Columnas (solapa)
+    all_cols = ["Ticker", "USD", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
+    default_cols = ["Ticker", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento"]
+
+    with st.expander("Columnas a mostrar", expanded=False):
+        cols_pick = st.multiselect(
+            "Columnas",
+            options=all_cols,
+            default=default_cols,
+            key="cols_global",
+        )
+        if "Ticker" not in cols_pick:
+            cols_pick = ["Ticker"] + cols_pick
+        if "Vencimiento" not in cols_pick:
+            cols_pick = cols_pick + ["Vencimiento"]
+
+    st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
+
+    # -------------------------
+    # 2) Parámetros + botones (ordenado)
+    # -------------------------
+    st.markdown("### Parámetros")
+
+    p1, p2, p3, p4 = st.columns([0.22, 0.22, 0.22, 0.34], vertical_alignment="bottom")
+
+    with p1:
         plazo = st.selectbox(
             "Plazo de liquidación",
             [1, 0],
@@ -390,30 +406,16 @@ def render(back_to_home=None):
             key="plazo_global",
         )
 
-    with c_cols:
-        all_cols = ["Ticker", "USD", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
-        defaults = ["Ticker", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento"]
-        cols_pick = st.multiselect(
-            "Columnas a mostrar",
-            options=all_cols,
-            default=defaults,
-            key="cols_global",
-        )
-        if "Ticker" not in cols_pick:
-            cols_pick = ["Ticker"] + cols_pick
-        if "Vencimiento" not in cols_pick:
-            cols_pick = cols_pick + ["Vencimiento"]
-
-    # Botones abajo (alineados)
-    b1, b2, b3 = st.columns([0.24, 0.24, 0.52], vertical_alignment="bottom")
-    with b1:
+    with p2:
         traer_precios = st.button("Actualizar precios", use_container_width=True)
-    with b2:
+
+    with p3:
         calcular = st.button("Calcular", type="primary", use_container_width=True)
-    with b3:
+
+    with p4:
         st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
 
-    # Cache precios (global)
+    # Cache precios
     if traer_precios or "ons_iol_prices" not in st.session_state:
         with st.spinner("Leyendo precios desde IOL..."):
             try:
@@ -429,36 +431,28 @@ def render(back_to_home=None):
 
     st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
 
-    # ======================================================
-    # TABS (ABAJO)
-    # ======================================================
+    # -------------------------
+    # 3) Tabs ABAJO (como te gusta)
+    # -------------------------
     tab_arg, tab_ny = st.tabs([law_label("ARG"), law_label("NY")])
 
     def _render_tab(law_norm: str):
         df_law = df_cf[df_cf["law_norm"] == law_norm].copy()
         if df_law.empty:
-            st.info("No hay instrumentos para esta ley (revisá columna law en el cashflow).")
+            st.info("No hay instrumentos para esta ley.")
             return
 
-        tickers = sorted(df_law["species"].unique().tolist())
-
-        # ticker selector (con buscar + seleccionar todo)
-        # lo ponemos dentro del tab pero visualmente “manda” el control de arriba
-        # (no hay forma nativa de que el control viva fuera del tab y afecte dentro sin duplicar)
-        sel = _select_all_multiselect(
-            "Ticker (selección)",
-            options=tickers,
-            default=tickers,
-            key_base=f"tick_{law_norm}",
-        )
+        # aplica tickers globales
+        df_law = df_law[df_law["species"].isin(sel_tickers)].copy()
+        if df_law.empty:
+            st.info("No hay tickers para esta selección dentro de esta ley.")
+            return
 
         if not calcular:
-            st.info("Elegí tickers (podés buscar) y tocá **Calcular**.")
+            st.info("Ajustá filtros y tocá **Calcular**.")
             return
 
-        df_use = df_law[df_law["species"].isin(sel)].copy()
-        out = _compute_table(df_use, prices, plazo)
-
+        out = _compute_table(df_law, prices, plazo)
         if out.empty:
             st.warning("No hay ONs con precio para esta selección.")
             return
@@ -471,19 +465,15 @@ def render(back_to_home=None):
 
         show = out.copy()
         show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
+        show = show.drop(columns=["Ley"], errors="ignore")
 
         st.markdown(f"### NEIX · ONs · {law_label(law_norm)}")
 
-        # altura dinámica
         base = 420
         row_h = 28
         max_h = 950
         height_df = int(min(max_h, base + row_h * len(show)))
 
-        # Centrados: TODO menos Ticker y Vencimiento
-        # (Streamlit no ofrece align directo por columna en dataframe;
-        #  lo resolvemos vía column_config y CSS, pero el centrado real depende del renderer.
-        #  Aun así, lo dejamos lo más cercano posible con widths consistentes.)
         st.dataframe(
             show[cols_pick],
             hide_index=True,
