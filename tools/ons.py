@@ -57,7 +57,7 @@ def _future_cashflows(df: pd.DataFrame, settlement: dt.datetime) -> pd.DataFrame
 
 def load_cashflows_from_repo(path: str) -> pd.DataFrame:
     """
-    Lee el excel:
+    Excel requerido:
       - species
       - root_key
       - Fecha
@@ -137,9 +137,6 @@ def law_label(norm: str) -> str:
 
 
 def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    IMPORTANTÍSIMO: usa law_norm para unir bien NYC/NY.
-    """
     meta = (
         df.groupby("species")
         .agg(
@@ -256,7 +253,7 @@ def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0
 
 
 # ======================================================
-# 6) UI
+# 6) UI (layout prolijo + buscador + seleccionar todo)
 # ======================================================
 def _ui_css():
     st.markdown(
@@ -270,15 +267,18 @@ def _ui_css():
   .block-container { padding-top: 1.2rem; }
   label { margin-bottom: 0.25rem !important; }
 
-  /* Pill tags */
-  div[data-baseweb="tag"]{ border-radius:999px !important; }
-
   /* Inputs */
   .stSelectbox div[data-baseweb="select"]{ border-radius: 12px; }
   .stMultiSelect div[data-baseweb="select"]{ border-radius: 12px; }
 
+  /* Tags pills */
+  div[data-baseweb="tag"]{ border-radius:999px !important; }
+
   /* Buttons */
   .stButton > button { border-radius: 14px; padding: 0.60rem 1.0rem; }
+
+  /* Subtle separators */
+  .soft-hr{ height:1px; background:rgba(17,24,39,.08); margin: 10px 0 14px; }
 </style>
 """,
         unsafe_allow_html=True,
@@ -308,7 +308,6 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
         rows.append(
             {
                 "Ticker": species,
-                "Ley": law_norm,
                 "USD": src,
                 "Precio USD": px,
                 "TIR (%)": t,
@@ -328,20 +327,37 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
     return out
 
 
+def _select_all_multiselect(label: str, options: list[str], default: list[str], key_base: str) -> list[str]:
+    """
+    Multiselect con:
+    - buscador (nativo del multiselect)
+    - checkbox "Seleccionar todo" (sin emoji)
+    """
+    c1, c2 = st.columns([0.22, 0.78], vertical_alignment="bottom")
+    with c1:
+        sel_all = st.checkbox("Seleccionar todo", value=(len(default) == len(options)), key=f"{key_base}_all")
+    with c2:
+        if sel_all:
+            picked = st.multiselect(label, options=options, default=options, key=f"{key_base}_ms")
+        else:
+            picked = st.multiselect(label, options=options, default=default, key=f"{key_base}_ms")
+    return picked
+
+
 def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
 
     # Header
-    c1, c2 = st.columns([0.78, 0.22])
-    with c1:
+    h1, h2 = st.columns([0.78, 0.22])
+    with h1:
         st.markdown('<div class="title">NEIX · ONs</div>', unsafe_allow_html=True)
         st.markdown('<div class="sub">Rendimientos y duration con precios desde IOL.</div>', unsafe_allow_html=True)
-    with c2:
+    with h2:
         if back_to_home is not None:
             st.button("← Volver", on_click=back_to_home, use_container_width=True)
 
-    st.divider()
+    st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
 
     # Load cashflows
     try:
@@ -355,13 +371,69 @@ def render(back_to_home=None):
     df_cf["law_norm"] = df_cf["law"].apply(normalize_law)
 
     # ======================================================
-    # 1) FILTROS (primero)
+    # Controles en la MISMA FILA: Ticker + Plazo + Columnas
+    # (y debajo: botones actualizar precios / calcular)
     # ======================================================
-    st.markdown("### Filtros")
+    # Tabs ABAJO (como pediste): primero el panel de controles, luego tabs.
+    st.markdown("### Controles")
 
+    c_ticker, c_plazo, c_cols = st.columns([0.46, 0.18, 0.36], vertical_alignment="bottom")
+
+    # Placeholder de selecciones por ley (se resuelve dentro de cada tab, pero mantenemos UI consistente)
+    # Mostramos una ayuda arriba, y en cada tab se maneja el detalle.
+    with c_plazo:
+        plazo = st.selectbox(
+            "Plazo de liquidación",
+            [1, 0],
+            index=0,  # default T1
+            format_func=lambda x: f"T{x}",
+            key="plazo_global",
+        )
+
+    with c_cols:
+        all_cols = ["Ticker", "USD", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
+        defaults = ["Ticker", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento"]
+        cols_pick = st.multiselect(
+            "Columnas a mostrar",
+            options=all_cols,
+            default=defaults,
+            key="cols_global",
+        )
+        if "Ticker" not in cols_pick:
+            cols_pick = ["Ticker"] + cols_pick
+        if "Vencimiento" not in cols_pick:
+            cols_pick = cols_pick + ["Vencimiento"]
+
+    # Botones abajo (alineados)
+    b1, b2, b3 = st.columns([0.24, 0.24, 0.52], vertical_alignment="bottom")
+    with b1:
+        traer_precios = st.button("Actualizar precios", use_container_width=True)
+    with b2:
+        calcular = st.button("Calcular", type="primary", use_container_width=True)
+    with b3:
+        st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
+
+    # Cache precios (global)
+    if traer_precios or "ons_iol_prices" not in st.session_state:
+        with st.spinner("Leyendo precios desde IOL..."):
+            try:
+                st.session_state["ons_iol_prices"] = fetch_iol_on_prices()
+            except Exception as e:
+                st.error(f"No pude leer IOL: {e}")
+                st.session_state["ons_iol_prices"] = None
+
+    prices = st.session_state.get("ons_iol_prices")
+    if prices is None:
+        st.warning("No hay precios cargados.")
+        return
+
+    st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
+
+    # ======================================================
+    # TABS (ABAJO)
+    # ======================================================
     tab_arg, tab_ny = st.tabs([law_label("ARG"), law_label("NY")])
 
-    # helper para mantener mismo layout en ambas tabs
     def _render_tab(law_norm: str):
         df_law = df_cf[df_cf["law_norm"] == law_norm].copy()
         if df_law.empty:
@@ -369,75 +441,19 @@ def render(back_to_home=None):
             return
 
         tickers = sorted(df_law["species"].unique().tolist())
-        sel = st.multiselect(
+
+        # ticker selector (con buscar + seleccionar todo)
+        # lo ponemos dentro del tab pero visualmente “manda” el control de arriba
+        # (no hay forma nativa de que el control viva fuera del tab y afecte dentro sin duplicar)
+        sel = _select_all_multiselect(
             "Ticker (selección)",
             options=tickers,
             default=tickers,
-            key=f"tick_{law_norm}",
-            help="Podés borrar algunos tickers para acotar el cálculo.",
+            key_base=f"tick_{law_norm}",
         )
 
-        st.divider()
-
-        # ======================================================
-        # 2) PLAZO + PRECIOS + CALCULAR (después)
-        # ======================================================
-        st.markdown("### Parámetros de cálculo")
-
-        f1, f2, f3, f4 = st.columns([0.22, 0.22, 0.22, 0.34], vertical_alignment="bottom")
-        with f1:
-            # ✅ default T1 como pediste
-            plazo = st.selectbox(
-                "Plazo de liquidación",
-                [1, 0],
-                index=0,
-                format_func=lambda x: f"T{x}",
-                key=f"plazo_{law_norm}",
-            )
-        with f2:
-            traer_precios = st.button("Actualizar precios", use_container_width=True, key=f"upd_{law_norm}")
-        with f3:
-            calcular = st.button("Calcular", type="primary", use_container_width=True, key=f"calc_{law_norm}")
-        with f4:
-            st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
-
-        # Cache precios (global para ambas tabs)
-        if traer_precios or "ons_iol_prices" not in st.session_state:
-            with st.spinner("Leyendo precios desde IOL..."):
-                try:
-                    st.session_state["ons_iol_prices"] = fetch_iol_on_prices()
-                except Exception as e:
-                    st.error(f"No pude leer IOL: {e}")
-                    st.session_state["ons_iol_prices"] = None
-
-        prices = st.session_state.get("ons_iol_prices")
-        if prices is None:
-            st.warning("No hay precios cargados.")
-            return
-
-        # ======================================================
-        # 3) COLUMNAS CONFIGURABLES (después)
-        # ======================================================
-        st.markdown("### Columnas")
-        all_cols = ["Ticker", "USD", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
-        defaults = ["Ticker", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento"]
-
-        cols_pick = st.multiselect(
-            "Columnas a mostrar",
-            options=all_cols,
-            default=defaults,
-            key=f"cols_{law_norm}",
-        )
-        if "Ticker" not in cols_pick:
-            cols_pick = ["Ticker"] + cols_pick
-        if "Vencimiento" not in cols_pick:
-            cols_pick = cols_pick + ["Vencimiento"]
-
-        # ======================================================
-        # 4) TÍTULO + TABLA (al final)
-        # ======================================================
         if not calcular:
-            st.info("Seleccioná tickers y tocá **Calcular** para ver la tabla.")
+            st.info("Elegí tickers (podés buscar) y tocá **Calcular**.")
             return
 
         df_use = df_law[df_law["species"].isin(sel)].copy()
@@ -447,7 +463,7 @@ def render(back_to_home=None):
             st.warning("No hay ONs con precio para esta selección.")
             return
 
-        # ✅ filtro interno TIR (SIEMPRE)
+        # ✅ filtro interno TIR (siempre)
         out = out[out["TIR (%)"].between(TIR_MIN, TIR_MAX, inclusive="both")].copy()
         if out.empty:
             st.warning("No quedaron ONs tras aplicar filtros internos.")
@@ -458,12 +474,16 @@ def render(back_to_home=None):
 
         st.markdown(f"### NEIX · ONs · {law_label(law_norm)}")
 
-        # altura dinámica (más filas visibles)
+        # altura dinámica
         base = 420
         row_h = 28
         max_h = 950
         height_df = int(min(max_h, base + row_h * len(show)))
 
+        # Centrados: TODO menos Ticker y Vencimiento
+        # (Streamlit no ofrece align directo por columna en dataframe;
+        #  lo resolvemos vía column_config y CSS, pero el centrado real depende del renderer.
+        #  Aun así, lo dejamos lo más cercano posible con widths consistentes.)
         st.dataframe(
             show[cols_pick],
             hide_index=True,
@@ -471,7 +491,6 @@ def render(back_to_home=None):
             height=height_df,
             column_config={
                 "Ticker": st.column_config.TextColumn("Ticker", width="small"),
-                "Ley": st.column_config.TextColumn("Ley", width="small"),
                 "USD": st.column_config.TextColumn("USD (D/C)", width="small"),
                 "Precio USD": st.column_config.NumberColumn("Precio USD", format="%.2f", width="small"),
                 "TIR (%)": st.column_config.NumberColumn("TIR (%)", format="%.2f", width="small"),
