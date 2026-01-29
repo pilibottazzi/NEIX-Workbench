@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import datetime as dt
 import numpy as np
 import pandas as pd
@@ -12,19 +13,19 @@ from scipy import optimize
 # Config
 # =========================
 CASHFLOW_PATH = os.path.join("data", "cashflows_completos.xlsx")
-PRICE_SUFFIX = "D"
+PRICE_SUFFIX = "D"  # precios USD en IOL: ticker + D (ej: AL30D)
 
 # =========================
 # Parse robusto (IOL)
 # =========================
 def parse_iol_number(x) -> float:
     """
-    Soporta:
-    - AR: 1.234,56  -> 1234.56
-    - US: 1,234.56  -> 1234.56
-    - US decimal: 62.00 -> 62.00 (NO 6200)
-    - AR decimal: 62,00 -> 62.00
-    - "62.00" / '62,00' con comillas
+    Soporta formatos típicos que aparecen en IOL:
+    - 61.03  (decimal punto)  -> 61.03
+    - 61,03  (decimal coma)   -> 61.03
+    - 1.234,56 (AR)           -> 1234.56
+    - 1,234.56 (US)           -> 1234.56
+    - 6.103 (miles con punto) -> 6103   (si el último bloque tiene 3 dígitos)
     - '-' / '' / None -> NaN
     """
     if x is None:
@@ -37,22 +38,71 @@ def parse_iol_number(x) -> float:
     # limpiar comillas y espacios raros
     s = s.replace('"', "").replace("'", "").replace("\u00a0", " ").strip()
 
-    # Caso con ambos separadores: decidir formato por el último separador
-    if "," in s and "." in s:
-        if s.rfind(",") > s.rfind("."):
-            # AR: miles '.' y decimales ','
-            s = s.replace(".", "").replace(",", ".")
-        else:
-            # US: miles ',' y decimales '.'
-            s = s.replace(",", "")
-    else:
-        # solo coma -> decimal coma
-        if "," in s and "." not in s:
-            s = s.replace(".", "").replace(",", ".")
-        # múltiples puntos (miles) -> sacarlos (ej: 1.234.567)
-        if s.count(".") > 1:
-            s = s.replace(".", "")
+    # dejar solo dígitos y separadores
+    s = re.sub(r"[^0-9\.,]", "", s)
 
+    # Caso 1: decimal con punto (ej 61.03)
+    if re.match(r"^\d+\.\d{1,4}$", s):
+        try:
+            return float(s)
+        except Exception:
+            return np.nan
+
+    # Caso 2: decimal con coma (ej 61,03)
+    if re.match(r"^\d+,\d{1,4}$", s):
+        try:
+            return float(s.replace(",", "."))
+        except Exception:
+            return np.nan
+
+    # Caso 3: tiene ambos separadores -> inferir por el último separador
+    if "," in s and "." in s:
+        if s.rfind(".") > s.rfind(","):
+            # US: miles ',' y decimal '.': 1,234.56
+            s2 = s.replace(",", "")
+            try:
+                return float(s2)
+            except Exception:
+                return np.nan
+        else:
+            # AR: miles '.' y decimal ',': 1.234,56
+            s2 = s.replace(".", "").replace(",", ".")
+            try:
+                return float(s2)
+            except Exception:
+                return np.nan
+
+    # Caso 4: solo puntos (puede ser miles: 6.103 o 1.234.567)
+    if "." in s and "," not in s:
+        parts = s.split(".")
+        # si el último bloque tiene 3 dígitos, lo tomamos como miles -> quitamos puntos
+        if len(parts[-1]) == 3:
+            s2 = "".join(parts)
+            try:
+                return float(s2)
+            except Exception:
+                return np.nan
+        # si no, lo tratamos como float normal (decimal punto)
+        try:
+            return float(s)
+        except Exception:
+            return np.nan
+
+    # Caso 5: solo comas (puede ser miles o decimal)
+    if "," in s and "." not in s:
+        parts = s.split(",")
+        if len(parts[-1]) == 3:
+            s2 = "".join(parts)
+            try:
+                return float(s2)
+            except Exception:
+                return np.nan
+        try:
+            return float(s.replace(",", "."))
+        except Exception:
+            return np.nan
+
+    # Caso final: solo dígitos
     try:
         return float(s)
     except Exception:
@@ -215,7 +265,7 @@ def fetch_iol_bonos_prices() -> pd.DataFrame:
     df = pd.DataFrame()
     df["Ticker"] = bonos["Símbolo"].astype(str).str.strip().str.upper()
 
-    # ✅ parse robusto (NO multiplica x100 por error)
+    # ✅ parse robusto
     df["Precio"] = bonos["Último Operado"].apply(parse_iol_number)
 
     if "Monto Operado" in cols:
