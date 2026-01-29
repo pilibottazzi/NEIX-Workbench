@@ -7,10 +7,63 @@ import pandas as pd
 import streamlit as st
 from scipy import optimize
 
+# =========================
+# Config
+# =========================
 CASHFLOW_PATH = os.path.join("data", "cashflows_completos.xlsx")
 PRICE_SUFFIX = "D"
 
+# ✅ filtro TIR (default como pediste)
+DEFAULT_TIR_MIN = -10.0
+DEFAULT_TIR_MAX = 20.0
+
+# =========================
+# Excepciones ticker pesos -> ticker USD (MEP)
+# (cuando NO es simplemente "ticker + D")
+# =========================
+PESOS_TO_USD_OVERRIDES: dict[str, str] = {
+    # Provincia (ejemplos que pasaste)
+    "BPOB7": "BPB7D",
+    "BPOC7": "BPC7D",
+    "BPOD7": "BPD7D",
+
+    # Otros que mencionaste
+    "BPY26": "BPY6D",
+    "AL30": "AL30D",
+    "AL35": "AL35D",
+    "AE38": "AE38D",
+    "AL41": "AL41D",
+    "GD30": "GD30D",
+    "GD35": "GD35D",
+    "GD38": "GD38D",
+    "GD41": "GD41D",
+
+    # Los que querés contemplar sí o sí (aunque no estén en el cashflow hoy)
+    # (si en tu cashflow aparecieran con otra sigla en pesos, me avisás y los mapeamos)
+    "BPA7": "BPA7D",
+    "BPB7": "BPB7D",
+    "BPC7": "BPC7D",
+    "BPA8": "BPA8D",
+    "BPB8": "BPB8D",
+}
+
+# también armamos el set de tickers USD “permitidos” (para sanity)
+USD_TICKERS_EXTRA = {
+    "BPY6D", "BPA7D", "BPB7D", "BPC7D", "BPD7D", "BPA8D", "BPB8D",
+    "AL30D", "AL35D", "AE38D", "AL41D",
+    "GD30D", "GD35D", "GD38D", "GD41D",
+}
+
+# =========================
+# Parsing números IOL (AR)
+# =========================
 def parse_ar_number(x) -> float:
+    """
+    Convierte:
+      89.190,00 -> 89190.00
+      22.733.580,97 -> 22733580.97
+      6323 -> 6323.0
+    """
     if x is None:
         return np.nan
     s = str(x).strip()
@@ -26,14 +79,11 @@ def parse_ar_number(x) -> float:
 def usd_fix_if_needed(ticker: str, raw_last: str, value: float) -> float:
     """
     Fix para tickers USD (terminan en D).
-    En IOL, a veces el 'Último Operado' para D viene en centavos sin separador:
-      '6097' -> 60.97
-      '6323' -> 63.23
-
+    A veces IOL devuelve '6097' (sin separadores) para D y en realidad es 60.97.
     Regla:
-    - Si termina en 'D'
-    - y el raw NO tiene '.' ni ','
-    - => dividir por 100
+      - termina en D
+      - raw NO tiene '.' ni ','
+      => dividir por 100
     """
     if not np.isfinite(value):
         return value
@@ -190,13 +240,11 @@ def fetch_iol_bonos_prices() -> pd.DataFrame:
     """
     Index: Ticker
     Columns: Precio, Volumen
-
-    Importante:
-    - NO fijamos flavor="html5lib" para que no rompa en el servidor (depende de lxml).
-    - Para tickers D, aplicamos fix /100 si viene entero sin separadores.
+    - No fijamos flavor para que no rompa en el servidor (usa lxml en prod).
+    - Fix USD (D) si viene entero: /100.
     """
     url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
-    tables = pd.read_html(url)  # <- prod friendly
+    tables = pd.read_html(url)
     if not tables:
         return pd.DataFrame()
 
@@ -209,11 +257,8 @@ def fetch_iol_bonos_prices() -> pd.DataFrame:
     df = pd.DataFrame()
     df["Ticker"] = bonos["Símbolo"].astype(str).str.strip().str.upper()
 
-    # raw + parse
     df["RawPrecio"] = bonos["Último Operado"].astype(str).str.strip()
     df["Precio"] = bonos["Último Operado"].apply(parse_ar_number)
-
-    # fix USD D
     df["Precio"] = [
         usd_fix_if_needed(tk, raw, val)
         for tk, raw, val in zip(df["Ticker"], df["RawPrecio"], df["Precio"])
@@ -298,7 +343,19 @@ def _ui_css():
   .stButton > button { border-radius: 14px; padding: .68rem 1.0rem; font-weight: 700; }
   .stSelectbox div[data-baseweb="select"]{ border-radius: 14px; }
   .stMultiSelect div[data-baseweb="select"]{ border-radius: 14px; }
-  div[data-baseweb="tag"]{ border-radius: 999px !important; font-weight: 650; }
+
+  /* ✅ tags (chips) gris clarito */
+  div[data-baseweb="tag"]{
+    background: rgba(17,24,39,.06) !important;
+    color:#111827 !important;
+    border: 1px solid rgba(17,24,39,.10) !important;
+    border-radius: 999px !important;
+    font-weight: 650 !important;
+  }
+  div[data-baseweb="tag"] svg{
+    color: rgba(17,24,39,.55) !important;
+  }
+
   div[data-testid="stDataFrame"] {
     border-radius: 16px;
     overflow: hidden;
@@ -323,15 +380,29 @@ def _multiselect_with_all(label: str, options: list[str], key: str, default_all:
     return sel
 
 
-def _pick_price_usd_only(prices: pd.DataFrame, species: str) -> tuple[float, float, str]:
+def resolve_usd_ticker(species: str) -> str:
     """
-    ✅ SOLO USD: busca species + 'D'
+    Resuelve ticker USD (MEP) a buscar en IOL:
+    - si viene ya con D => lo deja
+    - si está en overrides (pesos->usd) => usa ese
+    - si no => default agrega 'D'
     """
     sp = str(species).strip().upper()
-    sym_usd = f"{sp}{PRICE_SUFFIX}"
+    if sp.endswith("D"):
+        return sp
+    if sp in PESOS_TO_USD_OVERRIDES:
+        return PESOS_TO_USD_OVERRIDES[sp]
+    return f"{sp}{PRICE_SUFFIX}"
 
-    if sym_usd in prices.index:
-        return float(prices.loc[sym_usd, "Precio"]), float(prices.loc[sym_usd, "Volumen"]), sym_usd
+
+def _pick_price_usd(prices: pd.DataFrame, species: str) -> tuple[float, float, str]:
+    """
+    ✅ Busca precio USD usando resolve_usd_ticker (incluye excepciones).
+    """
+    usd_ticker = resolve_usd_ticker(species)
+
+    if usd_ticker in prices.index:
+        return float(prices.loc[usd_ticker, "Precio"]), float(prices.loc[usd_ticker, "Volumen"]), usd_ticker
 
     return np.nan, np.nan, ""
 
@@ -342,7 +413,7 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
 
     rows = []
     for species in meta.index:
-        px, vol, px_ticker = _pick_price_usd_only(prices, species)
+        px, vol, px_ticker = _pick_price_usd(prices, species)
         if not np.isfinite(px) or px <= 0:
             continue
 
@@ -358,7 +429,7 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
         rows.append(
             {
                 "Ticker": species,
-                "Ticker precio": px_ticker,  # ej: AL30D
+                "Ticker precio": px_ticker,
                 "Ley": meta.loc[species, "law_norm"],
                 "Issuer": meta.loc[species, "issuer_norm"],
                 "Descripción": meta.loc[species, "desc_norm"],
@@ -390,8 +461,14 @@ def render(back_to_home=None):
     c1, c2 = st.columns([0.78, 0.22], vertical_alignment="center")
     with c1:
         st.markdown('<div class="top-title">NEIX · Bonos USD</div>', unsafe_allow_html=True)
-        st.markdown('<div class="top-sub">Rendimientos y duration.</div>', unsafe_allow_html=True)
-
+        st.markdown(
+            '<div class="top-sub">Precios USD desde IOL (MEP) con mapeo de excepciones + fix centavos. Rendimientos y duration.</div>',
+            unsafe_allow_html=True,
+        )
+    with c2:
+        if back_to_home is not None:
+            if st.button("← Volver", use_container_width=True):
+                back_to_home()
 
     st.divider()
 
@@ -406,12 +483,19 @@ def render(back_to_home=None):
     # controles superiores
     top = st.columns([0.18, 0.18, 0.20, 0.44], vertical_alignment="bottom")
     with top[0]:
-        plazo = st.selectbox("Plazo de liquidación", [1, 0], index=0, format_func=lambda x: f"T{x}", key="bonos_plazo")
+        plazo = st.selectbox(
+            "Plazo de liquidación",
+            [1, 0],
+            index=0,
+            format_func=lambda x: f"T{x}",
+            key="bonos_plazo",
+        )
     with top[1]:
         traer_precios = st.button("Actualizar precios", use_container_width=True, key="bonos_refresh")
     with top[2]:
         calcular = st.button("Calcular", type="primary", use_container_width=True, key="bonos_calc")
-
+    with top[3]:
+        st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
 
     # cache precios
     if traer_precios or "bonos_iol_prices" not in st.session_state:
@@ -427,6 +511,9 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
+    # =========================
+    # Filtros arriba + columnas
+    # =========================
     st.markdown('<div class="section-title">Filtros</div>', unsafe_allow_html=True)
 
     laws = sorted(df_cf["law_norm"].dropna().unique().tolist())
@@ -446,6 +533,16 @@ def render(back_to_home=None):
         desc_sel = _multiselect_with_all("Descripción", descs, key="bonos_desc", default_all=True)
     with f4:
         ticker_sel = _multiselect_with_all("Ticker", tickers_all, key="bonos_ticker", default_all=True)
+
+    # ✅ Filtro TIR (slider)
+    tir_min, tir_max = st.slider(
+        "Filtro TIR (%)",
+        min_value=-50.0,
+        max_value=50.0,
+        value=(DEFAULT_TIR_MIN, DEFAULT_TIR_MAX),
+        step=0.5,
+        key="bonos_tir_range",
+    )
 
     cols_pick = st.multiselect("Columnas a mostrar", options=all_cols, default=defaults, key="bonos_cols")
     if not cols_pick:
@@ -471,15 +568,24 @@ def render(back_to_home=None):
     out = _compute_table(df_use, prices, plazo)
 
     if out.empty:
-        st.warning(
-            "No se generaron resultados con esta selección.\n\n"
-            "Tip: esta vista SOLO muestra instrumentos con precio USD disponible en IOL (Ticker + 'D')."
-        )
+        st.warning("No se generaron resultados con esta selección.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
+    # ✅ aplicar filtro TIR (si hay NaN, quedan afuera por default)
+    out = out.copy()
+    out["TIR (%)"] = pd.to_numeric(out["TIR (%)"], errors="coerce")
+    out = out[out["TIR (%)"].between(tir_min, tir_max, inclusive="both")]
 
-    st.markdown("## NEIX · Bonos USD")
+    if out.empty:
+        st.warning("No quedaron filas dentro del rango de TIR seleccionado.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # =========================
+    # Resultados
+    # =========================
+    st.markdown("## Resultados")
     show = out.copy()
     show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
     show["Ley"] = show["Ley"].apply(law_cell_label)
@@ -507,6 +613,9 @@ def render(back_to_home=None):
             "Volumen": st.column_config.NumberColumn("Volumen", format="%.0f"),
         },
     )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
 
     st.markdown("</div>", unsafe_allow_html=True)
 
