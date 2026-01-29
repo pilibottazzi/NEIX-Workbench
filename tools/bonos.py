@@ -444,13 +444,9 @@ def render(back_to_home=None):
     with c1:
         st.markdown('<div class="top-title">NEIX · Bonos USD</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="top-sub">Precios USD desde IOL (MEP) con mapeo de excepciones + fix centavos. Rendimientos y duration.</div>',
+            '<div class="top-sub"> Rendimientos y duration.</div>',
             unsafe_allow_html=True,
         )
-    with c2:
-        if back_to_home is not None:
-            if st.button("← Volver", use_container_width=True):
-                back_to_home()
 
     st.divider()
 
@@ -476,8 +472,6 @@ def render(back_to_home=None):
         traer_precios = st.button("Actualizar precios", use_container_width=True, key="bonos_refresh")
     with top[2]:
         calcular = st.button("Calcular", type="primary", use_container_width=True, key="bonos_calc")
-    with top[3]:
-        st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
 
     # cache precios
     if traer_precios or "bonos_iol_prices" not in st.session_state:
@@ -516,15 +510,6 @@ def render(back_to_home=None):
     with f4:
         ticker_sel = _multiselect_with_all("Ticker", tickers_all, key="bonos_ticker", default_all=True)
 
-    # ✅ Filtro TIR (slider)
-    tir_min, tir_max = st.slider(
-        "Filtro TIR (%)",
-        min_value=-50.0,
-        max_value=50.0,
-        value=(DEFAULT_TIR_MIN, DEFAULT_TIR_MAX),
-        step=0.5,
-        key="bonos_tir_range",
-    )
 
     cols_pick = st.multiselect("Columnas a mostrar", options=all_cols, default=defaults, key="bonos_cols")
     if not cols_pick:
