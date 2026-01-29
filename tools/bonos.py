@@ -8,20 +8,13 @@ import pandas as pd
 import streamlit as st
 from scipy import optimize
 
-# =========================
-# Config
-# =========================
 CASHFLOW_PATH = os.path.join("data", "cashflows_completos.xlsx")
 
-# 🔥 BONOS: NO filtrar por TIR por defecto (queda toggle opcional)
+
 DEFAULT_FILTRAR_TIR = False
 TIR_MIN = -10.0
 TIR_MAX = 15.0
 
-
-# =========================
-# IRR / NPV
-# =========================
 def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
     chron = sorted(cashflows, key=lambda x: x[0])
     t0 = chron[0][0]
@@ -43,9 +36,6 @@ def xirr(cashflows: list[tuple[dt.datetime, float]], guess: float = 0.10) -> flo
         return np.nan
 
 
-# =========================
-# Helpers cashflows
-# =========================
 def _settlement(plazo_dias: int) -> dt.datetime:
     base = pd.Timestamp.today().normalize().to_pydatetime()
     return base + dt.timedelta(days=int(plazo_dias))
@@ -60,9 +50,6 @@ def _future_cashflows(df: pd.DataFrame, settlement: dt.datetime) -> pd.DataFrame
     return df
 
 
-# =========================
-# Normalizaciones
-# =========================
 def normalize_law(x: str) -> str:
     s = (x or "").strip().upper()
     s = s.replace(".", "").replace("-", " ").replace("_", " ")
@@ -101,9 +88,6 @@ def normalize_desc(x: str) -> str:
     return s if s else "NA"
 
 
-# =========================
-# Load cashflows (BONOS)
-# =========================
 def load_cashflows_bonos(path: str) -> pd.DataFrame:
     if not os.path.exists(path):
         raise FileNotFoundError(f"No existe el archivo: {path}. Subilo al repo (ej: data/cashflows_completos.xlsx).")
@@ -149,9 +133,6 @@ def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
     return meta
 
 
-# =========================
-# Precios BONOS (IOL)
-# =========================
 def fetch_iol_bonos_prices() -> pd.DataFrame:
     url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
     bonos = pd.read_html(url)[0]
@@ -350,12 +331,7 @@ def render(back_to_home=None):
         st.markdown('<div class="top-title">NEIX · Bonos</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="top-sub">Rendimientos, duration y filtros por Ley / Issuer / Descripción. Precios desde IOL.</div>',
-            unsafe_allow_html=True,
-        )
-    with c2:
-        if back_to_home is not None:
-            if st.button("← Volver", use_container_width=True):
-                back_to_home()
+            unsafe_allow_html=True,   )
 
     st.divider()
 
@@ -377,8 +353,6 @@ def render(back_to_home=None):
         traer_precios = st.button("Actualizar precios", use_container_width=True, key="bonos_refresh")
     with top[2]:
         calcular = st.button("Calcular", type="primary", use_container_width=True, key="bonos_calc")
-    with top[3]:
-        st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
 
     # Prices cache
     if traer_precios or "bonos_iol_prices" not in st.session_state:
@@ -501,11 +475,7 @@ def render(back_to_home=None):
     show = out.copy()
     show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
     show["Ley"] = show["Ley"].apply(law_label)
-
-    base = 520
-    row_h = 28
-    max_h = 1050
-    height_df = int(min(max_h, base + row_h * len(show)))
+olver
 
     st.dataframe(
         show[cols_pick],
