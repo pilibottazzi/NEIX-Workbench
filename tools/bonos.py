@@ -13,7 +13,6 @@ from scipy import optimize
 # =========================
 CASHFLOW_PATH = os.path.join("data", "cashflows_completos.xlsx")
 
-# ✅ Los flujos están en USD → al buscar precios en IOL usamos Ticker + "D"
 PRICE_SUFFIX = "D"
 
 # =========================
@@ -365,13 +364,9 @@ def render(back_to_home=None):
     with c1:
         st.markdown('<div class="top-title">NEIX · Bonos</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="top-sub">Rendimientos, duration y filtros (Ley / Issuer / Descripción / Ticker). Precios desde IOL (USD: Ticker + D).</div>',
+            '<div class="top-sub">Rendimientos y  duration.</div>',
             unsafe_allow_html=True,
         )
-    with c2:
-        if back_to_home is not None:
-            if st.button("← Volver", use_container_width=True):
-                back_to_home()
 
     st.divider()
 
@@ -389,8 +384,6 @@ def render(back_to_home=None):
         traer_precios = st.button("Actualizar precios", use_container_width=True, key="bonos_refresh")
     with top[2]:
         calcular = st.button("Calcular", type="primary", use_container_width=True, key="bonos_calc")
-    with top[3]:
-        st.caption(f"Cashflows: `{CASHFLOW_PATH}`  ·  Precio USD buscado como: `Ticker + {PRICE_SUFFIX}`")
 
     if traer_precios or "bonos_iol_prices" not in st.session_state:
         with st.spinner("Leyendo precios desde IOL..."):
