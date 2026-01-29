@@ -10,7 +10,8 @@ from scipy import optimize
 
 CASHFLOW_PATH = os.path.join("data", "cashflows_ON.xlsx")
 
-# ✅ Filtro interno (NO se muestra en UI)
+# (opcional) filtro interno de TIR
+DEFAULT_FILTRAR_TIR = False
 TIR_MIN = -10.0
 TIR_MAX = 15.0
 
@@ -40,10 +41,12 @@ def xirr(cashflows: list[tuple[dt.datetime, float]], guess: float = 0.10) -> flo
 
 
 # ======================================================
-# 2) Cashflows (FORMATO NUEVO: species + FlujoTotal + law)
+# 2) Cashflows
 # ======================================================
 def _settlement(plazo_dias: int) -> dt.datetime:
-    return dt.datetime.today() + dt.timedelta(days=int(plazo_dias))
+    # normalizo a medianoche para evitar efectos raros por horas
+    base = pd.Timestamp.today().normalize().to_pydatetime()
+    return base + dt.timedelta(days=int(plazo_dias))
 
 
 def _future_cashflows(df: pd.DataFrame, settlement: dt.datetime) -> pd.DataFrame:
@@ -57,15 +60,17 @@ def _future_cashflows(df: pd.DataFrame, settlement: dt.datetime) -> pd.DataFrame
 
 def load_cashflows_from_repo(path: str) -> pd.DataFrame:
     """
-    Lee el excel NUEVO:
+    Excel esperado:
       - species
       - root_key
       - Fecha
       - FlujoTotal (o Cupon)
-      - law (ARG / NYC / NY / etc.) opcional
+      - law (opcional)
     """
     if not os.path.exists(path):
-        raise FileNotFoundError(f"No existe el archivo: {path}. Subilo al repo (ej: data/cashflows_ON.xlsx).")
+        raise FileNotFoundError(
+            f"No existe el archivo: {path}. Subilo al repo (ej: data/cashflows_ON.xlsx)."
+        )
 
     df = pd.read_excel(path)
     df.columns = df.columns.astype(str).str.strip()
@@ -73,7 +78,9 @@ def load_cashflows_from_repo(path: str) -> pd.DataFrame:
     req_min = {"species", "root_key", "Fecha"}
     missing = req_min - set(df.columns)
     if missing:
-        raise ValueError(f"Faltan columnas en {path}: {sorted(missing)} (mínimas: {sorted(req_min)})")
+        raise ValueError(
+            f"Faltan columnas en {path}: {sorted(missing)} (mínimas: {sorted(req_min)})"
+        )
 
     if "FlujoTotal" in df.columns:
         flujo_col = "FlujoTotal"
@@ -104,14 +111,9 @@ def build_cashflow_dict(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
 
 # ======================================================
-# 3) Ley: normalización ROBUSTA (arregla NYC)
+# 3) Ley: normalización (ARG / NY)
 # ======================================================
 def normalize_law(x: str) -> str:
-    """
-    Unifica variantes:
-    - ARG / AR / LOCAL -> ARG
-    - NYC / NY / NEW YORK / variants -> NY
-    """
     s = (x or "").strip().upper()
     s = s.replace(".", "").replace("-", " ").replace("_", " ")
     s = " ".join(s.split())
@@ -127,18 +129,15 @@ def normalize_law(x: str) -> str:
 
 def law_label(norm: str) -> str:
     if norm == "ARG":
-        return "Ley Local (ARG)"
+        return "ARG (Ley Local)"
     if norm == "NY":
-        return "Ley NY (NY/NYC)"
+        return "NY (NY/NYC)"
     if norm == "NA":
         return "Sin Ley"
-    return f"Ley {norm}"
+    return norm
 
 
 def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    IMPORTANTÍSIMO: usa law_norm (no law) para que NYC/NY se unan bien.
-    """
     meta = (
         df.groupby("species")
         .agg(
@@ -152,7 +151,7 @@ def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ======================================================
-# 4) Precios IOL (por root_keyD/root_keyC)
+# 4) Precios IOL
 # ======================================================
 def to_float_iol(x) -> float:
     if pd.isna(x):
@@ -196,6 +195,7 @@ def pick_usd_price_by_root(prices: pd.DataFrame, root_key: str) -> tuple[float, 
         if sym in prices.index:
             px = float(prices.loc[sym, "UltimoOperado"])
             vol = float(prices.loc[sym, "MontoOperado"])
+            # si viene en centavos (a veces) lo normalizamos
             if np.isfinite(px) and px > 1000:
                 px = px / 100.0
             return px, vol, src
@@ -205,7 +205,7 @@ def pick_usd_price_by_root(prices: pd.DataFrame, root_key: str) -> tuple[float, 
 # ======================================================
 # 5) Métricas
 # ======================================================
-def tir(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0) -> float:
+def tir(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
     if not np.isfinite(precio) or precio <= 0:
         return np.nan
 
@@ -222,7 +222,7 @@ def tir(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0) -> float:
     return round(v, 2) if np.isfinite(v) else np.nan
 
 
-def duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0) -> float:
+def duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
     ytm = tir(cashflow, precio, plazo_dias=plazo_dias)
     if not np.isfinite(ytm):
         return np.nan
@@ -246,7 +246,7 @@ def duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0) -> floa
     return round(float(np.sum(numer) / np.sum(denom)), 2)
 
 
-def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0) -> float:
+def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
     dur = duration(cashflow, precio, plazo_dias=plazo_dias)
     ytm = tir(cashflow, precio, plazo_dias=plazo_dias)
     if not np.isfinite(dur) or not np.isfinite(ytm):
@@ -255,36 +255,55 @@ def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0
 
 
 # ======================================================
-# 6) UI
+# 6) UI helpers
 # ======================================================
 def _ui_css():
     st.markdown(
         """
-    <style>
-      .wrap{ max-width: 1200px; margin: 0 auto; }
-      .title{ font-size:22px; font-weight:800; letter-spacing:.04em; color:#111827; }
-      .sub{ color:rgba(17,24,39,.60); font-size:13px; margin-top:2px; }
-      .muted{ color:rgba(17,24,39,.55); font-size:12px; }
-      div[data-baseweb="tag"]{ border-radius:999px !important; }
+<style>
+  .wrap{ max-width: 1250px; margin: 0 auto; }
+  .top-title{ font-size: 24px; font-weight: 850; letter-spacing: .04em; color:#111827; margin-bottom: 2px;}
+  .top-sub{ color: rgba(17,24,39,.60); font-size: 13px; margin-top: 0px; }
 
-      /* Compactar */
-      .block-container { padding-top: 1.2rem; }
-      label { margin-bottom: 0.25rem !important; }
+  .section-title{ font-size: 18px; font-weight: 800; color:#111827; margin: 12px 0 6px; }
 
-      /* Botones / selects */
-      .stButton > button { border-radius: 12px; padding: 0.60rem 1.0rem; }
-      .stSelectbox div[data-baseweb="select"]{ border-radius: 12px; }
-    </style>
-    """,
+  .block-container { padding-top: 1.10rem; padding-bottom: 2.2rem; }
+  label { margin-bottom: .20rem !important; }
+
+  .stButton > button { border-radius: 14px; padding: .68rem 1.0rem; font-weight: 700; }
+  .stSelectbox div[data-baseweb="select"]{ border-radius: 14px; }
+  div[data-baseweb="tag"]{ border-radius: 999px !important; }
+
+  div[data-testid="stExpander"] > details { border-radius: 16px; }
+  div[data-testid="stExpander"] summary { font-weight: 700; }
+
+  div[data-testid="stDataFrame"] { border-radius: 16px; overflow: hidden; }
+</style>
+""",
         unsafe_allow_html=True,
     )
 
 
-def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.DataFrame:
+def _multiselect_with_all(label: str, options: list[str], key: str, default_all: bool = True) -> list[str]:
+    if not options:
+        return []
+    options_sorted = sorted(set([str(x) for x in options if str(x).strip() != ""]))
+    all_token = "✅ Seleccionar todo"
+    opts = [all_token] + options_sorted
+    default = [all_token] if default_all else []
+    sel = st.multiselect(label, options=opts, default=default, key=key)
+    if all_token in sel:
+        return options_sorted
+    return sel
+
+
+def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> tuple[pd.DataFrame, dict]:
     cashflows = build_cashflow_dict(df_cf)
     meta = build_species_meta(df_cf).set_index("species")
 
     rows = []
+    sin_precio = []
+    sin_cf = 0
     for species in meta.index:
         rk = meta.loc[species, "root_key"]
         law_norm = meta.loc[species, "law_norm"]
@@ -292,10 +311,12 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
 
         px, vol, src = pick_usd_price_by_root(prices, rk)
         if not np.isfinite(px) or px <= 0:
+            sin_precio.append((species, rk))
             continue
 
         cf = cashflows.get(species)
         if cf is None or cf.empty:
+            sin_cf += 1
             continue
 
         t = tir(cf, px, plazo_dias=plazo)
@@ -315,26 +336,40 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
         )
 
     out = pd.DataFrame(rows)
-    if out.empty:
-        return out
+    if not out.empty:
+        out["Vencimiento"] = pd.to_datetime(out["Vencimiento"], errors="coerce")
+        out = out.sort_values(["Vencimiento", "Ticker"], na_position="last").reset_index(drop=True)
 
-    out["Vencimiento"] = pd.to_datetime(out["Vencimiento"], errors="coerce")
-    out = out.sort_values(["Vencimiento", "Ticker"], na_position="last").reset_index(drop=True)
-    return out
+    diag = {
+        "tickers_seleccion": int(len(meta.index)),
+        "con_precio": int(len(out)),
+        "sin_precio": int(len(sin_precio)),
+        "sin_cashflow": int(sin_cf),
+        "ejemplos_sin_precio": sin_precio[:20],
+        "tir_nan": int(out["TIR (%)"].isna().sum()) if not out.empty else 0,
+    }
+    return out, diag
 
 
+# ======================================================
+# 7) Render
+# ======================================================
 def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
 
-    # Header
-    h1, h2 = st.columns([0.78, 0.22])
-    with h1:
-        st.markdown('<div class="title">NEIX · ONs</div>', unsafe_allow_html=True)
+    # Header (mismo look que Bonos)
+    c1, c2 = st.columns([0.78, 0.22], vertical_alignment="center")
+    with c1:
+        st.markdown('<div class="top-title">NEIX · ONs</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="sub">Tabs por ley (ARG / NY).</div>',
+            '<div class="top-sub">Rendimientos y duration con filtros por Ley. Precios desde IOL.</div>',
             unsafe_allow_html=True,
         )
+    with c2:
+        if back_to_home is not None:
+            if st.button("← Volver", use_container_width=True):
+                back_to_home()
 
     st.divider()
 
@@ -346,21 +381,17 @@ def render(back_to_home=None):
         st.info("El Excel debe tener: species, root_key, Fecha y FlujoTotal/Cupon (+ law opcional).")
         return
 
-    # ✅ normalizo ley y trabajo todo con law_norm
     df_cf = df_cf.copy()
     df_cf["law_norm"] = df_cf["law"].apply(normalize_law)
 
-    # --------
-    # Filtros: Plazo + Actualizar + Calcular + Fuente
-    # --------
-    f1, f2, f3, f4 = st.columns([0.22, 0.18, 0.18, 0.42], vertical_alignment="bottom")
-
+    # Controles superiores (✅ T1 default)
+    f1, f2, f3, f4 = st.columns([0.20, 0.22, 0.20, 0.38], vertical_alignment="bottom")
     with f1:
-        plazo = st.selectbox("Plazo", [0, 1], index=0, format_func=lambda x: f"T{x}")
+        plazo = st.selectbox("Plazo de liquidación", [1, 0], index=0, format_func=lambda x: f"T{x}")
     with f2:
         traer_precios = st.button("Actualizar PRECIOS", use_container_width=True)
     with f3:
-        calcular_global = st.button("Calcular", type="primary", use_container_width=True)
+        calcular = st.button("Calcular", type="primary", use_container_width=True)
     with f4:
         st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
 
@@ -378,76 +409,106 @@ def render(back_to_home=None):
         st.warning("No hay precios cargados.")
         return
 
-    st.divider()
+    st.markdown('<div class="section-title">Filtros</div>', unsafe_allow_html=True)
 
-    # Tabs: ARG / NY
-    tab_arg, tab_ny = st.tabs([law_label("ARG"), law_label("NY")])
+    # Filtro por ley (sin tabs)
+    law_opts = sorted(df_cf["law_norm"].dropna().unique().tolist())
+    law_labels = [law_label(x) for x in law_opts]
+    inv = {law_label(x): x for x in law_opts}
 
-    for tab, law_norm in [(tab_arg, "ARG"), (tab_ny, "NY")]:
-        with tab:
-            df_law = df_cf[df_cf["law_norm"] == law_norm].copy()
-            if df_law.empty:
-                st.info("No hay instrumentos para esta ley (revisá columna law en el cashflow).")
-                continue
+    with st.expander("Ley (desplegable)", expanded=False):
+        ley_sel_labels = _multiselect_with_all("Ley", law_labels, key="ons_law", default_all=True)
+        ley_sel = [inv[x] for x in ley_sel_labels] if ley_sel_labels else []
 
-            tickers = sorted(df_law["species"].unique().tolist())
+    with st.expander("Ticker (desplegable)", expanded=False):
+        tickers_all = sorted(df_cf["species"].dropna().unique().tolist())
+        ticker_sel = _multiselect_with_all("Ticker", tickers_all, key="ons_ticker", default_all=True)
 
-            sel = st.multiselect("Ticker", tickers, default=tickers, key=f"tick_{law_norm}")
+    with st.expander("Ajustes avanzados (opcional)", expanded=False):
+        filtrar_tir = st.checkbox(
+            "Aplicar filtro interno de TIR (oculta instrumentos fuera de rango)",
+            value=DEFAULT_FILTRAR_TIR,
+        )
+        if filtrar_tir:
+            st.caption(f"Rango interno: {TIR_MIN} a {TIR_MAX}")
 
-            if calcular_global:
-                df_use = df_law[df_law["species"].isin(sel)].copy()
-                out = _compute_table(df_use, prices, plazo)
+    # Aplicar filtros al DF
+    df_use = df_cf.copy()
+    if ley_sel:
+        df_use = df_use[df_use["law_norm"].isin(ley_sel)]
+    if ticker_sel:
+        df_use = df_use[df_use["species"].isin(ticker_sel)]
 
-                if out.empty:
-                    st.info("No hay ONs con precio para esta selección.")
-                    continue
+    if not calcular:
+        st.info("Elegí filtros (opcional) y tocá **Calcular**.")
+        return
 
-                # ✅ filtro interno TIR (NO se muestra)
-                out = out[out["TIR (%)"].between(TIR_MIN, TIR_MAX, inclusive="both")].copy()
-                if out.empty:
-                    st.info("No quedaron ONs tras aplicar filtros internos.")
-                    continue
+    out, diag = _compute_table(df_use, prices, plazo)
 
-                # columnas configurables
-                all_cols = ["Ticker", "USD", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
-                defaults = ["Ticker", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento"]
+    # Diagnóstico (oculto)
+    with st.expander("Diagnóstico (si falta info)", expanded=False):
+        st.write(
+            {
+                "Tickers (selección)": diag["tickers_seleccion"],
+                "Con precio (D/C)": diag["con_precio"],
+                "Sin precio (no match root_keyD/root_keyC)": diag["sin_precio"],
+                "Sin cashflow": diag["sin_cashflow"],
+                "TIR NaN": diag["tir_nan"],
+            }
+        )
+        if diag["ejemplos_sin_precio"]:
+            st.write("Ejemplos sin precio (Ticker, root_key):")
+            st.dataframe(pd.DataFrame(diag["ejemplos_sin_precio"], columns=["Ticker", "root_key"]), hide_index=True)
 
-                cols_pick = st.multiselect(
-                    "Columnas a mostrar",
-                    options=all_cols,
-                    default=defaults,
-                    key=f"cols_{law_norm}",
-                )
+    if out.empty:
+        st.warning("No se encontraron ONs con precio para la selección.")
+        return
 
-                if "Ticker" not in cols_pick:
-                    cols_pick = ["Ticker"] + cols_pick
-                if "Vencimiento" not in cols_pick:
-                    cols_pick = cols_pick + ["Vencimiento"]
+    # filtro interno TIR (opcional)
+    if filtrar_tir:
+        out = out[out["TIR (%)"].between(TIR_MIN, TIR_MAX, inclusive="both")].copy()
+        if out.empty:
+            st.info("No quedaron ONs tras aplicar filtros internos de TIR.")
+            return
 
-                st.markdown(f"### NEIX · ONs · {law_label(law_norm)}")
+    # Tabla
+    st.markdown("## NEIX · ONs")
+    st.caption("Columnas configurables.")
 
-                show = out.copy()
-                show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
+    all_cols = ["Ticker", "Ley", "USD", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
+    defaults = ["Ticker", "Precio USD", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
 
-                # ✅ más alto: se ven muchas más filas (aprox el doble)
-                base = 420
-                row_h = 28
-                max_h = 900
-                height_df = int(min(max_h, base + row_h * len(show)))
+    cols_pick = st.multiselect("Columnas a mostrar", options=all_cols, default=defaults, key="ons_cols")
+    if "Ticker" not in cols_pick:
+        cols_pick = ["Ticker"] + cols_pick
+    if "Vencimiento" not in cols_pick:
+        cols_pick = cols_pick + ["Vencimiento"]
 
-                st.dataframe(
-                    show[cols_pick],
-                    hide_index=True,
-                    use_container_width=True,
-                    height=height_df,
-                    column_config={
-                        "Ticker": st.column_config.TextColumn("Ticker"),
-                        "USD": st.column_config.TextColumn("USD (D/C)"),
-                        "Precio USD": st.column_config.NumberColumn("Precio USD", format="%.2f"),
-                        "TIR (%)": st.column_config.NumberColumn("TIR (%)", format="%.2f"),
-                        "MD": st.column_config.NumberColumn("MD", format="%.2f"),
-                        "Duration": st.column_config.NumberColumn("Duration", format="%.2f"),
-                        "Vencimiento": st.column_config.DateColumn("Vencimiento", format="DD/MM/YYYY"),
-                        "Volumen": st.column_config.NumberColumn("Volumen", format="%.0f"),
-                    },
-                )
+    show = out.copy()
+    show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
+    show["Ley"] = show["Ley"].apply(law_label)
+
+    base = 520
+    row_h = 28
+    max_h = 1050
+    height_df = int(min(max_h, base + row_h * len(show)))
+
+    st.dataframe(
+        show[cols_pick],
+        hide_index=True,
+        use_container_width=True,
+        height=height_df,
+        column_config={
+            "Ticker": st.column_config.TextColumn("Ticker"),
+            "Ley": st.column_config.TextColumn("Ley"),
+            "USD": st.column_config.TextColumn("USD (D/C)"),
+            "Precio USD": st.column_config.NumberColumn("Precio USD", format="%.2f"),
+            "TIR (%)": st.column_config.NumberColumn("TIR (%)", format="%.2f"),
+            "MD": st.column_config.NumberColumn("MD", format="%.2f"),
+            "Duration": st.column_config.NumberColumn("Duration", format="%.2f"),
+            "Vencimiento": st.column_config.DateColumn("Vencimiento", format="DD/MM/YYYY"),
+            "Volumen": st.column_config.NumberColumn("Volumen", format="%.0f"),
+        },
+    )
+
+    st.markdown("</div>", unsafe_allow_html=True)
