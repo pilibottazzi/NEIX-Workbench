@@ -1,3 +1,4 @@
+# tools/bonos.py
 from __future__ import annotations
 
 import os
@@ -13,21 +14,21 @@ from scipy import optimize
 CASHFLOW_PATH = os.path.join("data", "cashflows_completos.xlsx")
 PRICE_SUFFIX = "D"
 
-# ✅ filtro TIR (default como pediste)
-DEFAULT_TIR_MIN = -10.0
-DEFAULT_TIR_MAX = 20.0
+# ✅ filtro fijo de TIR (sin slider)
+TIR_MIN_FIXED = -15.0
+TIR_MAX_FIXED = 20.0
 
 # =========================
 # Excepciones ticker pesos -> ticker USD (MEP)
 # (cuando NO es simplemente "ticker + D")
 # =========================
 PESOS_TO_USD_OVERRIDES: dict[str, str] = {
-    # Provincia (ejemplos que pasaste)
+    # Provincia (los que pasaste)
     "BPOB7": "BPB7D",
     "BPOC7": "BPC7D",
     "BPOD7": "BPD7D",
 
-    # Otros que mencionaste
+    # Otros
     "BPY26": "BPY6D",
     "AL30": "AL30D",
     "AL35": "AL35D",
@@ -38,7 +39,7 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "GD38": "GD38D",
     "GD41": "GD41D",
 
-    # Los que querés contemplar sí o sí
+    # “familia” BPA/BPB/BPC/BPA8/BPB8 (si tu cashflow los trae así)
     "BPA7": "BPA7D",
     "BPB7": "BPB7D",
     "BPC7": "BPC7D",
@@ -47,12 +48,16 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
 }
 
 
+# =========================
+# Parsing AR numbers
+# =========================
 def parse_ar_number(x) -> float:
     """
-    Convierte:
+    Convierte formatos típicos AR:
       89.190,00 -> 89190.00
       22.733.580,97 -> 22733580.97
       6323 -> 6323.0
+      "-" / "" -> NaN
     """
     if x is None:
         return np.nan
@@ -71,8 +76,8 @@ def usd_fix_if_needed(ticker: str, raw_last: str, value: float) -> float:
     Fix para tickers USD (terminan en D).
     A veces IOL devuelve '6097' (sin separadores) para D y en realidad es 60.97.
     Regla:
-      - termina en D
-      - raw NO tiene '.' ni ','
+      - ticker termina en D
+      - raw_last NO tiene '.' ni ','
       => dividir por 100
     """
     if not np.isfinite(value):
@@ -223,12 +228,15 @@ def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
     return meta
 
 
+# =========================
+# Precios BONOS (IOL)
+# =========================
 def fetch_iol_bonos_prices() -> pd.DataFrame:
     """
     Index: Ticker
     Columns: Precio, Volumen
-    - No fijamos flavor para que no rompa en el servidor.
-    - Fix USD (D) si viene entero: /100.
+    - Sin flavor para evitar html5lib faltante en server.
+    - Parse num AR + fix /100 para tickers D si viene entero.
     """
     url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
     tables = pd.read_html(url)
@@ -315,7 +323,7 @@ def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1
 
 
 # =========================
-# UI
+# UI helpers
 # =========================
 def _ui_css():
     st.markdown(
@@ -383,14 +391,9 @@ def resolve_usd_ticker(species: str) -> str:
 
 
 def _pick_price_usd(prices: pd.DataFrame, species: str) -> tuple[float, float, str]:
-    """
-    ✅ Busca precio USD usando resolve_usd_ticker (incluye excepciones).
-    """
     usd_ticker = resolve_usd_ticker(species)
-
     if usd_ticker in prices.index:
         return float(prices.loc[usd_ticker, "Precio"]), float(prices.loc[usd_ticker, "Volumen"]), usd_ticker
-
     return np.nan, np.nan, ""
 
 
@@ -438,6 +441,9 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
     return out
 
 
+# =========================
+# Entry
+# =========================
 def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
@@ -460,7 +466,13 @@ def render(back_to_home=None):
     # controles superiores
     top = st.columns([0.18, 0.18, 0.20, 0.44], vertical_alignment="bottom")
     with top[0]:
-        plazo = st.selectbox("Plazo de liquidación", [1, 0], index=0, format_func=lambda x: f"T{x}", key="bonos_plazo")
+        plazo = st.selectbox(
+            "Plazo de liquidación",
+            [1, 0],
+            index=0,
+            format_func=lambda x: f"T{x}",
+            key="bonos_plazo",
+        )
     with top[1]:
         traer_precios = st.button("Actualizar precios", use_container_width=True, key="bonos_refresh")
     with top[2]:
@@ -500,16 +512,6 @@ def render(back_to_home=None):
     with f4:
         ticker_sel = _multiselect_with_all("Ticker", tickers_all, key="bonos_ticker", default_all=True)
 
-    # ✅ Slider TIR (acá está el fix del NameError)
-    tir_min, tir_max = st.slider(
-        "Rango de TIR (%)",
-        min_value=-50.0,
-        max_value=50.0,
-        value=(float(DEFAULT_TIR_MIN), float(DEFAULT_TIR_MAX)),
-        step=0.25,
-        key="bonos_tir_range",
-    )
-
     cols_pick = st.multiselect("Columnas a mostrar", options=all_cols, default=defaults, key="bonos_cols")
     if not cols_pick:
         cols_pick = defaults
@@ -538,13 +540,13 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # ✅ aplicar filtro TIR
+    # ✅ aplicar filtro fijo de TIR (sin slider)
     out = out.copy()
     out["TIR (%)"] = pd.to_numeric(out["TIR (%)"], errors="coerce")
-    out = out[out["TIR (%)"].between(float(tir_min), float(tir_max), inclusive="both")]
+    out = out[out["TIR (%)"].between(TIR_MIN_FIXED, TIR_MAX_FIXED, inclusive="both")]
 
     if out.empty:
-        st.warning("No quedaron filas dentro del rango de TIR seleccionado.")
+        st.warning("No quedaron filas dentro del rango de TIR (-15 a 20).")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
