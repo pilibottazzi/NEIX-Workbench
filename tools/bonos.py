@@ -47,16 +47,8 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "BPB8": "BPB8D",
 }
 
-# también armamos el set de tickers USD “permitidos” (para sanity)
-USD_TICKERS_EXTRA = {
-    "BPY6D", "BPA7D", "BPB7D", "BPC7D", "BPD7D", "BPA8D", "BPB8D",
-    "AL30D", "AL35D", "AE38D", "AL41D",
-    "GD30D", "GD35D", "GD38D", "GD41D",
-}
 
-# =========================
-# Parsing números IOL (AR)
-# =========================
+
 def parse_ar_number(x) -> float:
     """
     Convierte:
@@ -233,9 +225,6 @@ def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
     return meta
 
 
-# =========================
-# Precios BONOS (IOL)
-# =========================
 def fetch_iol_bonos_prices() -> pd.DataFrame:
     """
     Index: Ticker
@@ -275,9 +264,7 @@ def fetch_iol_bonos_prices() -> pd.DataFrame:
     return df.drop(columns=["RawPrecio"], errors="ignore")
 
 
-# =========================
-# Métricas
-# =========================
+
 def tir(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
     if not np.isfinite(precio) or precio <= 0:
         return np.nan
@@ -327,9 +314,6 @@ def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1
     return round(dur / (1 + ytm / 100.0), 2)
 
 
-# =========================
-# UI
-# =========================
 def _ui_css():
     st.markdown(
         """
@@ -451,9 +435,7 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
     return out
 
 
-# =========================
-# Render (Workbench)
-# =========================
+
 def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
