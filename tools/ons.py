@@ -327,7 +327,7 @@ def render(back_to_home=None):
     h1, h2 = st.columns([0.78, 0.22])
     with h1:
         st.markdown('<div class="title">NEIX · ONs</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub">Rendimientos y duration con precios desde IOL.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub">Rendimientos y duration con precios online.</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
 
