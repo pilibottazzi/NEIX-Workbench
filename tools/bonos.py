@@ -12,8 +12,52 @@ from scipy import optimize
 # Config
 # =========================
 CASHFLOW_PATH = os.path.join("data", "cashflows_completos.xlsx")
-
 PRICE_SUFFIX = "D"
+
+# =========================
+# Parse robusto (IOL)
+# =========================
+def parse_iol_number(x) -> float:
+    """
+    Soporta:
+    - AR: 1.234,56  -> 1234.56
+    - US: 1,234.56  -> 1234.56
+    - US decimal: 62.00 -> 62.00 (NO 6200)
+    - AR decimal: 62,00 -> 62.00
+    - "62.00" / '62,00' con comillas
+    - '-' / '' / None -> NaN
+    """
+    if x is None:
+        return np.nan
+
+    s = str(x).strip()
+    if s == "" or s.lower() in {"-", "s/d", "sd", "nan", "none"}:
+        return np.nan
+
+    # limpiar comillas y espacios raros
+    s = s.replace('"', "").replace("'", "").replace("\u00a0", " ").strip()
+
+    # Caso con ambos separadores: decidir formato por el último separador
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            # AR: miles '.' y decimales ','
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            # US: miles ',' y decimales '.'
+            s = s.replace(",", "")
+    else:
+        # solo coma -> decimal coma
+        if "," in s and "." not in s:
+            s = s.replace(".", "").replace(",", ".")
+        # múltiples puntos (miles) -> sacarlos (ej: 1.234.567)
+        if s.count(".") > 1:
+            s = s.replace(".", "")
+
+    try:
+        return float(s)
+    except Exception:
+        return np.nan
+
 
 # =========================
 # IRR / NPV
@@ -165,29 +209,17 @@ def fetch_iol_bonos_prices() -> pd.DataFrame:
     bonos = tables[0]
     cols = set(bonos.columns.astype(str))
 
-    # Requiere al menos estas columnas para funcionar
     if "Símbolo" not in cols or "Último Operado" not in cols:
         return pd.DataFrame()
 
     df = pd.DataFrame()
     df["Ticker"] = bonos["Símbolo"].astype(str).str.strip().str.upper()
 
-    df["Precio"] = (
-        bonos["Último Operado"]
-        .astype(str)
-        .str.replace(".", "", regex=False)
-        .str.replace(",", ".", regex=False)
-    )
-    df["Precio"] = pd.to_numeric(df["Precio"], errors="coerce")
+    # ✅ parse robusto (NO multiplica x100 por error)
+    df["Precio"] = bonos["Último Operado"].apply(parse_iol_number)
 
     if "Monto Operado" in cols:
-        df["Volumen"] = (
-            bonos["Monto Operado"]
-            .astype(str)
-            .str.replace(".", "", regex=False)
-            .str.replace(",", ".", regex=False)
-        )
-        df["Volumen"] = pd.to_numeric(df["Volumen"], errors="coerce").fillna(0)
+        df["Volumen"] = bonos["Monto Operado"].apply(parse_iol_number).fillna(0)
     else:
         df["Volumen"] = 0
 
@@ -293,7 +325,7 @@ def _multiselect_with_all(label: str, options: list[str], key: str, default_all:
 def _pick_price(prices: pd.DataFrame, species: str) -> tuple[float, float, str]:
     """
     ✅ SOLO USD: busca species + 'D'
-    ❌ NO hace fallback a species (eso trae pesos).
+    ❌ NO fallback a species (evita pesos)
     """
     sp = str(species).strip().upper()
     sym_usd = f"{sp}{PRICE_SUFFIX}"
@@ -328,7 +360,7 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
         rows.append(
             {
                 "Ticker": species,
-                "Ticker precio": px_ticker,  # ej: GD30D
+                "Ticker precio": px_ticker,
                 "Ley": meta.loc[species, "law_norm"],
                 "Issuer": meta.loc[species, "issuer_norm"],
                 "Descripción": meta.loc[species, "desc_norm"],
@@ -399,7 +431,6 @@ def render(back_to_home=None):
     descs = sorted(df_cf["desc_norm"].dropna().unique().tolist())
     tickers_all = sorted(df_cf["species"].dropna().unique().tolist())
 
-    # ✅ Columnas como filtro (arriba)
     all_cols = ["Ticker", "Ley", "Issuer", "Descripción", "Precio", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
     defaults = ["Ticker", "Ley", "Issuer", "Precio", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
 
@@ -439,7 +470,7 @@ def render(back_to_home=None):
     if out.empty:
         st.warning(
             "No se generaron resultados con esta selección.\n\n"
-            "Tip: ahora SOLO se buscan precios USD (Ticker + 'D'). "
+            "Tip: se buscan SOLO precios USD (Ticker + 'D'). "
             "Si IOL no lista el 'D' para ese bono, no va a aparecer."
         )
         st.markdown("</div>", unsafe_allow_html=True)
