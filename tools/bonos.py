@@ -528,7 +528,7 @@ def render(back_to_home=None):
     st.divider()
 
     if not calcular:
-        st.info("Ajustá filtros (si querés) y tocá **Calcular**.")
+        st.info("Ajustá filtros y tocá **Calcular**.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
