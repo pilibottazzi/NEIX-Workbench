@@ -38,15 +38,13 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "GD38": "GD38D",
     "GD41": "GD41D",
 
-    # Los que querés contemplar sí o sí (aunque no estén en el cashflow hoy)
-    # (si en tu cashflow aparecieran con otra sigla en pesos, me avisás y los mapeamos)
+    # Los que querés contemplar sí o sí
     "BPA7": "BPA7D",
     "BPB7": "BPB7D",
     "BPC7": "BPC7D",
     "BPA8": "BPA8D",
     "BPB8": "BPB8D",
 }
-
 
 
 def parse_ar_number(x) -> float:
@@ -229,7 +227,7 @@ def fetch_iol_bonos_prices() -> pd.DataFrame:
     """
     Index: Ticker
     Columns: Precio, Volumen
-    - No fijamos flavor para que no rompa en el servidor (usa lxml en prod).
+    - No fijamos flavor para que no rompa en el servidor.
     - Fix USD (D) si viene entero: /100.
     """
     url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
@@ -264,7 +262,9 @@ def fetch_iol_bonos_prices() -> pd.DataFrame:
     return df.drop(columns=["RawPrecio"], errors="ignore")
 
 
-
+# =========================
+# Métricas
+# =========================
 def tir(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
     if not np.isfinite(precio) or precio <= 0:
         return np.nan
@@ -314,6 +314,9 @@ def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1
     return round(dur / (1 + ytm / 100.0), 2)
 
 
+# =========================
+# UI
+# =========================
 def _ui_css():
     st.markdown(
         """
@@ -435,7 +438,6 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
     return out
 
 
-
 def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
@@ -443,10 +445,7 @@ def render(back_to_home=None):
     c1, c2 = st.columns([0.78, 0.22], vertical_alignment="center")
     with c1:
         st.markdown('<div class="top-title">NEIX · Bonos USD</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="top-sub"> Rendimientos y duration.</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown('<div class="top-sub">Rendimientos y duration.</div>', unsafe_allow_html=True)
 
     st.divider()
 
@@ -461,13 +460,7 @@ def render(back_to_home=None):
     # controles superiores
     top = st.columns([0.18, 0.18, 0.20, 0.44], vertical_alignment="bottom")
     with top[0]:
-        plazo = st.selectbox(
-            "Plazo de liquidación",
-            [1, 0],
-            index=0,
-            format_func=lambda x: f"T{x}",
-            key="bonos_plazo",
-        )
+        plazo = st.selectbox("Plazo de liquidación", [1, 0], index=0, format_func=lambda x: f"T{x}", key="bonos_plazo")
     with top[1]:
         traer_precios = st.button("Actualizar precios", use_container_width=True, key="bonos_refresh")
     with top[2]:
@@ -480,10 +473,7 @@ def render(back_to_home=None):
 
     prices = st.session_state.get("bonos_iol_prices")
     if prices is None or prices.empty:
-        st.warning(
-            "No pude leer precios desde IOL (tabla vacía o cambió el formato). "
-            "Probá 'Actualizar precios'."
-        )
+        st.warning("No pude leer precios desde IOL (tabla vacía o cambió el formato). Probá 'Actualizar precios'.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
@@ -510,6 +500,15 @@ def render(back_to_home=None):
     with f4:
         ticker_sel = _multiselect_with_all("Ticker", tickers_all, key="bonos_ticker", default_all=True)
 
+    # ✅ Slider TIR (acá está el fix del NameError)
+    tir_min, tir_max = st.slider(
+        "Rango de TIR (%)",
+        min_value=-50.0,
+        max_value=50.0,
+        value=(float(DEFAULT_TIR_MIN), float(DEFAULT_TIR_MAX)),
+        step=0.25,
+        key="bonos_tir_range",
+    )
 
     cols_pick = st.multiselect("Columnas a mostrar", options=all_cols, default=defaults, key="bonos_cols")
     if not cols_pick:
@@ -539,10 +538,10 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # ✅ aplicar filtro TIR (si hay NaN, quedan afuera por default)
+    # ✅ aplicar filtro TIR
     out = out.copy()
     out["TIR (%)"] = pd.to_numeric(out["TIR (%)"], errors="coerce")
-    out = out[out["TIR (%)"].between(tir_min, tir_max, inclusive="both")]
+    out = out[out["TIR (%)"].between(float(tir_min), float(tir_max), inclusive="both")]
 
     if out.empty:
         st.warning("No quedaron filas dentro del rango de TIR seleccionado.")
@@ -582,7 +581,3 @@ def render(back_to_home=None):
     )
 
     st.markdown("</div>", unsafe_allow_html=True)
-
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
