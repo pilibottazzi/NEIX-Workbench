@@ -242,7 +242,7 @@ def modified_duration(cashflow, precio, plazo):
 # =========================
 # Render
 # =========================
-def render():
+def render(back_to_home=None):
     st.title("NEIX · Bonos USD")
 
     df_cf = load_cashflows_bonos(CASHFLOW_PATH)
