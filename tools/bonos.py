@@ -291,48 +291,44 @@ def _multiselect_with_all(label: str, options: list[str], key: str, default_all:
 
 
 def _pick_price(prices: pd.DataFrame, species: str) -> tuple[float, float, str]:
+    """
+    ✅ SOLO USD: busca species + 'D'
+    ❌ NO hace fallback a species (eso trae pesos).
+    """
     sp = str(species).strip().upper()
-
     sym_usd = f"{sp}{PRICE_SUFFIX}"
+
     if sym_usd in prices.index:
         return float(prices.loc[sym_usd, "Precio"]), float(prices.loc[sym_usd, "Volumen"]), sym_usd
-
-    if sp in prices.index:
-        return float(prices.loc[sp, "Precio"]), float(prices.loc[sp, "Volumen"]), sp
 
     return np.nan, np.nan, ""
 
 
-def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> tuple[pd.DataFrame, dict]:
+def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.DataFrame:
     cashflows = build_cashflow_dict(df_cf)
     meta = build_species_meta(df_cf).set_index("species")
-
-    stats = {"total_species": int(len(meta)), "con_precio": 0, "con_flujos": 0, "rows": 0}
 
     rows = []
     for species in meta.index:
         px, vol, px_ticker = _pick_price(prices, species)
         if not np.isfinite(px) or px <= 0:
             continue
-        stats["con_precio"] += 1
 
         cf = cashflows.get(species)
         if cf is None or cf.empty:
             continue
 
-        # chequear que haya flujos futuros
         settlement = _settlement(plazo)
         cf_fut = _future_cashflows(cf, settlement)
         if cf_fut.empty:
             continue
-        stats["con_flujos"] += 1
 
         t = tir(cf, px, plazo_dias=plazo)
 
         rows.append(
             {
                 "Ticker": species,
-                "Ticker precio": px_ticker,
+                "Ticker precio": px_ticker,  # ej: GD30D
                 "Ley": meta.loc[species, "law_norm"],
                 "Issuer": meta.loc[species, "issuer_norm"],
                 "Descripción": meta.loc[species, "desc_norm"],
@@ -347,13 +343,11 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> tup
 
     out = pd.DataFrame(rows)
     if out.empty:
-        return out, stats
-
-    stats["rows"] = int(len(out))
+        return out
 
     out["Vencimiento"] = pd.to_datetime(out["Vencimiento"], errors="coerce")
     out = out.sort_values(["Vencimiento", "Ticker"], na_position="last").reset_index(drop=True)
-    return out, stats
+    return out
 
 
 def render(back_to_home=None):
@@ -363,10 +357,7 @@ def render(back_to_home=None):
     c1, c2 = st.columns([0.78, 0.22], vertical_alignment="center")
     with c1:
         st.markdown('<div class="top-title">NEIX · Bonos</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="top-sub">Rendimientos y  duration.</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown('<div class="top-sub">Rendimientos y duration.</div>', unsafe_allow_html=True)
 
     st.divider()
 
@@ -398,13 +389,19 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Filtros arriba (sin tabs)
+    # =========================
+    # Filtros arriba
+    # =========================
     st.markdown('<div class="section-title">Filtros</div>', unsafe_allow_html=True)
 
     laws = sorted(df_cf["law_norm"].dropna().unique().tolist())
     issuers = sorted(df_cf["issuer_norm"].dropna().unique().tolist())
     descs = sorted(df_cf["desc_norm"].dropna().unique().tolist())
     tickers_all = sorted(df_cf["species"].dropna().unique().tolist())
+
+    # ✅ Columnas como filtro (arriba)
+    all_cols = ["Ticker", "Ley", "Issuer", "Descripción", "Precio", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
+    defaults = ["Ticker", "Ley", "Issuer", "Precio", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
 
     f1, f2, f3, f4 = st.columns([0.22, 0.26, 0.26, 0.26], vertical_alignment="top")
     with f1:
@@ -415,6 +412,10 @@ def render(back_to_home=None):
         desc_sel = _multiselect_with_all("Descripción", descs, key="bonos_desc", default_all=True)
     with f4:
         ticker_sel = _multiselect_with_all("Ticker", tickers_all, key="bonos_ticker", default_all=True)
+
+    cols_pick = st.multiselect("Columnas a mostrar", options=all_cols, default=defaults, key="bonos_cols")
+    if not cols_pick:
+        cols_pick = defaults
 
     df_use = df_cf.copy()
     if law_sel:
@@ -433,39 +434,18 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    out, stats = _compute_table(df_use, prices, plazo)
-
-    # Diagnóstico útil (para entender por qué no aparece nada)
-    with st.expander("Diagnóstico", expanded=False):
-        st.write(
-            {
-                "Species seleccionadas (únicas)": int(df_use["species"].nunique()),
-                "Species totales en selección (meta)": stats["total_species"],
-                "Con precio en IOL": stats["con_precio"],
-                "Con flujos futuros (> settlement)": stats["con_flujos"],
-                "Filas finales": stats["rows"],
-            }
-        )
-        st.caption(
-            "Si 'Con precio en IOL' da 0: problema de match con tickers (ej Ticker+D). "
-            "Si 'Con flujos futuros' da 0: tus cashflows no tienen fechas futuras."
-        )
+    out = _compute_table(df_use, prices, plazo)
 
     if out.empty:
-        st.warning("No se generaron resultados con esta selección (ver Diagnóstico).")
+        st.warning(
+            "No se generaron resultados con esta selección.\n\n"
+            "Tip: ahora SOLO se buscan precios USD (Ticker + 'D'). "
+            "Si IOL no lista el 'D' para ese bono, no va a aparecer."
+        )
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
     st.markdown("## Resultados")
-    st.caption("Sin filtro de TIR. Se muestran todos los instrumentos con precio + flujos futuros.")
-
-    all_cols = ["Ticker", "Ley", "Issuer", "Descripción", "Precio", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
-    defaults = ["Ticker", "Ley", "Issuer", "Precio", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
-
-    cols_pick = st.multiselect("Columnas a mostrar", options=all_cols, default=defaults, key="bonos_cols")
-    if not cols_pick:
-        cols_pick = defaults
-
     show = out.copy()
     show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
     show["Ley"] = show["Ley"].apply(law_cell_label)
