@@ -13,7 +13,7 @@ from scipy import optimize
 # =========================
 CASHFLOW_PATH = os.path.join("data", "cashflows_completos.xlsx")
 
-# 🔥 Por pedido: NO filtrar nada por TIR (lo dejo como toggle opcional)
+# 🔥 BONOS: NO filtrar por TIR por defecto (queda toggle opcional)
 DEFAULT_FILTRAR_TIR = False
 TIR_MIN = -10.0
 TIR_MAX = 15.0
@@ -36,7 +36,6 @@ def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
 
 
 def xirr(cashflows: list[tuple[dt.datetime, float]], guess: float = 0.10) -> float:
-    # Newton suele fallar en algunos bonos -> devolvemos NaN y lo mostramos en diagnóstico
     try:
         r = optimize.newton(lambda rr: xnpv(rr, cashflows), guess, maxiter=200)
         return float(r) * 100.0
@@ -48,7 +47,6 @@ def xirr(cashflows: list[tuple[dt.datetime, float]], guess: float = 0.10) -> flo
 # Helpers cashflows
 # =========================
 def _settlement(plazo_dias: int) -> dt.datetime:
-    # ✅ para evitar “edge” por hora: normalizo a medianoche
     base = pd.Timestamp.today().normalize().to_pydatetime()
     return base + dt.timedelta(days=int(plazo_dias))
 
@@ -81,11 +79,11 @@ def normalize_law(x: str) -> str:
 
 def law_label(norm: str) -> str:
     if norm == "ARG":
-        return "ARG (Ley Local)"
+        return "ARG (Ley local)"
     if norm == "NY":
         return "NY (NY/NYC)"
     if norm == "NA":
-        return "Sin Ley"
+        return "Sin ley"
     return norm
 
 
@@ -155,11 +153,6 @@ def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
 # Precios BONOS (IOL)
 # =========================
 def fetch_iol_bonos_prices() -> pd.DataFrame:
-    """
-    URL que vos usás y anda.
-    Index: Ticker
-    Columns: Precio, Volumen
-    """
     url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
     bonos = pd.read_html(url)[0]
 
@@ -185,8 +178,7 @@ def fetch_iol_bonos_prices() -> pd.DataFrame:
     except Exception:
         df["Volumen"] = 0
 
-    df = df.dropna(subset=["Precio"])
-    df = df.set_index("Ticker")
+    df = df.dropna(subset=["Precio"]).set_index("Ticker")
 
     # ✅ si IOL trae duplicados, me quedo con el de mayor volumen
     df = df.sort_values("Volumen", ascending=False)
@@ -255,21 +247,35 @@ def _ui_css():
         """
 <style>
   .wrap{ max-width: 1250px; margin: 0 auto; }
-  .top-title{ font-size: 24px; font-weight: 850; letter-spacing: .04em; color:#111827; margin-bottom: 2px;}
+
+  .top-title{ font-size: 26px; font-weight: 850; letter-spacing: .04em; color:#111827; margin-bottom: 2px;}
   .top-sub{ color: rgba(17,24,39,.60); font-size: 13px; margin-top: 0px; }
-  .section-title{ font-size: 18px; font-weight: 800; color:#111827; margin: 12px 0 6px; }
+
+  .section-title{ font-size: 18px; font-weight: 800; color:#111827; margin: 16px 0 8px; }
 
   .block-container { padding-top: 1.10rem; padding-bottom: 2.2rem; }
-  label { margin-bottom: .20rem !important; }
+  label { margin-bottom: .18rem !important; }
 
   .stButton > button { border-radius: 14px; padding: .68rem 1.0rem; font-weight: 700; }
   .stSelectbox div[data-baseweb="select"]{ border-radius: 14px; }
-  div[data-baseweb="tag"]{ border-radius: 999px !important; }
+  .stMultiSelect div[data-baseweb="select"]{ border-radius: 14px; }
 
-  div[data-testid="stExpander"] > details { border-radius: 16px; }
-  div[data-testid="stExpander"] summary { font-weight: 700; }
+  div[data-baseweb="tag"]{ border-radius: 999px !important; font-weight: 650; }
 
-  div[data-testid="stDataFrame"] { border-radius: 16px; overflow: hidden; }
+  div[data-testid="stExpander"] > details {
+    border-radius: 16px;
+    border: 1px solid rgba(17,24,39,.10);
+    background: rgba(17,24,39,.015);
+  }
+  div[data-testid="stExpander"] summary { font-weight: 750; }
+
+  div[data-testid="stDataFrame"] {
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid rgba(17,24,39,.10);
+  }
+
+  hr{ border-top: 1px solid rgba(17,24,39,.08); margin: 1rem 0; }
 </style>
 """,
         unsafe_allow_html=True,
@@ -280,7 +286,7 @@ def _multiselect_with_all(label: str, options: list[str], key: str, default_all:
     if not options:
         return []
     options_sorted = sorted(set([str(x) for x in options if str(x).strip() != ""]))
-    all_token = "✅ Seleccionar todo"
+    all_token = "Seleccionar todo"  # ✅ sin emoji
     opts = [all_token] + options_sorted
     default = [all_token] if default_all else []
 
@@ -361,15 +367,17 @@ def render(back_to_home=None):
         st.info("El Excel debe tener: date, species, description, law, issuer y flujo_total.")
         return
 
-    # Top controls (✅ T1 default)
-    f1, f2, f3, f4 = st.columns([0.20, 0.22, 0.20, 0.38], vertical_alignment="bottom")
-    with f1:
-        plazo = st.selectbox("Plazo de liquidación", [1, 0], index=0, format_func=lambda x: f"T{x}")
-    with f2:
-        traer_precios = st.button("Actualizar PRECIOS", use_container_width=True)
-    with f3:
-        calcular = st.button("Calcular", type="primary", use_container_width=True)
-    with f4:
+    # -------------------------
+    # Parámetros arriba (como tu pantalla)
+    # -------------------------
+    top = st.columns([0.24, 0.22, 0.22, 0.32], vertical_alignment="bottom")
+    with top[0]:
+        plazo = st.selectbox("Plazo de liquidación", [1, 0], index=0, format_func=lambda x: f"T{x}", key="bonos_plazo")
+    with top[1]:
+        traer_precios = st.button("Actualizar precios", use_container_width=True, key="bonos_refresh")
+    with top[2]:
+        calcular = st.button("Calcular", type="primary", use_container_width=True, key="bonos_calc")
+    with top[3]:
         st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
 
     # Prices cache
@@ -386,7 +394,9 @@ def render(back_to_home=None):
         st.warning("No hay precios cargados.")
         return
 
-    # Filtros (cerrados)
+    # -------------------------
+    # Filtros (igual a tu estructura)
+    # -------------------------
     st.markdown('<div class="section-title">Filtros</div>', unsafe_allow_html=True)
 
     law_norms = sorted(df_cf["law_norm"].dropna().unique().tolist())
@@ -421,11 +431,12 @@ def render(back_to_home=None):
     if ticker_sel:
         df_use = df_use[df_use["species"].isin(ticker_sel)]
 
-    # Toggle (opcional) de TIR interno
+    # Toggle (opcional) de TIR interno (tal cual BONOS)
     with st.expander("Ajustes avanzados (opcional)", expanded=False):
         filtrar_tir = st.checkbox(
             "Aplicar filtro interno de TIR (oculta instrumentos fuera de rango)",
             value=DEFAULT_FILTRAR_TIR,
+            key="bonos_filtrar_tir",
         )
         if filtrar_tir:
             st.caption(f"Rango interno: {TIR_MIN} a {TIR_MAX}")
@@ -436,9 +447,7 @@ def render(back_to_home=None):
 
     out = _compute_table(df_use, prices, plazo)
 
-    # =========================
-    # Diagnóstico (para entender “por qué no anda”)
-    # =========================
+    # Diagnóstico (lo dejo, porque es BONOS y lo tenías)
     tick_cf = sorted(df_use["species"].unique().tolist())
     tick_px = set(prices.index)
     inter = sorted(list(set(tick_cf) & tick_px))
@@ -467,14 +476,16 @@ def render(back_to_home=None):
         st.warning("No se encontraron bonos con precio para la selección.")
         return
 
-    # ✅ SOLO si lo activás
+    # ✅ SOLO si lo activás (bonos)
     if filtrar_tir:
         out = out[out["TIR (%)"].between(TIR_MIN, TIR_MAX, inclusive="both")].copy()
         if out.empty:
             st.info("No quedaron bonos tras aplicar filtros internos de TIR.")
             return
 
-    # Tabla
+    # -------------------------
+    # Tabla (prolija)
+    # -------------------------
     st.markdown("## NEIX · Bonos")
     st.caption("Columnas configurables.")
 
@@ -516,3 +527,4 @@ def render(back_to_home=None):
     )
 
     st.markdown("</div>", unsafe_allow_html=True)
+
