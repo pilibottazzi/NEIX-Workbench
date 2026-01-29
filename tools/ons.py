@@ -10,14 +10,9 @@ from scipy import optimize
 
 CASHFLOW_PATH = os.path.join("data", "cashflows_ON.xlsx")
 
-# ✅ Filtro interno (SIEMPRE ACTIVO - NO se muestra en UI)
 TIR_MIN = -10.0
 TIR_MAX = 15.0
 
-
-# ======================================================
-# 1) XNPV / XIRR
-# ======================================================
 def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
     chron = sorted(cashflows, key=lambda x: x[0])
     t0 = chron[0][0]
@@ -37,10 +32,6 @@ def xirr(cashflows: list[tuple[dt.datetime, float]], guess: float = 0.10) -> flo
     except Exception:
         return np.nan
 
-
-# ======================================================
-# 2) Cashflows
-# ======================================================
 def _settlement(plazo_dias: int) -> dt.datetime:
     return dt.datetime.today() + dt.timedelta(days=int(plazo_dias))
 
@@ -102,9 +93,6 @@ def build_cashflow_dict(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return out
 
 
-# ======================================================
-# 3) Ley: normalización (NYC -> NY)
-# ======================================================
 def normalize_law(x: str) -> str:
     s = (x or "").strip().upper()
     s = s.replace(".", "").replace("-", " ").replace("_", " ")
@@ -142,9 +130,6 @@ def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
     return meta
 
 
-# ======================================================
-# 4) Precios IOL
-# ======================================================
 def to_float_iol(x) -> float:
     if pd.isna(x):
         return np.nan
@@ -193,9 +178,7 @@ def pick_usd_price_by_root(prices: pd.DataFrame, root_key: str) -> tuple[float, 
     return np.nan, np.nan, ""
 
 
-# ======================================================
-# 5) Métricas
-# ======================================================
+
 def tir(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0) -> float:
     if not np.isfinite(precio) or precio <= 0:
         return np.nan
@@ -362,14 +345,9 @@ def render(back_to_home=None):
     df_cf = df_cf.copy()
     df_cf["law_norm"] = df_cf["law"].apply(normalize_law)
 
-    # -------------------------
-    # 1) Filtros ARRIBA (compactos con solapa)
-    # -------------------------
-    st.markdown("### Filtros")
-
     all_tickers = sorted(df_cf["species"].dropna().astype(str).str.upper().unique().tolist())
 
-    with st.expander("Ticker (selección)", expanded=True):
+    with st.expander("Tickers", expanded=False):
         sel_tickers = _select_all_multiselect("Ticker", options=all_tickers, key_base="tickers", default_all=True)
 
     # Columnas (solapa)
@@ -390,11 +368,6 @@ def render(back_to_home=None):
 
     st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
 
-    # -------------------------
-    # 2) Parámetros + botones (ordenado)
-    # -------------------------
-    st.markdown("### Parámetros")
-
     p1, p2, p3, p4 = st.columns([0.22, 0.22, 0.22, 0.34], vertical_alignment="bottom")
 
     with p1:
@@ -412,12 +385,9 @@ def render(back_to_home=None):
     with p3:
         calcular = st.button("Calcular", type="primary", use_container_width=True)
 
-    with p4:
-        st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
-
     # Cache precios
     if traer_precios or "ons_iol_prices" not in st.session_state:
-        with st.spinner("Leyendo precios desde IOL..."):
+        with st.spinner("Leyendo precios..."):
             try:
                 st.session_state["ons_iol_prices"] = fetch_iol_on_prices()
             except Exception as e:
@@ -431,9 +401,7 @@ def render(back_to_home=None):
 
     st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
 
-    # -------------------------
-    # 3) Tabs ABAJO (como te gusta)
-    # -------------------------
+
     tab_arg, tab_ny = st.tabs([law_label("ARG"), law_label("NY")])
 
     def _render_tab(law_norm: str):
