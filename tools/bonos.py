@@ -13,7 +13,8 @@ from scipy import optimize
 # =========================
 CASHFLOW_PATH = os.path.join("data", "cashflows_completos.xlsx")
 
-# ✅ Filtro interno (NO se muestra en UI)
+# 🔥 Por pedido: NO filtrar nada por TIR (lo dejo como toggle opcional)
+DEFAULT_FILTRAR_TIR = False
 TIR_MIN = -10.0
 TIR_MAX = 15.0
 
@@ -35,6 +36,7 @@ def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
 
 
 def xirr(cashflows: list[tuple[dt.datetime, float]], guess: float = 0.10) -> float:
+    # Newton suele fallar en algunos bonos -> devolvemos NaN y lo mostramos en diagnóstico
     try:
         r = optimize.newton(lambda rr: xnpv(rr, cashflows), guess, maxiter=200)
         return float(r) * 100.0
@@ -46,7 +48,9 @@ def xirr(cashflows: list[tuple[dt.datetime, float]], guess: float = 0.10) -> flo
 # Helpers cashflows
 # =========================
 def _settlement(plazo_dias: int) -> dt.datetime:
-    return dt.datetime.today() + dt.timedelta(days=int(plazo_dias))
+    # ✅ para evitar “edge” por hora: normalizo a medianoche
+    base = pd.Timestamp.today().normalize().to_pydatetime()
+    return base + dt.timedelta(days=int(plazo_dias))
 
 
 def _future_cashflows(df: pd.DataFrame, settlement: dt.datetime) -> pd.DataFrame:
@@ -59,7 +63,7 @@ def _future_cashflows(df: pd.DataFrame, settlement: dt.datetime) -> pd.DataFrame
 
 
 # =========================
-# Normalizaciones (ley/issuer/desc)
+# Normalizaciones
 # =========================
 def normalize_law(x: str) -> str:
     s = (x or "").strip().upper()
@@ -89,7 +93,6 @@ def normalize_issuer(x: str) -> str:
     s = (x or "").strip().upper()
     s = s.replace("_", " ").replace("-", " ")
     s = " ".join(s.split())
-    # Si querés mapear variantes, agregalo acá
     return s if s else "NA"
 
 
@@ -110,7 +113,6 @@ def load_cashflows_bonos(path: str) -> pd.DataFrame:
     df = pd.read_excel(path)
     df.columns = df.columns.astype(str).str.strip()
 
-    # columnas esperadas (según tu excel)
     req = {"date", "species", "law", "issuer", "description", "flujo_total"}
     missing = req - set(df.columns)
     if missing:
@@ -154,7 +156,7 @@ def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
 # =========================
 def fetch_iol_bonos_prices() -> pd.DataFrame:
     """
-    Precios de BONOS desde IOL (tabla completa).
+    URL que vos usás y anda.
     Index: Ticker
     Columns: Precio, Volumen
     """
@@ -185,6 +187,10 @@ def fetch_iol_bonos_prices() -> pd.DataFrame:
 
     df = df.dropna(subset=["Precio"])
     df = df.set_index("Ticker")
+
+    # ✅ si IOL trae duplicados, me quedo con el de mayor volumen
+    df = df.sort_values("Volumen", ascending=False)
+    df = df[~df.index.duplicated(keep="first")]
 
     return df
 
@@ -248,32 +254,40 @@ def _ui_css():
     st.markdown(
         """
 <style>
-  /* Layout general */
   .wrap{ max-width: 1250px; margin: 0 auto; }
   .top-title{ font-size: 24px; font-weight: 850; letter-spacing: .04em; color:#111827; margin-bottom: 2px;}
   .top-sub{ color: rgba(17,24,39,.60); font-size: 13px; margin-top: 0px; }
   .section-title{ font-size: 18px; font-weight: 800; color:#111827; margin: 12px 0 6px; }
 
-  /* Compactar paddings arriba */
   .block-container { padding-top: 1.10rem; padding-bottom: 2.2rem; }
   label { margin-bottom: .20rem !important; }
-  .stCaption { margin-top: 0px !important; }
 
-  /* Inputs / botones */
   .stButton > button { border-radius: 14px; padding: .68rem 1.0rem; font-weight: 700; }
   .stSelectbox div[data-baseweb="select"]{ border-radius: 14px; }
   div[data-baseweb="tag"]{ border-radius: 999px !important; }
 
-  /* Expander prolijo */
   div[data-testid="stExpander"] > details { border-radius: 16px; }
   div[data-testid="stExpander"] summary { font-weight: 700; }
 
-  /* Dataframe */
   div[data-testid="stDataFrame"] { border-radius: 16px; overflow: hidden; }
 </style>
 """,
         unsafe_allow_html=True,
     )
+
+
+def _multiselect_with_all(label: str, options: list[str], key: str, default_all: bool = True) -> list[str]:
+    if not options:
+        return []
+    options_sorted = sorted(set([str(x) for x in options if str(x).strip() != ""]))
+    all_token = "✅ Seleccionar todo"
+    opts = [all_token] + options_sorted
+    default = [all_token] if default_all else []
+
+    sel = st.multiselect(label, options=opts, default=default, key=key)
+    if all_token in sel:
+        return options_sorted
+    return sel
 
 
 def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.DataFrame:
@@ -287,7 +301,6 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
 
         px = float(prices.loc[species, "Precio"])
         vol = float(prices.loc[species, "Volumen"])
-
         if not np.isfinite(px) or px <= 0:
             continue
 
@@ -321,38 +334,16 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
     return out
 
 
-def _multiselect_with_all(label: str, options: list[str], default_all: bool = True, key: str = "") -> list[str]:
-    """
-    Multiselect con pseudo-opción "Seleccionar todo" (como en tu captura).
-    """
-    if not options:
-        return []
-
-    options_sorted = sorted(set([str(x) for x in options if str(x).strip() != ""]))
-    all_token = "✅ Seleccionar todo"
-    opts = [all_token] + options_sorted
-
-    default = [all_token] if default_all else []
-
-    selected = st.multiselect(label, options=opts, default=default, key=key)
-
-    if all_token in selected:
-        # Si está "seleccionar todo", devolvemos todas menos el token
-        return options_sorted
-
-    return selected
-
-
 def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
 
-    # ========= Header =========
+    # Header
     c1, c2 = st.columns([0.78, 0.22], vertical_alignment="center")
     with c1:
         st.markdown('<div class="top-title">NEIX · Bonos</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="top-sub">Rendimientos, duration y filtros por Ley / Issuer / Descripción. Precios desde IOL. </div>',
+            '<div class="top-sub">Rendimientos, duration y filtros por Ley / Issuer / Descripción. Precios desde IOL.</div>',
             unsafe_allow_html=True,
         )
     with c2:
@@ -362,7 +353,7 @@ def render(back_to_home=None):
 
     st.divider()
 
-    # ========= Load cashflows =========
+    # Load cashflows
     try:
         df_cf = load_cashflows_bonos(CASHFLOW_PATH)
     except Exception as e:
@@ -370,11 +361,10 @@ def render(back_to_home=None):
         st.info("El Excel debe tener: date, species, description, law, issuer y flujo_total.")
         return
 
-    # ========= Top controls =========
+    # Top controls (✅ T1 default)
     f1, f2, f3, f4 = st.columns([0.20, 0.22, 0.20, 0.38], vertical_alignment="bottom")
-
     with f1:
-        plazo = st.selectbox("Plazo de liquidación", [1, 0], index=0, format_func=lambda x: f"T{x}")  # ✅ T1 default
+        plazo = st.selectbox("Plazo de liquidación", [1, 0], index=0, format_func=lambda x: f"T{x}")
     with f2:
         traer_precios = st.button("Actualizar PRECIOS", use_container_width=True)
     with f3:
@@ -382,7 +372,7 @@ def render(back_to_home=None):
     with f4:
         st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
 
-    # ========= Prices cache =========
+    # Prices cache
     if traer_precios or "bonos_iol_prices" not in st.session_state:
         with st.spinner("Leyendo precios desde IOL..."):
             try:
@@ -396,13 +386,12 @@ def render(back_to_home=None):
         st.warning("No hay precios cargados.")
         return
 
-    # ========= Filtros (cerrados) =========
+    # Filtros (cerrados)
     st.markdown('<div class="section-title">Filtros</div>', unsafe_allow_html=True)
 
-    # Opciones dependen del universo del cashflow (no del cálculo)
-    laws = [law_label(x) for x in sorted(df_cf["law_norm"].dropna().unique().tolist())]
-    # Guardamos mapping label->norm para filtrar
-    law_map = {law_label(x): x for x in sorted(df_cf["law_norm"].dropna().unique().tolist())}
+    law_norms = sorted(df_cf["law_norm"].dropna().unique().tolist())
+    law_labels = [law_label(x) for x in law_norms]
+    law_map = {law_label(x): x for x in law_norms}
 
     issuers = sorted(df_cf["issuer_norm"].dropna().unique().tolist())
     descs = sorted(df_cf["desc_norm"].dropna().unique().tolist())
@@ -411,39 +400,18 @@ def render(back_to_home=None):
     with st.expander("Ley / Issuer / Descripción (desplegable)", expanded=False):
         a, b, c = st.columns(3)
         with a:
-            law_sel_labels = _multiselect_with_all(
-                "Ley",
-                options=laws,
-                default_all=True,
-                key="bonos_f_law",
-            )
+            law_sel_labels = _multiselect_with_all("Ley", law_labels, key="bonos_law", default_all=True)
             law_sel = [law_map[x] for x in law_sel_labels] if law_sel_labels else []
         with b:
-            issuer_sel = _multiselect_with_all(
-                "Issuer",
-                options=issuers,
-                default_all=True,
-                key="bonos_f_issuer",
-            )
+            issuer_sel = _multiselect_with_all("Issuer", issuers, key="bonos_issuer", default_all=True)
         with c:
-            desc_sel = _multiselect_with_all(
-                "Descripción",
-                options=descs,
-                default_all=True,
-                key="bonos_f_desc",
-            )
+            desc_sel = _multiselect_with_all("Descripción", descs, key="bonos_desc", default_all=True)
 
     with st.expander("Ticker (desplegable)", expanded=False):
-        ticker_sel = _multiselect_with_all(
-            "Ticker",
-            options=tickers_all,
-            default_all=True,
-            key="bonos_f_ticker",
-        )
+        ticker_sel = _multiselect_with_all("Ticker", tickers_all, key="bonos_ticker", default_all=True)
 
-    # ========= Aplicar filtros al cashflow (para acotar universo real) =========
+    # aplicar filtros al cashflow
     df_use = df_cf.copy()
-
     if law_sel:
         df_use = df_use[df_use["law_norm"].isin(law_sel)]
     if issuer_sel:
@@ -453,40 +421,67 @@ def render(back_to_home=None):
     if ticker_sel:
         df_use = df_use[df_use["species"].isin(ticker_sel)]
 
-    # ========= Calcular =========
+    # Toggle (opcional) de TIR interno
+    with st.expander("Ajustes avanzados (opcional)", expanded=False):
+        filtrar_tir = st.checkbox(
+            "Aplicar filtro interno de TIR (oculta instrumentos fuera de rango)",
+            value=DEFAULT_FILTRAR_TIR,
+        )
+        if filtrar_tir:
+            st.caption(f"Rango interno: {TIR_MIN} a {TIR_MAX}")
+
     if not calcular:
         st.info("Elegí filtros (opcional) y tocá **Calcular**.")
         return
 
     out = _compute_table(df_use, prices, plazo)
 
+    # =========================
+    # Diagnóstico (para entender “por qué no anda”)
+    # =========================
+    tick_cf = sorted(df_use["species"].unique().tolist())
+    tick_px = set(prices.index)
+    inter = sorted(list(set(tick_cf) & tick_px))
+    sin_px = sorted(list(set(tick_cf) - tick_px))[:30]
+
+    with st.expander("Diagnóstico (si algo no aparece)", expanded=False):
+        st.write(
+            {
+                "Tickers en cashflow (selección)": len(tick_cf),
+                "Tickers con precio en IOL (intersección)": len(inter),
+                "Ejemplos sin precio (máx 30)": ", ".join(sin_px) if sin_px else "—",
+            }
+        )
+        if not out.empty:
+            st.write(
+                {
+                    "Filas calculadas": int(len(out)),
+                    "TIR NaN": int(out["TIR (%)"].isna().sum()),
+                    "TIR min": float(np.nanmin(out["TIR (%)"].values)) if out["TIR (%)"].notna().any() else None,
+                    "TIR max": float(np.nanmax(out["TIR (%)"].values)) if out["TIR (%)"].notna().any() else None,
+                }
+            )
+            st.dataframe(out.head(15), use_container_width=True, hide_index=True)
+
     if out.empty:
-        # diagnostico simple para que no te vuelvas loca
-        inter = len(set(df_use["species"].unique()) & set(prices.index))
         st.warning("No se encontraron bonos con precio para la selección.")
-        st.caption(f"Tickers en selección (cashflow): {df_use['species'].nunique()} · Tickers con precio en IOL: {inter}")
         return
 
-    # ✅ filtro interno TIR
-    out = out[out["TIR (%)"].between(TIR_MIN, TIR_MAX, inclusive="both")].copy()
-    if out.empty:
-        st.info("No quedaron bonos tras aplicar filtros internos.")
-        return
+    # ✅ SOLO si lo activás
+    if filtrar_tir:
+        out = out[out["TIR (%)"].between(TIR_MIN, TIR_MAX, inclusive="both")].copy()
+        if out.empty:
+            st.info("No quedaron bonos tras aplicar filtros internos de TIR.")
+            return
 
-    # ========= Tabla =========
+    # Tabla
     st.markdown("## NEIX · Bonos")
-    st.caption("Columnas configurables. (Filtro interno de TIR activo, no visible.)")
+    st.caption("Columnas configurables.")
 
     all_cols = ["Ticker", "Ley", "Issuer", "Descripción", "Precio", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
     defaults = ["Ticker", "Issuer", "Precio", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen", "Descripción"]
 
-    cols_pick = st.multiselect(
-        "Columnas a mostrar",
-        options=all_cols,
-        default=defaults,
-        key="bonos_cols",
-    )
-
+    cols_pick = st.multiselect("Columnas a mostrar", options=all_cols, default=defaults, key="bonos_cols")
     if "Ticker" not in cols_pick:
         cols_pick = ["Ticker"] + cols_pick
     if "Vencimiento" not in cols_pick:
@@ -496,7 +491,6 @@ def render(back_to_home=None):
     show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
     show["Ley"] = show["Ley"].apply(law_label)
 
-    # ✅ más alto (más filas visibles)
     base = 520
     row_h = 28
     max_h = 1050
