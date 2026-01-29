@@ -7,23 +7,10 @@ import pandas as pd
 import streamlit as st
 from scipy import optimize
 
-# =========================
-# Config
-# =========================
 CASHFLOW_PATH = os.path.join("data", "cashflows_completos.xlsx")
 PRICE_SUFFIX = "D"
 
-
-# =========================
-# Parsing números IOL (AR)
-# =========================
 def parse_ar_number(x) -> float:
-    """
-    Convierte:
-      89.190,00 -> 89190.00
-      22.733.580,97 -> 22733580.97
-      6323 -> 6323.0
-    """
     if x is None:
         return np.nan
     s = str(x).strip()
@@ -403,11 +390,8 @@ def render(back_to_home=None):
     c1, c2 = st.columns([0.78, 0.22], vertical_alignment="center")
     with c1:
         st.markdown('<div class="top-title">NEIX · Bonos USD</div>', unsafe_allow_html=True)
-        st.markdown('<div class="top-sub">Precios USD desde IOL (ticker + D) con fix centavos. Rendimientos y duration.</div>', unsafe_allow_html=True)
-    with c2:
-        if back_to_home is not None:
-            if st.button("← Volver", use_container_width=True):
-                back_to_home()
+        st.markdown('<div class="top-sub">Rendimientos y duration.</div>', unsafe_allow_html=True)
+
 
     st.divider()
 
@@ -427,8 +411,7 @@ def render(back_to_home=None):
         traer_precios = st.button("Actualizar precios", use_container_width=True, key="bonos_refresh")
     with top[2]:
         calcular = st.button("Calcular", type="primary", use_container_width=True, key="bonos_calc")
-    with top[3]:
-        st.caption(f"Cashflows: `{CASHFLOW_PATH}`")
+
 
     # cache precios
     if traer_precios or "bonos_iol_prices" not in st.session_state:
@@ -444,9 +427,6 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # =========================
-    # Filtros arriba + columnas
-    # =========================
     st.markdown('<div class="section-title">Filtros</div>', unsafe_allow_html=True)
 
     laws = sorted(df_cf["law_norm"].dropna().unique().tolist())
@@ -498,10 +478,8 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # =========================
-    # Resultados
-    # =========================
-    st.markdown("## Resultados")
+
+    st.markdown("## NEIX · Bonos USD")
     show = out.copy()
     show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
     show["Ley"] = show["Ley"].apply(law_cell_label)
