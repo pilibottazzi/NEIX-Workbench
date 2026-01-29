@@ -12,6 +12,7 @@ from tools import moc_tarde
 from tools import bo_ppt_manana
 from tools import bo_acreditacion_mav
 from tools import vencimientos
+from tools import bonos
 
 
 # =========================================================
@@ -96,6 +97,8 @@ if tool:
             alquileres.render(back_to_home)
         elif tool == "vencimientos":
             alquileres.render(back_to_home)
+        elif tool == "bonos":
+            bonos.render(back_to_home)
             
         else:
             st.error("Herramienta no encontrada.")
@@ -121,6 +124,7 @@ with tabs[0]:
     st.markdown(
         """
         <div class="tool-grid">
+          <a class="tool-btn" href="?tool=bonos" target="_self">Bonos</a>
           <a class="tool-btn" href="?tool=ons" target="_self">ON’s</a>
         </div>
         """,
