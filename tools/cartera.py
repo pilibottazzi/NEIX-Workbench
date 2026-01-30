@@ -1,4 +1,4 @@
-# tools/bonos.py
+# tools/cartera.py
 from __future__ import annotations
 
 import os
@@ -14,21 +14,14 @@ from scipy import optimize
 CASHFLOW_PATH = os.path.join("data", "cashflows_completos.xlsx")
 PRICE_SUFFIX = "D"
 
-# ✅ Filtro TIR fijo (sin UI, como pediste)
 DEFAULT_TIR_MIN = -15.0
 DEFAULT_TIR_MAX = 20.0
 
-# =========================
-# Excepciones ticker pesos -> ticker USD (MEP)
-# (cuando NO es simplemente "ticker + D")
-# =========================
+# Excepciones pesos->USD (cuando no es simplemente +D)
 PESOS_TO_USD_OVERRIDES: dict[str, str] = {
-    # Provincia (los que pasaste)
     "BPOB7": "BPB7D",
     "BPOC7": "BPC7D",
     "BPOD7": "BPD7D",
-
-    # Otros que pasaste
     "BPY26": "BPY6D",
     "AL30": "AL30D",
     "AL35": "AL35D",
@@ -38,8 +31,6 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "GD35": "GD35D",
     "GD38": "GD38D",
     "GD41": "GD41D",
-
-    # Si alguna vez te vienen sin "O" y querés mapearlos igual
     "BPA7": "BPA7D",
     "BPB7": "BPB7D",
     "BPC7": "BPC7D",
@@ -49,16 +40,9 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
 }
 
 # =========================
-# Parse helpers (AR numbers + fix USD)
+# Utils parse + tickers
 # =========================
 def parse_ar_number(x) -> float:
-    """
-    Convierte:
-      89.190,00 -> 89190.00
-      22.733.580,97 -> 22733580.97
-      6323 -> 6323.0
-      '-' / '' -> NaN
-    """
     if x is None:
         return np.nan
     s = str(x).strip()
@@ -72,36 +56,19 @@ def parse_ar_number(x) -> float:
 
 
 def usd_fix_if_needed(ticker: str, raw_last: str, value: float) -> float:
-    """
-    Fix para USD (tickers terminan en D).
-    Caso típico que viste: GD30D último operado aparece "6323" pero en realidad es 63.23.
-    Regla:
-      - ticker termina en 'D'
-      - raw_last NO tiene '.' ni ','
-      => dividir por 100
-    """
+    # Si termina en D y viene entero (sin separadores), suele ser *100
     if not np.isfinite(value):
         return value
-
     t = (ticker or "").strip().upper()
     raw = (raw_last or "").strip()
-
     if not t.endswith("D"):
         return value
-
     if ("," in raw) or ("." in raw):
         return value
-
     return value / 100.0
 
 
 def resolve_usd_ticker(species: str) -> str:
-    """
-    Resuelve ticker USD a buscar en IOL:
-    - si viene ya con D => lo deja
-    - si está en overrides => usa ese
-    - si no => agrega 'D'
-    """
     sp = str(species).strip().upper()
     if sp.endswith("D"):
         return sp
@@ -118,7 +85,6 @@ def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
     t0 = chron[0][0]
     if rate <= -0.999999:
         return np.nan
-
     out = 0.0
     for t, cf in chron:
         years = (t - t0).days / 365.0
@@ -134,9 +100,6 @@ def xirr(cashflows: list[tuple[dt.datetime, float]], guess: float = 0.10) -> flo
         return np.nan
 
 
-# =========================
-# Helpers cashflows
-# =========================
 def _settlement(plazo_dias: int) -> dt.datetime:
     base = pd.Timestamp.today().normalize().to_pydatetime()
     return base + dt.timedelta(days=int(plazo_dias))
@@ -147,18 +110,15 @@ def _future_cashflows(df: pd.DataFrame, settlement: dt.datetime) -> pd.DataFrame
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["flujo_total"] = pd.to_numeric(df["flujo_total"], errors="coerce")
     df = df.dropna(subset=["date", "flujo_total"])
-    df = df[df["date"] > settlement].sort_values("date")
-    return df
+    return df[df["date"] > settlement].sort_values("date")
 
 
 # =========================
-# Normalizaciones
+# Normalizaciones meta
 # =========================
 def normalize_law(x: str) -> str:
-    s = (x or "").strip().upper()
-    s = s.replace(".", "").replace("-", " ").replace("_", " ")
+    s = (x or "").strip().upper().replace(".", "").replace("-", " ").replace("_", " ")
     s = " ".join(s.split())
-
     if s in {"ARG", "AR", "LOCAL", "LEY LOCAL", "ARGENTINA"}:
         return "ARG"
     if s in {"NYC", "NY", "NEW YORK", "NEWYORK", "LEY NY", "LEY NEW YORK", "N Y", "N Y C"}:
@@ -179,27 +139,23 @@ def law_cell_label(norm: str) -> str:
 
 
 def normalize_issuer(x: str) -> str:
-    s = (x or "").strip().upper()
-    s = s.replace("_", " ").replace("-", " ")
+    s = (x or "").strip().upper().replace("_", " ").replace("-", " ")
     s = " ".join(s.split())
     return s if s else "NA"
 
 
 def normalize_desc(x: str) -> str:
-    s = (x or "").strip().upper()
-    s = s.replace("_", " ").replace("-", " ")
+    s = (x or "").strip().upper().replace("_", " ").replace("-", " ")
     s = " ".join(s.split())
     return s if s else "NA"
 
 
 # =========================
-# Load cashflows (BONOS)
+# Load cashflows
 # =========================
-def load_cashflows_bonos(path: str) -> pd.DataFrame:
+def load_cashflows(path: str) -> pd.DataFrame:
     if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"No existe el archivo: {path}. Subilo al repo (ej: data/cashflows_completos.xlsx)."
-        )
+        raise FileNotFoundError(f"No existe: {path}")
 
     df = pd.read_excel(path)
     df.columns = df.columns.astype(str).str.strip()
@@ -207,9 +163,7 @@ def load_cashflows_bonos(path: str) -> pd.DataFrame:
     req = {"date", "species", "law", "issuer", "description", "flujo_total"}
     missing = req - set(df.columns)
     if missing:
-        raise ValueError(
-            f"Faltan columnas en {path}: {sorted(missing)} (requeridas: {sorted(req)})"
-        )
+        raise ValueError(f"Faltan columnas: {sorted(missing)}")
 
     df["species"] = df["species"].astype(str).str.strip().str.upper()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
@@ -231,7 +185,7 @@ def build_cashflow_dict(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
 
 def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
-    meta = (
+    return (
         df.groupby("species")
         .agg(
             law_norm=("law_norm", lambda s: s.value_counts().index[0]),
@@ -241,68 +195,46 @@ def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index()
     )
-    return meta
 
 
 # =========================
-# Precios BONOS (IOL)
+# IOL prices
 # =========================
-def fetch_iol_bonos_prices() -> pd.DataFrame:
-    """
-    Index: Ticker
-    Columns: Precio, Volumen
-
-    - No usa flavor="html5lib" (evita error si no está instalado).
-    - Parsea números AR.
-    - Si ticker termina en D y viene entero sin separadores => /100.
-    """
+def fetch_iol_prices() -> pd.DataFrame:
     url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
-
-    try:
-        tables = pd.read_html(url)  # usa lxml si está disponible
-    except Exception as e:
-        raise RuntimeError(
-            "No pude leer la tabla de IOL. Si estás en tu PC instalá: pip install lxml\n"
-            f"Detalle: {e}"
-        )
-
+    tables = pd.read_html(url)  # requiere lxml localmente
     if not tables:
         return pd.DataFrame()
-
-    bonos = tables[0]
-    cols = set(bonos.columns.astype(str))
-
+    t0 = tables[0]
+    cols = set(t0.columns.astype(str))
     if "Símbolo" not in cols or "Último Operado" not in cols:
         return pd.DataFrame()
 
     df = pd.DataFrame()
-    df["Ticker"] = bonos["Símbolo"].astype(str).str.strip().str.upper()
-
-    df["RawPrecio"] = bonos["Último Operado"].astype(str).str.strip()
-    df["Precio"] = bonos["Último Operado"].apply(parse_ar_number)
+    df["Ticker"] = t0["Símbolo"].astype(str).str.strip().str.upper()
+    df["RawPrecio"] = t0["Último Operado"].astype(str).str.strip()
+    df["Precio"] = t0["Último Operado"].apply(parse_ar_number)
     df["Precio"] = [
         usd_fix_if_needed(tk, raw, val)
         for tk, raw, val in zip(df["Ticker"], df["RawPrecio"], df["Precio"])
     ]
 
     if "Monto Operado" in cols:
-        df["Volumen"] = bonos["Monto Operado"].apply(parse_ar_number).fillna(0)
+        df["Volumen"] = t0["Monto Operado"].apply(parse_ar_number).fillna(0)
     else:
         df["Volumen"] = 0
 
     df = df.dropna(subset=["Precio"]).set_index("Ticker")
-    df = df.sort_values("Volumen", ascending=False)
     df = df[~df.index.duplicated(keep="first")]
     return df.drop(columns=["RawPrecio"], errors="ignore")
 
 
 # =========================
-# Métricas
+# Metrics per asset
 # =========================
-def tir(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
+def tir_asset(cashflow: pd.DataFrame, precio: float, plazo_dias: int) -> float:
     if not np.isfinite(precio) or precio <= 0:
         return np.nan
-
     settlement = _settlement(plazo_dias)
     cf = _future_cashflows(cashflow, settlement)
     if cf.empty:
@@ -316,40 +248,148 @@ def tir(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
     return round(v, 2) if np.isfinite(v) else np.nan
 
 
-def duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
-    ytm = tir(cashflow, precio, plazo_dias=plazo_dias)
+def duration_asset(cashflow: pd.DataFrame, precio: float, plazo_dias: int) -> float:
+    ytm = tir_asset(cashflow, precio, plazo_dias)
     if not np.isfinite(ytm):
         return np.nan
-
     settlement = _settlement(plazo_dias)
     cf = _future_cashflows(cashflow, settlement)
     if cf.empty:
         return np.nan
 
-    denom, numer = [], []
+    denom, numer = 0.0, 0.0
     for _, row in cf.iterrows():
         t = row["date"].to_pydatetime()
         tiempo = (t - settlement).days / 365.0
         monto = float(row["flujo_total"])
         pv = monto / (1 + ytm / 100.0) ** tiempo
-        denom.append(pv)
-        numer.append(tiempo * pv)
+        denom += pv
+        numer += tiempo * pv
 
-    if np.sum(denom) == 0:
+    if denom == 0:
         return np.nan
-    return round(float(np.sum(numer) / np.sum(denom)), 2)
+    return round(numer / denom, 2)
 
 
-def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
-    dur = duration(cashflow, precio, plazo_dias=plazo_dias)
-    ytm = tir(cashflow, precio, plazo_dias=plazo_dias)
+def md_asset(cashflow: pd.DataFrame, precio: float, plazo_dias: int) -> float:
+    dur = duration_asset(cashflow, precio, plazo_dias)
+    ytm = tir_asset(cashflow, precio, plazo_dias)
     if not np.isfinite(dur) or not np.isfinite(ytm):
         return np.nan
     return round(dur / (1 + ytm / 100.0), 2)
 
 
 # =========================
-# UI
+# Build eligible universe
+# =========================
+def build_universe(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.DataFrame:
+    cashflows = build_cashflow_dict(df_cf)
+    meta = build_species_meta(df_cf).set_index("species")
+
+    rows = []
+    for species in meta.index:
+        usd_tk = resolve_usd_ticker(species)
+        if usd_tk not in prices.index:
+            continue
+
+        px = float(prices.loc[usd_tk, "Precio"])
+        if not np.isfinite(px) or px <= 0:
+            continue
+
+        cf = cashflows.get(species)
+        if cf is None or cf.empty:
+            continue
+
+        t = tir_asset(cf, px, plazo)
+        if not np.isfinite(t):
+            continue
+        if not (DEFAULT_TIR_MIN <= t <= DEFAULT_TIR_MAX):
+            continue
+
+        rows.append(
+            {
+                "Ticker": species,
+                "Ticker precio": usd_tk,
+                "Precio": px,
+                "TIR (%)": t,
+                "MD": md_asset(cf, px, plazo),
+                "Duration": duration_asset(cf, px, plazo),
+                "Vencimiento": meta.loc[species, "vencimiento"],
+                "Ley": meta.loc[species, "law_norm"],
+                "Issuer": meta.loc[species, "issuer_norm"],
+                "Descripción": meta.loc[species, "desc_norm"],
+            }
+        )
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out["Vencimiento"] = pd.to_datetime(out["Vencimiento"], errors="coerce")
+    out = out.sort_values(["Vencimiento", "Ticker"]).reset_index(drop=True)
+    return out
+
+
+# =========================
+# Portfolio math
+# =========================
+def vn_estimada(usd: float, precio: float) -> float:
+    # VN = USD / (Precio/100)
+    if not np.isfinite(usd) or not np.isfinite(precio) or precio <= 0:
+        return np.nan
+    return usd / (precio / 100.0)
+
+
+def build_flow_calendar(df_cf: pd.DataFrame, alloc: pd.DataFrame, plazo: int) -> pd.DataFrame:
+    """
+    alloc: columnas requeridas -> Ticker, VN
+    Devuelve tabla mensual (YYYY-MM) con flujos USD por ticker y total.
+    """
+    cashflows = build_cashflow_dict(df_cf)
+    settlement = _settlement(plazo)
+
+    # universo de fechas = flujos futuros
+    all_rows = []
+    for _, r in alloc.iterrows():
+        tk = str(r["Ticker"]).strip().upper()
+        vn = float(r["VN"])
+        if not np.isfinite(vn) or vn <= 0:
+            continue
+        cf = cashflows.get(tk)
+        if cf is None or cf.empty:
+            continue
+        cf_fut = _future_cashflows(cf, settlement)
+        if cf_fut.empty:
+            continue
+
+        # cashflow_df es por VN100 (flujo_total por 100)
+        # Escalamos por VN/100
+        scale = vn / 100.0
+        tmp = cf_fut.copy()
+        tmp["Monto_USD"] = tmp["flujo_total"].astype(float) * scale
+        tmp["Ticker"] = tk
+        all_rows.append(tmp[["date", "Ticker", "Monto_USD"]])
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    flows = pd.concat(all_rows, ignore_index=True)
+    flows["Mes"] = pd.to_datetime(flows["date"]).dt.to_period("M").astype(str)
+
+    piv = (
+        flows.groupby(["Mes", "Ticker"])["Monto_USD"]
+        .sum()
+        .reset_index()
+        .pivot(index="Ticker", columns="Mes", values="Monto_USD")
+        .fillna(0.0)
+    )
+
+    piv["Total"] = piv.sum(axis=1)
+    piv.loc["TOTAL"] = piv.sum(axis=0)
+    return piv
+
+
+# =========================
+# UI style
 # =========================
 def _ui_css():
     st.markdown(
@@ -358,24 +398,11 @@ def _ui_css():
   .wrap{ max-width: 1250px; margin: 0 auto; }
   .top-title{ font-size: 26px; font-weight: 850; letter-spacing: .04em; color:#111827; margin-bottom: 2px;}
   .top-sub{ color: rgba(17,24,39,.60); font-size: 13px; margin-top: 0px; }
-  .section-title{ font-size: 18px; font-weight: 800; color:#111827; margin: 12px 0 8px; }
+  .section-title{ font-size: 18px; font-weight: 800; color:#111827; margin: 14px 0 10px; }
   .block-container { padding-top: 1.10rem; padding-bottom: 2.2rem; }
-  label { margin-bottom: .18rem !important; }
-  .stButton > button { border-radius: 14px; padding: .68rem 1.0rem; font-weight: 700; }
+  .stButton > button { border-radius: 14px; padding: .68rem 1.0rem; font-weight: 750; }
   .stSelectbox div[data-baseweb="select"]{ border-radius: 14px; }
   .stMultiSelect div[data-baseweb="select"]{ border-radius: 14px; }
-
-  /* chips gris clarito */
-  div[data-baseweb="tag"]{
-    background: rgba(17,24,39,.06) !important;
-    color:#111827 !important;
-    border: 1px solid rgba(17,24,39,.10) !important;
-    border-radius: 999px !important;
-    font-weight: 650 !important;
-  }
-  div[data-baseweb="tag"] svg{
-    color: rgba(17,24,39,.55) !important;
-  }
 
   div[data-testid="stDataFrame"] {
     border-radius: 16px;
@@ -388,205 +415,219 @@ def _ui_css():
     )
 
 
-def _multiselect_with_all(label: str, options: list[str], key: str, default_all: bool = True) -> list[str]:
-    if not options:
-        return []
-    options_sorted = sorted(set([str(x) for x in options if str(x).strip() != ""]))
-    all_token = "Seleccionar todo"
-    opts = [all_token] + options_sorted
-    default = [all_token] if default_all else []
-    sel = st.multiselect(label, options=opts, default=default, key=key)
-    if all_token in sel:
-        return options_sorted
-    return sel
-
-
-def _pick_price_usd(prices: pd.DataFrame, species: str) -> tuple[float, float, str]:
-    usd_ticker = resolve_usd_ticker(species)
-
-    if usd_ticker in prices.index:
-        return float(prices.loc[usd_ticker, "Precio"]), float(prices.loc[usd_ticker, "Volumen"]), usd_ticker
-
-    return np.nan, np.nan, ""
-
-
-def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.DataFrame:
-    cashflows = build_cashflow_dict(df_cf)
-    meta = build_species_meta(df_cf).set_index("species")
-
-    rows = []
-    for species in meta.index:
-        px, vol, px_ticker = _pick_price_usd(prices, species)
-        if not np.isfinite(px) or px <= 0:
-            continue
-
-        cf = cashflows.get(species)
-        if cf is None or cf.empty:
-            continue
-
-        settlement = _settlement(plazo)
-        cf_fut = _future_cashflows(cf, settlement)
-        if cf_fut.empty:
-            continue
-
-        rows.append(
-            {
-                "Ticker": species,
-                "Ticker precio": px_ticker,
-                "Ley": meta.loc[species, "law_norm"],
-                "Issuer": meta.loc[species, "issuer_norm"],
-                "Descripción": meta.loc[species, "desc_norm"],
-                "Precio": px,
-                "TIR (%)": tir(cf, px, plazo_dias=plazo),
-                "MD": modified_duration(cf, px, plazo_dias=plazo),
-                "Duration": duration(cf, px, plazo_dias=plazo),
-                "Vencimiento": meta.loc[species, "vencimiento"],
-                "Volumen": vol,
-            }
-        )
-
-    out = pd.DataFrame(rows)
-    if out.empty:
-        return out
-
-    out["Vencimiento"] = pd.to_datetime(out["Vencimiento"], errors="coerce")
-    out = out.sort_values(["Vencimiento", "Ticker"], na_position="last").reset_index(drop=True)
-    return out
-
-
+# =========================
+# Render
+# =========================
 def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
 
-    c1, c2 = st.columns([0.78, 0.22], vertical_alignment="center")
-    with c1:
-        st.markdown('<div class="top-title">NEIX · Bonos USD</div>', unsafe_allow_html=True)
-        st.markdown('<div class="top-sub">Rendimientos y duration.</div>', unsafe_allow_html=True)
-
+    st.markdown('<div class="top-title">NEIX · Cartera Comercial (USD MEP)</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="top-sub">Activos elegibles: con precio IOL + TIR disponible. TIR fija en [{DEFAULT_TIR_MIN}, {DEFAULT_TIR_MAX}].</div>',
+        unsafe_allow_html=True,
+    )
     st.divider()
 
+    # Inputs top
+    c1, c2, c3 = st.columns([0.30, 0.20, 0.50], vertical_alignment="bottom")
+    with c1:
+        capital = st.number_input("Capital (USD)", min_value=0.0, value=200000.0, step=5000.0, format="%.2f")
+    with c2:
+        plazo = st.selectbox("Liquidación", [1, 0], index=0, format_func=lambda x: f"T{x}", key="cartera_plazo")
+    with c3:
+        colA, colB = st.columns([0.5, 0.5])
+        with colA:
+            refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_refresh")
+        with colB:
+            calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_calc")
+
+    # Load cashflows
     try:
-        df_cf = load_cashflows_bonos(CASHFLOW_PATH)
+        df_cf = load_cashflows(CASHFLOW_PATH)
     except Exception as e:
         st.error(str(e))
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    top = st.columns([0.18, 0.18, 0.20, 0.44], vertical_alignment="bottom")
-    with top[0]:
-        plazo = st.selectbox("Plazo de liquidación", [1, 0], index=0, format_func=lambda x: f"T{x}", key="bonos_plazo")
-    with top[1]:
-        traer_precios = st.button("Actualizar precios", use_container_width=True, key="bonos_refresh")
-    with top[2]:
-        calcular = st.button("Calcular", type="primary", use_container_width=True, key="bonos_calc")
-
-    if traer_precios or "bonos_iol_prices" not in st.session_state:
+    # Prices cache
+    if refresh or "cartera_prices" not in st.session_state:
         with st.spinner("Leyendo precios desde IOL..."):
             try:
-                st.session_state["bonos_iol_prices"] = fetch_iol_bonos_prices()
+                st.session_state["cartera_prices"] = fetch_iol_prices()
             except Exception as e:
                 st.error(str(e))
                 st.markdown("</div>", unsafe_allow_html=True)
                 return
 
-    prices = st.session_state.get("bonos_iol_prices")
+    prices = st.session_state.get("cartera_prices")
     if prices is None or prices.empty:
-        st.warning("No pude leer precios desde IOL. Probá 'Actualizar precios'.")
+        st.warning("No pude leer precios desde IOL.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # =========================
-    # Filtros (solo ley/issuer/desc/ticker + columnas)
-    # =========================
-    st.markdown('<div class="section-title">Filtros</div>', unsafe_allow_html=True)
-
-    laws = sorted(df_cf["law_norm"].dropna().unique().tolist())
-    issuers = sorted(df_cf["issuer_norm"].dropna().unique().tolist())
-    descs = sorted(df_cf["desc_norm"].dropna().unique().tolist())
-    tickers_all = sorted(df_cf["species"].dropna().unique().tolist())
-
-    all_cols = ["Ticker", "Ley", "Issuer", "Descripción", "Precio", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
-    defaults = ["Ticker", "Ley", "Issuer", "Precio", "TIR (%)", "MD", "Duration", "Vencimiento", "Volumen"]
-
-    f1, f2, f3, f4 = st.columns([0.22, 0.26, 0.26, 0.26], vertical_alignment="top")
-    with f1:
-        law_sel = _multiselect_with_all("Ley", laws, key="bonos_law", default_all=True)
-    with f2:
-        issuer_sel = _multiselect_with_all("Issuer", issuers, key="bonos_issuer", default_all=True)
-    with f3:
-        desc_sel = _multiselect_with_all("Descripción", descs, key="bonos_desc", default_all=True)
-    with f4:
-        ticker_sel = _multiselect_with_all("Ticker", tickers_all, key="bonos_ticker", default_all=True)
-
-    cols_pick = st.multiselect("Columnas a mostrar", options=all_cols, default=defaults, key="bonos_cols")
-    if not cols_pick:
-        cols_pick = defaults
-
-    df_use = df_cf.copy()
-    if law_sel:
-        df_use = df_use[df_use["law_norm"].isin(law_sel)]
-    if issuer_sel:
-        df_use = df_use[df_use["issuer_norm"].isin(issuer_sel)]
-    if desc_sel:
-        df_use = df_use[df_use["desc_norm"].isin(desc_sel)]
-    if ticker_sel:
-        df_use = df_use[df_use["species"].isin(ticker_sel)]
-
-    st.divider()
-
-    if not calcular:
-        st.info("Ajustá filtros (si querés) y tocá **Calcular**.")
+    # Universe
+    universe = build_universe(df_cf, prices, plazo)
+    if universe.empty:
+        st.warning("No hay activos elegibles (precio+tir) dentro del rango.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    out = _compute_table(df_use, prices, plazo)
+    # Select assets
+    st.markdown('<div class="section-title">Selección de activos</div>', unsafe_allow_html=True)
+    options = universe["Ticker"].tolist()
+    default_sel = options[:6] if len(options) >= 6 else options
 
-    if out.empty:
-        st.warning("No se generaron resultados con esta selección (USD = ticker resuelto + fix /100).")
+    selected = st.multiselect(
+        "Activos (bonos + ONs)",
+        options=options,
+        default=default_sel,
+        help="Elegí los activos que querés incluir. Luego asignás % por activo.",
+        key="cartera_assets",
+    )
+
+    if not selected:
+        st.info("Seleccioná al menos 1 activo.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # ✅ filtro TIR fijo (sin barra / sin inputs)
-    out = out.copy()
-    out["TIR (%)"] = pd.to_numeric(out["TIR (%)"], errors="coerce")
-    out = out[out["TIR (%)"].between(DEFAULT_TIR_MIN, DEFAULT_TIR_MAX, inclusive="both")]
+    uni_sel = universe[universe["Ticker"].isin(selected)].copy()
 
-    if out.empty:
-        st.warning(f"No quedaron filas dentro del rango TIR [{DEFAULT_TIR_MIN}, {DEFAULT_TIR_MAX}].")
+    # Allocation table (editable, sin sliders)
+    st.markdown('<div class="section-title">Asignación por activo</div>', unsafe_allow_html=True)
+    st.caption("Editá la columna **%**. Ideal: que sume 100%.")
+
+    alloc = pd.DataFrame({"Ticker": uni_sel["Ticker"].tolist()})
+    if "cartera_alloc_pct" not in st.session_state:
+        # default: igual ponderado
+        alloc["%"] = round(100.0 / len(alloc), 2)
+        st.session_state["cartera_alloc_pct"] = alloc
+    else:
+        # mantener lo previo pero sincronizar tickers (agrega/saca)
+        prev = st.session_state["cartera_alloc_pct"].copy()
+        prev = prev[prev["Ticker"].isin(alloc["Ticker"])]
+        missing = [t for t in alloc["Ticker"] if t not in prev["Ticker"].tolist()]
+        if missing:
+            add = pd.DataFrame({"Ticker": missing, "%": round(100.0 / len(alloc), 2)})
+            prev = pd.concat([prev, add], ignore_index=True)
+        alloc = prev[["Ticker", "%"]].copy()
+
+    edited = st.data_editor(
+        alloc,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Ticker": st.column_config.TextColumn("Ticker", disabled=True),
+            "%": st.column_config.NumberColumn("%", min_value=0.0, max_value=100.0, step=0.25, format="%.2f"),
+        },
+        key="cartera_alloc_editor",
+    )
+
+    # guardar
+    st.session_state["cartera_alloc_pct"] = edited.copy()
+
+    pct_sum = float(pd.to_numeric(edited["%"], errors="coerce").fillna(0).sum())
+    if abs(pct_sum - 100.0) > 0.25:
+        st.warning(f"La suma de % es {pct_sum:.2f}% (ideal 100%). Igual calculo proporcional con esa suma.")
+
+    # Compute portfolio (only if calc)
+    if not calc:
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    st.markdown("## Resultados")
-    st.caption(f"TIR filtrada fija en [{DEFAULT_TIR_MIN}, {DEFAULT_TIR_MAX}] (sin control en pantalla).")
+    # Merge metrics
+    df = uni_sel.merge(edited, on="Ticker", how="left")
+    df["%"] = pd.to_numeric(df["%"], errors="coerce").fillna(0.0)
+    denom = df["%"].sum()
+    if denom <= 0:
+        st.error("La suma de % tiene que ser > 0.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
 
-    show = out.copy()
+    # USD allocation
+    df["USD"] = capital * (df["%"] / denom)
+
+    # VN estimada (USD / (Precio/100))
+    df["VN"] = df.apply(lambda r: vn_estimada(float(r["USD"]), float(r["Precio"])), axis=1)
+
+    # Ponderados
+    w = df["USD"] / df["USD"].sum() if df["USD"].sum() > 0 else 0
+    tir_total = float((df["TIR (%)"] * w).sum())
+    md_total = float((df["MD"] * w).sum())
+    dur_total = float((df["Duration"] * w).sum())
+
+    # Header metrics
+    st.markdown('<div class="section-title">Resumen</div>', unsafe_allow_html=True)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Capital", f"USD {capital:,.0f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    m2.metric("TIR total (pond.)", f"{tir_total:.2f}%")
+    m3.metric("MD total (pond.)", f"{md_total:.2f}")
+    m4.metric("Duration total (pond.)", f"{dur_total:.2f}")
+
+    # Portfolio table
+    st.markdown('<div class="section-title">Cartera</div>', unsafe_allow_html=True)
+
+    show = df.copy()
     show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
     show["Ley"] = show["Ley"].apply(law_cell_label)
 
-    base = 520
-    row_h = 28
-    max_h = 1050
-    height_df = int(min(max_h, base + row_h * len(show)))
+    # orden limpio
+    show = show[
+        ["Ticker", "%", "USD", "Precio", "VN", "TIR (%)", "MD", "Duration", "Vencimiento", "Ley", "Issuer"]
+    ].copy()
 
     st.dataframe(
-        show[cols_pick],
+        show,
         hide_index=True,
         use_container_width=True,
-        height=height_df,
         column_config={
             "Ticker": st.column_config.TextColumn("Ticker"),
-            "Ley": st.column_config.TextColumn("Ley"),
-            "Issuer": st.column_config.TextColumn("Issuer"),
-            "Descripción": st.column_config.TextColumn("Descripción"),
-            "Precio": st.column_config.NumberColumn("Precio", format="%.2f"),
+            "%": st.column_config.NumberColumn("%", format="%.2f"),
+            "USD": st.column_config.NumberColumn("USD", format="%.2f"),
+            "Precio": st.column_config.NumberColumn("Precio (USD, VN100)", format="%.2f"),
+            "VN": st.column_config.NumberColumn("VN estimada", format="%.2f"),
             "TIR (%)": st.column_config.NumberColumn("TIR (%)", format="%.2f"),
             "MD": st.column_config.NumberColumn("MD", format="%.2f"),
             "Duration": st.column_config.NumberColumn("Duration", format="%.2f"),
             "Vencimiento": st.column_config.DateColumn("Vencimiento", format="DD/MM/YYYY"),
-            "Volumen": st.column_config.NumberColumn("Volumen", format="%.0f"),
+            "Ley": st.column_config.TextColumn("Ley"),
+            "Issuer": st.column_config.TextColumn("Issuer"),
         },
     )
 
+    # Pie chart (simple, prolijo)
+    st.markdown('<div class="section-title">Asignación</div>', unsafe_allow_html=True)
+    pie_df = show[["Ticker", "USD"]].copy()
+    pie_df = pie_df[pie_df["USD"] > 0].sort_values("USD", ascending=False)
+
+    st.plotly_chart(
+        {
+            "data": [
+                {
+                    "type": "pie",
+                    "labels": pie_df["Ticker"],
+                    "values": pie_df["USD"],
+                    "hole": 0.55,
+                }
+            ],
+            "layout": {
+                "margin": {"l": 0, "r": 0, "t": 10, "b": 0},
+                "showlegend": True,
+            },
+        },
+        use_container_width=True,
+    )
+
+    # Flow calendar
+    st.markdown('<div class="section-title">Flujo de fondos</div>', unsafe_allow_html=True)
+    alloc_for_flow = df[["Ticker", "VN"]].rename(columns={"VN": "VN"}).copy()
+    cal = build_flow_calendar(df_cf, alloc_for_flow.rename(columns={"VN": "VN"}), plazo)
+
+    if cal.empty:
+        st.info("No pude construir el calendario de flujos con lo seleccionado.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    st.dataframe(cal, use_container_width=True)
+
     st.markdown("</div>", unsafe_allow_html=True)
-
-
