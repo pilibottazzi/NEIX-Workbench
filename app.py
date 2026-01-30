@@ -133,9 +133,9 @@ with tabs[0]:
     st.markdown(
         """
         <div class="tool-grid">
-          <a class="tool-btn" href="?tool=cartera" target="_self">Carteras</a>
+          <a class="tool-btn" href="?tool=cartera" target="_self">Carteras comerciales</a>
           <a class="tool-btn" href="?tool=bonos" target="_self">Bonos</a>
-          <a class="tool-btn" href="?tool=ons" target="_self">ON’s</a>
+          <a class="tool-btn" href="?tool=ons" target="_self">Obligaciones negociables</a>
         </div>
         """,
         unsafe_allow_html=True
