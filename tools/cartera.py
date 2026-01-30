@@ -596,11 +596,6 @@ def _ui_css():
   .wrap{ max-width: 1180px; margin: 0 auto; }
   .block-container { padding-top: 0.9rem; padding-bottom: 1.6rem; }
 
-  /* Títulos: más empresa (más chicos y con aire) */
-    h2 { font-size: 1.55rem !important; margin-bottom: .15rem !important; }
-    h3 { font-size: 1.15rem !important; margin-top: 1.0rem !important; }
-
-
 
   /* Chips */
   div[data-baseweb="tag"]{
