@@ -79,7 +79,7 @@ TOOL_REGISTRY = {
     "bo_ppt_manana": bo_ppt_manana.render,
     "bo_moc_tarde": moc_tarde.render,
     "bo_control_sliq": control_sliq.render,
-    "bo_acreditacion_mav": bo_acreditacion_mav.render,
+   # "bo_acreditacion_mav": bo_acreditacion_mav.render,
     "bo_cauciones": cauciones.render,
 
     "cheques": cheques.render,
