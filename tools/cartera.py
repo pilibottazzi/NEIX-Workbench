@@ -8,9 +8,6 @@ import pandas as pd
 import streamlit as st
 from scipy import optimize
 
-import matplotlib.pyplot as plt
-
-
 # =========================
 # Config
 # =========================
