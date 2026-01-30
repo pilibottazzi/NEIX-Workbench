@@ -639,7 +639,6 @@ def _height_for_rows(n: int, base: int = 220, row_h: int = 28, max_h: int = 520)
 def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
-    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
     # ===== Header: título + botón en la misma línea
     left, right = st.columns([0.72, 0.28], vertical_alignment="center")
     with left:
