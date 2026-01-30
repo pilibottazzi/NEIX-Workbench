@@ -163,7 +163,7 @@ with tabs[2]:
     st.markdown(
         """
         <div class="tool-grid">
-          <a class="tool-btn" href="?tool=cartera" target="_self">Carteras</a>
+          <a class="tool-btn" href="?tool=cartera" target="_self">Carteras comerciales</a>
           <a class="tool-btn" href="?tool=cheques" target="_self">Cheques</a>
           <a class="tool-btn" href="?tool=cauciones_mae" target="_self">Cauciones MAE</a>
           <a class="tool-btn" href="?tool=cauciones_byma" target="_self">Cauciones BYMA</a>
