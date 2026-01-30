@@ -8,7 +8,7 @@ from tools import cheques
 from tools import cauciones_mae
 from tools import cauciones_byma
 from tools import control_sliq
-from tools import alquileres 
+from tools import alquileres
 from tools import moc_tarde
 from tools import bo_ppt_manana
 from tools import bo_acreditacion_mav
@@ -46,7 +46,6 @@ st.markdown(
 # HELPERS NAV
 # =========================================================
 def go_home():
-    # limpia query params y re-renderiza home
     st.query_params.clear()
     st.rerun()
 
@@ -60,52 +59,59 @@ def back_to_home_factory(tool_key: str):
             go_home()
     return _back
 
+def get_tool_param() -> str:
+    """
+    Streamlit a veces devuelve str o list[str] en query_params.
+    """
+    raw = st.query_params.get("tool", "")
+    if isinstance(raw, list):
+        raw = raw[0] if raw else ""
+    return str(raw).strip().lower()
+
+# =========================================================
+# REGISTRO DE HERRAMIENTAS
+# =========================================================
+TOOL_REGISTRY = {
+    "cartera": cartera.render,
+    "bonos": bonos.render,
+    "ons": ons.render,
+
+    "bo_ppt_manana": bo_ppt_manana.render,
+    "bo_moc_tarde": moc_tarde.render,
+    "bo_control_sliq": control_sliq.render,
+    "bo_acreditacion_mav": bo_acreditacion_mav.render,
+    "bo_cauciones": cauciones.render,
+
+    "cheques": cheques.render,
+    "cauciones_mae": cauciones_mae.render,
+    "cauciones-mae": cauciones_mae.render,
+    "cauciones_byma": cauciones_byma.render,
+    "cauciones-byma": cauciones_byma.render,
+    "alquileres": alquileres.render,
+    "vencimientos": vencimientos.render,
+}
+
 # =========================================================
 # ROUTER
 # =========================================================
-q = st.query_params
-tool = (q.get("tool") or "").strip().lower()
+tool = get_tool_param()
 
 if tool:
     st.markdown("<h2 style='text-align:center;'>N E I X &nbsp;&nbsp;Workbench</h2>", unsafe_allow_html=True)
 
-    # botón volver con key único por tool (widget)
     back_to_home = back_to_home_factory(tool_key=tool)
-    back_to_home()  # <- SOLO acá (una vez). Las tools no lo deben renderizar "por defecto".
-
+    back_to_home()
     st.divider()
 
+    render_fn = TOOL_REGISTRY.get(tool)
+
+    if render_fn is None:
+        st.error("Herramienta no encontrada.")
+        st.caption("Volvé a Home y verificá el link.")
+        st.stop()
+
     try:
-        if tool == "cartera":
-            cartera.render(back_to_home)
-        if tool == "ons":
-            ons.render(back_to_home)
-        elif tool == "bo_ppt_manana":
-            bo_ppt_manana.render(back_to_home)
-        elif tool == "bo_moc_tarde":
-            moc_tarde.render(back_to_home)
-        elif tool == "bo_control_sliq":
-            control_sliq.render(back_to_home)
-        elif tool == "bo_acreditacion_mav":
-            bo_acreditacion_mav.render(back_to_home)
-        elif tool == "bo_cauciones":
-            cauciones.render(back_to_home)
-        elif tool == "cheques":
-            cheques.render(back_to_home)
-        elif tool in ("cauciones_mae", "cauciones-mae"):
-            cauciones_mae.render(back_to_home)
-        elif tool in ("cauciones_byma", "cauciones-byma"):
-            cauciones_byma.render(back_to_home)
-        elif tool == "alquileres":
-            alquileres.render(back_to_home)
-        elif tool == "vencimientos":
-            alquileres.render(back_to_home)
-        elif tool == "bonos":
-            bonos.render(back_to_home)
-            
-        else:
-            st.error("Herramienta no encontrada.")
-            st.caption("Volvé a Home y verificá el link.")
+        render_fn(back_to_home)
     except Exception as e:
         st.error("Error cargando la herramienta.")
         st.exception(e)
@@ -156,7 +162,7 @@ with tabs[2]:
     st.markdown(
         """
         <div class="tool-grid">
-          <a class="tool-btn" href="?tool=cartera" target="_self">Carteras</a>        
+          <a class="tool-btn" href="?tool=cartera" target="_self">Carteras</a>
           <a class="tool-btn" href="?tool=cheques" target="_self">Cheques</a>
           <a class="tool-btn" href="?tool=cauciones_mae" target="_self">Cauciones MAE</a>
           <a class="tool-btn" href="?tool=cauciones_byma" target="_self">Cauciones BYMA</a>
@@ -166,5 +172,3 @@ with tabs[2]:
         """,
         unsafe_allow_html=True
     )
-
-
