@@ -703,7 +703,8 @@ def render(back_to_home=None):
         )
     with c2:
         calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_calc")
-
+    
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
     st.markdown("### Asignación por activo")
     st.caption("Editá la columna %. Ideal: que sume 100% (si no, escala automáticamente).")
 
