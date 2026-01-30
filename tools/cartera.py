@@ -638,8 +638,8 @@ def render(back_to_home=None):
     # ===== Header: título + botón en la misma línea
     left, right = st.columns([0.72, 0.28], vertical_alignment="center")
     with left:
-        st.markdown("## NEIX · Cartera Comercial (USD MEP)")
-        st.caption("Arma tu cartera con precios online y otras variables.")
+        st.markdown("## NEIX · Cartera Comercial")
+        st.caption("Arma tu cartera con precios online.")
     with right:
         refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_refresh")
 
