@@ -639,7 +639,7 @@ def render(back_to_home=None):
     left, right = st.columns([0.72, 0.28], vertical_alignment="center")
     with left:
         st.markdown("## NEIX · Cartera Comercial (USD MEP)")
-        st.caption("Activos elegibles: con precio de mercado + TIR disponible. TIR fija en [-15.0, 20.0].")
+        st.caption("Arma tu cartera con precios online y otras variables.")
     with right:
         refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_refresh")
 
@@ -795,7 +795,7 @@ def render(back_to_home=None):
         )
 
     # ===== Tabla Cartera (formateada)
-    st.markdown("## Cartera")
+    st.markdown("## NEIX · Cartera Comercial")
 
     show = cartera_df.copy()
 
