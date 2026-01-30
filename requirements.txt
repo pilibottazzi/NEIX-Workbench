@@ -5,3 +5,4 @@ mysql-connector-python
 numpy
 scipy
 lxml
+plotly>=5.0
