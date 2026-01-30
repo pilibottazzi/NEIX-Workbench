@@ -593,10 +593,14 @@ def _ui_css():
     st.markdown(
         """
 <style>
-  .wrap{ max-width: 1250px; margin: 0 auto; }
-  .block-container { padding-top: 1.05rem; padding-bottom: 1.8rem; }
+  .wrap{ max-width: 1180px; margin: 0 auto; }
+  .block-container { padding-top: 0.9rem; padding-bottom: 1.6rem; }
 
-  /* chips */
+  /* Títulos: más empresa (más chicos y con aire) */
+  h2 { font-size: 1.55rem !important; margin-bottom: .15rem !important; }
+  h3 { font-size: 1.15rem !important; margin-top: 1.0rem !important; }
+
+  /* Chips */
   div[data-baseweb="tag"]{
     background: rgba(17,24,39,.06) !important;
     color:#111827 !important;
@@ -605,26 +609,27 @@ def _ui_css():
     font-weight: 650 !important;
   }
 
-  /* dataframes */
+  /* Dataframes */
   div[data-testid="stDataFrame"] {
-    border-radius: 16px;
+    border-radius: 14px;
     overflow: hidden;
     border: 1px solid rgba(17,24,39,.10);
   }
 
-  /* tarjetas resumen (mantiene estética default, sin tocar fonts globales) */
+  /* KPIs: más minimal + tipografía más chica */
   .kpi{
     border: 1px solid rgba(17,24,39,.10);
-    border-radius: 18px;
-    padding: 14px 16px;
+    border-radius: 16px;
+    padding: 12px 14px;
     background: white;
   }
   .kpi .lbl{ color: rgba(17,24,39,.60); font-size: 12px; margin-bottom: 6px; }
-  .kpi .val{ font-size: 28px; font-weight: 800; color:#111827; letter-spacing: .01em; }
+  .kpi .val{ font-size: 24px; font-weight: 800; color:#111827; letter-spacing: .01em; }
 </style>
 """,
         unsafe_allow_html=True,
     )
+
 
 
 def _height_for_rows(n: int, base: int = 220, row_h: int = 28, max_h: int = 520) -> int:
