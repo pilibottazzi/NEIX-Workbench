@@ -2,29 +2,26 @@ from __future__ import annotations
 
 import os
 import datetime as dt
-from typing import Dict, Tuple, List
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 from scipy import optimize
 
-
-# =========================================================
+# =========================
 # Config
-# =========================================================
+# =========================
 CASHFLOW_PATH = os.path.join("data", "cashflows_completos.xlsx")
 
-# TIR fija (como pediste)
+# TIR fija (no UI)
 TIR_MIN = -15.0
 TIR_MAX = 20.0
 
-# Siempre T1 (sacamos el filtro)
-PLAZO_LIQ = 1
-
+# Precios USD MEP
 PRICE_SUFFIX = "D"
 
-# Excepciones ticker pesos -> ticker USD MEP (cuando NO es simplemente + "D")
+# Excepciones PESOS -> USD (cuando no es solo + "D")
 PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "BPOB7": "BPB7D",
     "BPOC7": "BPC7D",
@@ -38,7 +35,7 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "GD35": "GD35D",
     "GD38": "GD38D",
     "GD41": "GD41D",
-    # si aparecieran en cashflows con estas “bases”
+    # si algún día aparecen así en cashflows
     "BPA7": "BPA7D",
     "BPB7": "BPB7D",
     "BPC7": "BPC7D",
@@ -46,10 +43,9 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "BPB8": "BPB8D",
 }
 
-
-# =========================================================
-# Utils parse AR numbers
-# =========================================================
+# =========================
+# Utils parse num AR
+# =========================
 def parse_ar_number(x) -> float:
     """
     Convierte:
@@ -71,9 +67,10 @@ def parse_ar_number(x) -> float:
 
 def usd_fix_if_needed(ticker: str, raw_last: str, value: float) -> float:
     """
-    Fix: a veces el precio USD (ticker termina en D) viene como entero "6097" y es 60.97.
+    Fix para tickers USD terminados en D.
+    Caso típico: viene "6097" y era 60.97 (VN100).
     Regla:
-      - ticker termina en D
+      - termina en D
       - raw NO tiene '.' ni ','
       => dividir por 100
     """
@@ -85,15 +82,16 @@ def usd_fix_if_needed(ticker: str, raw_last: str, value: float) -> float:
 
     if not t.endswith("D"):
         return value
+
     if ("," in raw) or ("." in raw):
         return value
 
     return value / 100.0
 
 
-# =========================================================
-# IRR / NPV
-# =========================================================
+# =========================
+# XNPV / XIRR
+# =========================
 def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
     chron = sorted(cashflows, key=lambda x: x[0])
     t0 = chron[0][0]
@@ -115,9 +113,9 @@ def xirr(cashflows: list[tuple[dt.datetime, float]], guess: float = 0.10) -> flo
         return np.nan
 
 
-# =========================================================
+# =========================
 # Cashflows helpers
-# =========================================================
+# =========================
 def _settlement(plazo_dias: int) -> dt.datetime:
     base = pd.Timestamp.today().normalize().to_pydatetime()
     return base + dt.timedelta(days=int(plazo_dias))
@@ -132,9 +130,9 @@ def _future_cashflows(df: pd.DataFrame, settlement: dt.datetime) -> pd.DataFrame
     return df
 
 
-# =========================================================
-# Normalizaciones
-# =========================================================
+# =========================
+# Normalizaciones meta
+# =========================
 def normalize_law(x: str) -> str:
     s = (x or "").strip().upper()
     s = s.replace(".", "").replace("-", " ").replace("_", " ")
@@ -172,9 +170,9 @@ def normalize_desc(x: str) -> str:
     return s if s else "NA"
 
 
-# =========================================================
+# =========================
 # Load cashflows
-# =========================================================
+# =========================
 def load_cashflows(path: str) -> pd.DataFrame:
     if not os.path.exists(path):
         raise FileNotFoundError(
@@ -187,7 +185,9 @@ def load_cashflows(path: str) -> pd.DataFrame:
     req = {"date", "species", "law", "issuer", "description", "flujo_total"}
     missing = req - set(df.columns)
     if missing:
-        raise ValueError(f"Faltan columnas en {path}: {sorted(missing)}")
+        raise ValueError(
+            f"Faltan columnas en {path}: {sorted(missing)} (requeridas: {sorted(req)})"
+        )
 
     df["species"] = df["species"].astype(str).str.strip().str.upper()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
@@ -222,25 +222,29 @@ def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
     return meta
 
 
-# =========================================================
-# Precios (scrape)
-# =========================================================
-def fetch_prices() -> pd.DataFrame:
+# =========================
+# Precios de mercado (HTML table)
+# =========================
+def fetch_market_prices() -> pd.DataFrame:
     """
-    Devuelve:
-      index: Ticker
-      columns: Precio, Volumen
+    Devuelve DataFrame indexado por Ticker con columnas:
+      - Precio
+      - Volumen
+
+    Nota: NO mencionamos el proveedor en UI.
     """
     url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
 
-    # pd.read_html puede requerir html5lib/lxml según el entorno.
     try:
-        tables = pd.read_html(url)
-    except Exception as e:
-        # mensaje interno (no UI)
-        raise RuntimeError(
-            "No se pudo leer la tabla de cotizaciones (dependencias HTML faltantes o cambió el formato)."
+        tables = pd.read_html(url)  # intenta parser default (normalmente lxml)
+    except ImportError as e:
+        # Si falla por parsers, damos mensaje accionable
+        raise ImportError(
+            "Faltan dependencias para leer tablas HTML. "
+            "En tu requirements.txt agregá: lxml y html5lib."
         ) from e
+    except Exception as e:
+        raise RuntimeError(f"No pude leer la tabla de precios. Error: {e}") from e
 
     if not tables:
         return pd.DataFrame()
@@ -272,13 +276,10 @@ def fetch_prices() -> pd.DataFrame:
     return df.drop(columns=["RawPrecio"], errors="ignore")
 
 
+# =========================
+# Ticker USD resolver
+# =========================
 def resolve_usd_ticker(species: str) -> str:
-    """
-    Resuelve ticker USD MEP a buscar:
-    - si ya termina con D => igual
-    - si está en overrides => usa override
-    - si no => default agrega 'D'
-    """
     sp = str(species).strip().upper()
     if sp.endswith("D"):
         return sp
@@ -287,182 +288,146 @@ def resolve_usd_ticker(species: str) -> str:
     return f"{sp}{PRICE_SUFFIX}"
 
 
-def pick_price_usd(prices: pd.DataFrame, species: str) -> Tuple[float, float, str]:
+def pick_price_usd(prices: pd.DataFrame, species: str) -> tuple[float, float, str]:
     usd_ticker = resolve_usd_ticker(species)
     if usd_ticker in prices.index:
-        return float(prices.loc[usd_ticker, "Precio"]), float(prices.loc[usd_ticker, "Volumen"]), usd_ticker
+        px = float(prices.loc[usd_ticker, "Precio"])
+        vol = float(prices.loc[usd_ticker, "Volumen"])
+        return px, vol, usd_ticker
     return np.nan, np.nan, ""
 
 
-# =========================================================
-# Métricas por activo
-# =========================================================
-def tir(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
+# =========================
+# Métricas por instrumento
+# =========================
+def calc_tir(cf: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
     if not np.isfinite(precio) or precio <= 0:
         return np.nan
 
     settlement = _settlement(plazo_dias)
-    cf = _future_cashflows(cashflow, settlement)
-    if cf.empty:
+    fut = _future_cashflows(cf, settlement)
+    if fut.empty:
         return np.nan
 
     flujos = [(settlement, -float(precio))]
-    for _, r in cf.iterrows():
+    for _, r in fut.iterrows():
         flujos.append((r["date"].to_pydatetime(), float(r["flujo_total"])))
 
     v = xirr(flujos, guess=0.10)
-    return v if np.isfinite(v) else np.nan
+    return v
 
 
-def duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
-    ytm = tir(cashflow, precio, plazo_dias=plazo_dias)
+def calc_duration(cf: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
+    ytm = calc_tir(cf, precio, plazo_dias=plazo_dias)
     if not np.isfinite(ytm):
         return np.nan
 
     settlement = _settlement(plazo_dias)
-    cf = _future_cashflows(cashflow, settlement)
-    if cf.empty:
+    fut = _future_cashflows(cf, settlement)
+    if fut.empty:
         return np.nan
 
-    denom, numer = [], []
-    for _, row in cf.iterrows():
+    denom = 0.0
+    numer = 0.0
+    for _, row in fut.iterrows():
         t = row["date"].to_pydatetime()
         tiempo = (t - settlement).days / 365.0
         monto = float(row["flujo_total"])
         pv = monto / (1 + ytm / 100.0) ** tiempo
-        denom.append(pv)
-        numer.append(tiempo * pv)
+        denom += pv
+        numer += tiempo * pv
 
-    if np.sum(denom) == 0:
+    if denom == 0:
         return np.nan
-    return float(np.sum(numer) / np.sum(denom))
+    return numer / denom
 
 
-def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
-    dur = duration(cashflow, precio, plazo_dias=plazo_dias)
-    ytm = tir(cashflow, precio, plazo_dias=plazo_dias)
+def calc_md(cf: pd.DataFrame, precio: float, plazo_dias: int = 1) -> float:
+    dur = calc_duration(cf, precio, plazo_dias=plazo_dias)
+    ytm = calc_tir(cf, precio, plazo_dias=plazo_dias)
     if not np.isfinite(dur) or not np.isfinite(ytm):
         return np.nan
-    return float(dur / (1 + ytm / 100.0))
+    return dur / (1 + ytm / 100.0)
 
 
-# =========================================================
-# UI helpers (estética NEIX)
-# =========================================================
-def _ui_css():
-    st.markdown(
-        """
-<style>
-  .wrap{ max-width: 1250px; margin: 0 auto; }
-  .top-title{ font-size: 26px; font-weight: 850; letter-spacing: .04em; color:#111827; margin-bottom: 2px;}
-  .top-sub{ color: rgba(17,24,39,.60); font-size: 13px; margin-top: 0px; }
-  .block-container { padding-top: 1.10rem; padding-bottom: 2.2rem; }
-  label { margin-bottom: .18rem !important; }
-
-  .stButton > button { border-radius: 14px; padding: .68rem 1.0rem; font-weight: 700; }
-
-  .stMultiSelect div[data-baseweb="select"]{ border-radius: 14px; }
-  div[data-baseweb="tag"]{
-    background: rgba(17,24,39,.06) !important;
-    color:#111827 !important;
-    border: 1px solid rgba(17,24,39,.10) !important;
-    border-radius: 999px !important;
-    font-weight: 650 !important;
-  }
-  div[data-baseweb="tag"] svg{
-    color: rgba(17,24,39,.55) !important;
-  }
-
-  div[data-testid="stDataFrame"] {
-    border-radius: 16px;
-    overflow: hidden;
-    border: 1px solid rgba(17,24,39,.10);
-  }
-
-  .kpi-title{ color: rgba(17,24,39,.60); font-size: 13px; margin-bottom: 2px;}
-  .kpi-big{ font-size: 44px; font-weight: 850; letter-spacing: .02em; color:#111827; margin-top:-4px;}
-  .kpi-val{ font-size: 38px; font-weight: 800; color:#111827; margin-top:-4px;}
-
-  .chip{
-    display:inline-flex; align-items:center; gap:8px;
-    padding:8px 12px; border-radius: 999px;
-    border: 1px solid rgba(17,24,39,.10);
-    background: rgba(17,24,39,.04);
-    color:#111827; font-weight:650; font-size:13px;
-  }
-</style>
-""",
-        unsafe_allow_html=True,
-    )
+# =========================
+# Cartera
+# =========================
+@dataclass
+class AssetRow:
+    ticker: str
+    pct: float
+    usd: float
+    price: float
+    vn: float
+    tir: float
+    md: float
+    dur: float
+    venc: dt.date | None
+    ley: str
+    issuer: str
 
 
-def _money_usd(x: float) -> str:
+def fmt_money_int(x: float) -> str:
     if not np.isfinite(x):
         return ""
     return f"$ {x:,.0f}".replace(",", ".")
 
 
-def _pct0(x: float) -> str:
-    if not np.isfinite(x):
-        return ""
-    return f"{x:.0f}%"
-
-
-def _fmt2(x: float) -> str:
+def fmt_num_2(x: float) -> str:
     if not np.isfinite(x):
         return ""
     return f"{x:.2f}"
 
 
-def _ensure_date(x) -> dt.date | None:
-    try:
-        ts = pd.to_datetime(x, errors="coerce")
-        if pd.isna(ts):
-            return None
-        return ts.date()
-    except Exception:
-        return None
+def fmt_pct_2(x: float) -> str:
+    if not np.isfinite(x):
+        return ""
+    return f"{x:.2f}%"
 
 
-# =========================================================
-# Portfolio computation
-# =========================================================
-def compute_asset_table(df_cf: pd.DataFrame, prices: pd.DataFrame) -> pd.DataFrame:
+def build_eligible_universe(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int = 1) -> pd.DataFrame:
+    """
+    Universe elegible: tiene precio USD y TIR dentro del rango fijo.
+    """
     cashflows = build_cashflow_dict(df_cf)
     meta = build_species_meta(df_cf).set_index("species")
 
     rows = []
-    for species in meta.index:
-        px, vol, px_ticker = pick_price_usd(prices, species)
+    for sp in meta.index:
+        px, vol, px_ticker = pick_price_usd(prices, sp)
         if not np.isfinite(px) or px <= 0:
             continue
 
-        cf = cashflows.get(species)
+        cf = cashflows.get(sp)
         if cf is None or cf.empty:
             continue
 
-        # métricas
-        y = tir(cf, px, plazo_dias=PLAZO_LIQ)
-        md = modified_duration(cf, px, plazo_dias=PLAZO_LIQ)
-        dur = duration(cf, px, plazo_dias=PLAZO_LIQ)
+        # tiene que tener flujos futuros
+        settlement = _settlement(plazo)
+        fut = _future_cashflows(cf, settlement)
+        if fut.empty:
+            continue
 
-        # filtro TIR fijo (eligibles)
-        if not np.isfinite(y) or (y < TIR_MIN) or (y > TIR_MAX):
+        y = calc_tir(cf, px, plazo_dias=plazo)
+        if not np.isfinite(y):
+            continue
+        if not (TIR_MIN <= y <= TIR_MAX):
             continue
 
         rows.append(
             {
-                "Ticker": species,
+                "Ticker": sp,
+                "Ley": meta.loc[sp, "law_norm"],
+                "Issuer": meta.loc[sp, "issuer_norm"],
+                "Descripción": meta.loc[sp, "desc_norm"],
+                "Vencimiento": meta.loc[sp, "vencimiento"],
+                "Precio (USD, VN100)": float(px),
                 "Ticker precio": px_ticker,
-                "Ley": meta.loc[species, "law_norm"],
-                "Issuer": meta.loc[species, "issuer_norm"],
-                "Descripción": meta.loc[species, "desc_norm"],
-                "Precio": float(px),
-                "TIR": float(y),
-                "MD": float(md) if np.isfinite(md) else np.nan,
-                "Duration": float(dur) if np.isfinite(dur) else np.nan,
-                "Vencimiento": meta.loc[species, "vencimiento"],
-                "Volumen": float(vol) if np.isfinite(vol) else 0.0,
+                "Volumen": float(vol),
+                "TIR (%)": float(y),
+                "MD": float(calc_md(cf, px, plazo_dias=plazo)),
+                "Duration": float(calc_duration(cf, px, plazo_dias=plazo)),
             }
         )
 
@@ -475,138 +440,212 @@ def compute_asset_table(df_cf: pd.DataFrame, prices: pd.DataFrame) -> pd.DataFra
     return out
 
 
-def compute_portfolio(
-    eligible: pd.DataFrame,
+def build_portfolio_table(
+    df_cf: pd.DataFrame,
+    prices: pd.DataFrame,
     selected: list[str],
-    weights_pct: dict[str, float],
+    pct_map: dict[str, float],
     capital_usd: float,
-) -> pd.DataFrame:
+    plazo: int = 1,
+) -> tuple[pd.DataFrame, dict[str, float], pd.DataFrame]:
     """
-    Devuelve tabla final de cartera por activo:
-    - % (sin decimales)
-    - USD asignado (sin decimales)
-    - Precio (2 decimales)
-    - VN estimada = USD / (Precio/100)   (precio por VN100)
-    - TIR/MD/Duration (2 decimales en salida)
-    - Vencimiento (fecha)
+    Retorna:
+      - tabla cartera (bonita)
+      - resumen (tir/md/dur ponderadas)
+      - tabla flujos (pivot con totales)
     """
-    if eligible.empty or not selected:
-        return pd.DataFrame()
+    df_cf = df_cf.copy()
+    df_cf["species"] = df_cf["species"].astype(str).str.upper().str.strip()
+    selected = [str(x).upper().strip() for x in selected if str(x).strip()]
 
-    base = eligible.set_index("Ticker")
-    rows = []
-    for tk in selected:
-        if tk not in base.index:
+    cashflows = build_cashflow_dict(df_cf)
+    meta = build_species_meta(df_cf).set_index("species")
+
+    # normalizar % (si no suma 100, igual escala por suma)
+    pcts = np.array([max(0.0, float(pct_map.get(t, 0.0))) for t in selected], dtype=float)
+    s = float(np.sum(pcts))
+    if s <= 0:
+        pcts = np.zeros_like(pcts)
+    else:
+        pcts = pcts / s * 100.0
+
+    assets: list[AssetRow] = []
+    for t, pct in zip(selected, pcts):
+        if pct <= 0:
             continue
 
-        w = float(weights_pct.get(tk, 0.0))
-        usd = float(capital_usd) * (w / 100.0)
+        px, _, _ = pick_price_usd(prices, t)
+        if not np.isfinite(px) or px <= 0:
+            continue
 
-        px = float(base.loc[tk, "Precio"])
-        vn_est = np.nan
-        if np.isfinite(px) and px > 0 and np.isfinite(usd):
-            vn_est = usd / (px / 100.0)
+        cf = cashflows.get(t)
+        if cf is None or cf.empty:
+            continue
 
-        rows.append(
-            {
-                "Ticker": tk,
-                "%": w,
-                "USD": usd,
-                "Precio (USD, VN100)": px,
-                "VN estimada": vn_est,
-                "TIR (%)": float(base.loc[tk, "TIR"]),
-                "MD": float(base.loc[tk, "MD"]),
-                "Duration": float(base.loc[tk, "Duration"]),
-                "Vencimiento": _ensure_date(base.loc[tk, "Vencimiento"]),
-                "Ley": law_cell_label(str(base.loc[tk, "Ley"])),
-                "Issuer": str(base.loc[tk, "Issuer"]),
-            }
+        # VN estimada = USD / (Precio/100) asumiendo precio por VN100
+        usd_amt = capital_usd * (pct / 100.0)
+        vn = usd_amt / (px / 100.0) if px > 0 else np.nan
+
+        y = calc_tir(cf, px, plazo_dias=plazo)
+        md = calc_md(cf, px, plazo_dias=plazo)
+        dur = calc_duration(cf, px, plazo_dias=plazo)
+
+        venc = None
+        if t in meta.index:
+            vv = pd.to_datetime(meta.loc[t, "vencimiento"], errors="coerce")
+            venc = vv.date() if pd.notna(vv) else None
+
+        ley = meta.loc[t, "law_norm"] if t in meta.index else "NA"
+        issuer = meta.loc[t, "issuer_norm"] if t in meta.index else "NA"
+
+        assets.append(
+            AssetRow(
+                ticker=t,
+                pct=float(pct),
+                usd=float(usd_amt),
+                price=float(px),
+                vn=float(vn),
+                tir=float(y) if np.isfinite(y) else np.nan,
+                md=float(md) if np.isfinite(md) else np.nan,
+                dur=float(dur) if np.isfinite(dur) else np.nan,
+                venc=venc,
+                ley=str(ley),
+                issuer=str(issuer),
+            )
         )
 
-    out = pd.DataFrame(rows)
-    if out.empty:
-        return out
+    if not assets:
+        return pd.DataFrame(), {"tir": np.nan, "md": np.nan, "dur": np.nan}, pd.DataFrame()
 
-    out = out.sort_values(["%", "Ticker"], ascending=[False, True]).reset_index(drop=True)
-    return out
+    # Resumen ponderado por USD asignado
+    w = np.array([a.usd for a in assets], dtype=float)
+    wsum = float(np.sum(w)) if float(np.sum(w)) > 0 else 1.0
 
+    tir_total = float(np.nansum([a.tir * a.usd for a in assets]) / wsum)
+    md_total = float(np.nansum([a.md * a.usd for a in assets]) / wsum)
+    dur_total = float(np.nansum([a.dur * a.usd for a in assets]) / wsum)
 
-def weighted_avg(series: pd.Series, weights: pd.Series) -> float:
-    s = pd.to_numeric(series, errors="coerce")
-    w = pd.to_numeric(weights, errors="coerce")
-    mask = np.isfinite(s) & np.isfinite(w) & (w > 0)
-    if not mask.any():
-        return np.nan
-    return float((s[mask] * w[mask]).sum() / w[mask].sum())
+    resumen = {"tir": tir_total, "md": md_total, "dur": dur_total}
 
-
-# =========================================================
-# Flujos de fondos (tabla + totales + filtro estético)
-# =========================================================
-def build_cashflow_calendar(
-    df_cf_full: pd.DataFrame,
-    portfolio: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    Genera tabla mensual de flujos para la cartera.
-    Escala por VN estimada: flujo_total * VN/100 (si cashflow está por VN100).
-    """
-    if portfolio.empty:
-        return pd.DataFrame()
-
-    # seleccionados + vn
-    vn_map = dict(zip(portfolio["Ticker"], portfolio["VN estimada"]))
-    tickers = list(vn_map.keys())
-
-    df = df_cf_full[df_cf_full["species"].isin(tickers)].copy()
-    if df.empty:
-        return pd.DataFrame()
-
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date", "flujo_total"])
-
-    # escala por VN/100
-    df["VN"] = df["species"].map(vn_map)
-    df["scaled_cf"] = pd.to_numeric(df["flujo_total"], errors="coerce") * (pd.to_numeric(df["VN"], errors="coerce") / 100.0)
-
-    df["Mes"] = df["date"].dt.to_period("M").dt.to_timestamp()
-
-    pivot = (
-        df.pivot_table(
-            index="species",
-            columns="Mes",
-            values="scaled_cf",
-            aggfunc="sum",
-            fill_value=0.0,
-        )
-        .sort_index()
+    # Tabla cartera
+    df = pd.DataFrame(
+        {
+            "Ticker": [a.ticker for a in assets],
+            "%": [a.pct for a in assets],
+            "USD": [a.usd for a in assets],
+            "Precio (USD, VN100)": [a.price for a in assets],
+            "VN estimada": [a.vn for a in assets],
+            "TIR (%)": [a.tir for a in assets],
+            "MD": [a.md for a in assets],
+            "Duration": [a.dur for a in assets],
+            "Vencimiento": [a.venc for a in assets],
+            "Ley": [law_cell_label(a.ley) for a in assets],
+            "Issuer": [a.issuer for a in assets],
+        }
     )
 
-    if pivot.empty:
-        return pivot
+    # Flujos por mes (tabla calendario) + totales
+    settlement = _settlement(plazo)
+    flow_rows = []
+    for a in assets:
+        cf = cashflows.get(a.ticker)
+        if cf is None or cf.empty:
+            continue
+        fut = _future_cashflows(cf, settlement)
+        if fut.empty:
+            continue
 
-    # Totales por fila/columna
-    pivot["Total Ticker"] = pivot.sum(axis=1)
+        # escalamos flujo_total (VN100 base) a VN estimada:
+        # flujo_total está por VN100 -> para VN estimada:
+        # factor = VN / 100
+        factor = a.vn / 100.0 if np.isfinite(a.vn) else np.nan
+        for _, r in fut.iterrows():
+            flow_rows.append(
+                {
+                    "Ticker": a.ticker,
+                    "Fecha": pd.to_datetime(r["date"]).date(),
+                    "Monto": float(r["flujo_total"]) * float(factor),
+                }
+            )
 
-    total_row = pd.DataFrame([pivot.sum(axis=0)], index=["Totales"])
-    out = pd.concat([pivot, total_row], axis=0)
+    flows = pd.DataFrame(flow_rows)
+    if flows.empty:
+        flows_pivot = pd.DataFrame()
+    else:
+        flows["Mes"] = pd.to_datetime(flows["Fecha"]).dt.to_period("M").dt.to_timestamp()
+        flows_pivot = (
+            flows.pivot_table(index="Ticker", columns="Mes", values="Monto", aggfunc="sum", fill_value=0.0)
+            .sort_index(axis=1)
+        )
 
-    # orden columnas: meses + Total
-    cols = [c for c in out.columns if c != "Total Ticker"]
-    cols = sorted(cols) + ["Total Ticker"]
-    out = out[cols]
+        # Totales fila/columna
+        flows_pivot["Total Ticker"] = flows_pivot.sum(axis=1)
+        totals_row = pd.DataFrame([flows_pivot.sum(axis=0)], index=["Totales"])
+        flows_pivot = pd.concat([flows_pivot, totals_row], axis=0)
 
-    return out
+    return df, resumen, flows_pivot
 
 
-# =========================================================
-# Render
-# =========================================================
+# =========================
+# UI
+# =========================
+def _ui_css():
+    st.markdown(
+        """
+<style>
+  .wrap{ max-width: 1250px; margin: 0 auto; }
+  .block-container { padding-top: 1.05rem; padding-bottom: 1.8rem; }
+
+  /* chips */
+  div[data-baseweb="tag"]{
+    background: rgba(17,24,39,.06) !important;
+    color:#111827 !important;
+    border: 1px solid rgba(17,24,39,.10) !important;
+    border-radius: 999px !important;
+    font-weight: 650 !important;
+  }
+
+  /* dataframes */
+  div[data-testid="stDataFrame"] {
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid rgba(17,24,39,.10);
+  }
+
+  /* tarjetas resumen (mantiene estética default, sin tocar fonts globales) */
+  .kpi{
+    border: 1px solid rgba(17,24,39,.10);
+    border-radius: 18px;
+    padding: 14px 16px;
+    background: white;
+  }
+  .kpi .lbl{ color: rgba(17,24,39,.60); font-size: 12px; margin-bottom: 6px; }
+  .kpi .val{ font-size: 28px; font-weight: 800; color:#111827; letter-spacing: .01em; }
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def _height_for_rows(n: int, base: int = 220, row_h: int = 28, max_h: int = 520) -> int:
+    return int(min(max_h, base + row_h * max(1, n)))
+
+
 def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
 
-    # Carga cashflows
+    # ===== Header: título + botón en la misma línea
+    left, right = st.columns([0.72, 0.28], vertical_alignment="center")
+    with left:
+        st.markdown("## NEIX · Cartera Comercial (USD MEP)")
+        st.caption("Activos elegibles: con precio de mercado + TIR disponible. TIR fija en [-15.0, 20.0].")
+    with right:
+        refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_refresh")
+
+    st.divider()
+
+    # =====: cargar cashflows
     try:
         df_cf = load_cashflows(CASHFLOW_PATH)
     except Exception as e:
@@ -614,251 +653,213 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Header: título + botón alineado (misma línea)
-    h1, h2 = st.columns([0.68, 0.32], vertical_alignment="center")
-    with h1:
-        st.markdown('<div class="top-title">NEIX · Cartera Comercial (USD MEP)</div>', unsafe_allow_html=True)
-        st.markdown(
-            f'<div class="top-sub">Activos elegibles: con precio + TIR disponible. TIR fija en [{TIR_MIN:.1f}, {TIR_MAX:.1f}].</div>',
-            unsafe_allow_html=True,
-        )
-    with h2:
-        refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_refresh")
-
-    st.divider()
-
-    # Cache precios
+    # cache precios
     if refresh or "cartera_prices" not in st.session_state:
         with st.spinner("Actualizando precios..."):
             try:
-                st.session_state["cartera_prices"] = fetch_prices()
-            except Exception:
-                st.session_state["cartera_prices"] = pd.DataFrame()
+                st.session_state["cartera_prices"] = fetch_market_prices()
+            except Exception as e:
+                st.error(str(e))
+                st.markdown("</div>", unsafe_allow_html=True)
+                return
 
-    prices = st.session_state.get("cartera_prices", pd.DataFrame())
+    prices = st.session_state.get("cartera_prices")
     if prices is None or prices.empty:
-        st.warning("No se pudieron cargar precios. Probá nuevamente con **Actualizar precios**.")
+        st.warning("No pude cargar precios de mercado (tabla vacía o cambió el formato).")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Elegibles (con precio + TIR dentro del rango)
-    eligible = compute_asset_table(df_cf, prices)
-    if eligible.empty:
-        st.warning("No hay activos elegibles con la información disponible.")
+    # Universe elegible (con TIR en rango fijo)
+    universe = build_eligible_universe(df_cf, prices, plazo=1)
+    if universe.empty:
+        st.warning("No hay activos elegibles con TIR dentro del rango y precio disponible.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # ==========
-    # Selección
-    # ==========
+    # ===== Inputs: selección + capital + asignación (%)
     st.markdown("### Selección de activos")
 
-    options = eligible["Ticker"].tolist()
-    default_sel = options[:6] if len(options) >= 6 else options
-
+    opts = universe["Ticker"].tolist()
     selected = st.multiselect(
         "Activos (bonos + ONs)",
-        options=options,
-        default=st.session_state.get("cartera_selected", default_sel),
+        options=opts,
+        default=opts[:6] if len(opts) >= 6 else opts,
         key="cartera_selected",
     )
+
+    c1, c2 = st.columns([0.42, 0.58], vertical_alignment="bottom")
+    with c1:
+        capital = st.number_input(
+            "Capital (USD)",
+            min_value=0.0,
+            value=100000.0,
+            step=1000.0,
+            format="%.0f",
+            key="cartera_capital",
+        )
+    with c2:
+        calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_calc")
+
+    st.markdown("### Asignación por activo")
+    st.caption("Editá la columna %. Ideal: que sume 100% (si no, escala automáticamente).")
 
     if not selected:
         st.info("Seleccioná al menos un activo.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Capital en el “medio” (como pediste)
-    st.markdown("")
-
-    ccap, csp = st.columns([0.40, 0.60], vertical_alignment="center")
-    with ccap:
-        capital = st.number_input(
-            "Capital (USD)",
-            min_value=0.0,
-            value=float(st.session_state.get("cartera_capital", 100000.0)),
-            step=1000.0,
-            key="cartera_capital",
-            format="%.2f",
-        )
-    with csp:
-        # chips “informativos” discretos
-        st.markdown(
-            f"""
-            <div style="display:flex; gap:10px; flex-wrap:wrap; padding-top:22px;">
-              <div class="chip">Liquidación: <b>T1</b></div>
-              <div class="chip">Moneda: <b>USD MEP</b></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    # ==========
-    # Asignación (tabla editable, sin sliders)
-    # ==========
-    st.markdown("### Asignación por activo")
-    st.caption("Editá la columna %. Ideal: que sume 100%.")
-
-    # Construimos tabla base de pesos
-    base_w = []
-    equal = 100.0 / max(1, len(selected))
-    for tk in selected:
-        base_w.append({"Ticker": tk, "%": round(equal, 2)})
-
-    df_w = pd.DataFrame(base_w)
-
-    # si ya venía de sesión, lo respetamos
-    prev = st.session_state.get("cartera_weights")
-    if isinstance(prev, dict) and prev:
-        df_w["%"] = df_w["Ticker"].map(prev).fillna(df_w["%"])
+    # tabla editable de %
+    default_pct = round(100.0 / len(selected), 2) if selected else 0.0
+    df_pct = pd.DataFrame({"Ticker": selected, "%": [default_pct] * len(selected)})
 
     edited = st.data_editor(
-        df_w,
+        df_pct,
         hide_index=True,
         use_container_width=True,
         column_config={
             "Ticker": st.column_config.TextColumn("Ticker", disabled=True),
-            "%": st.column_config.NumberColumn("%", min_value=0.0, max_value=100.0, step=1.0, format="%.2f"),
+            "%": st.column_config.NumberColumn("%", min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
         },
-        key="cartera_editor",
+        key="cartera_pct_editor",
     )
 
-    weights = dict(zip(edited["Ticker"], pd.to_numeric(edited["%"], errors="coerce").fillna(0.0)))
-    st.session_state["cartera_weights"] = weights
+    pct_map = {r["Ticker"]: float(r["%"]) for _, r in edited.iterrows()}
 
-    sum_w = float(np.nansum(list(weights.values())))
-    if abs(sum_w - 100.0) > 0.05:
-        st.warning(f"La suma de % da {sum_w:.2f}% (ideal 100%). Igual calculo con esa suma.")
-
-    # CTA
-    calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_calc")
+    st.divider()
 
     if not calc:
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # ==========
-    # Resultado cartera
-    # ==========
-    portfolio = compute_portfolio(eligible, selected, weights, float(capital))
-    if portfolio.empty:
-        st.warning("No se pudo calcular la cartera con esta selección.")
+    # ===== Cálculo
+    cartera_df, resumen, flows_pivot = build_portfolio_table(
+        df_cf=df_cf,
+        prices=prices,
+        selected=selected,
+        pct_map=pct_map,
+        capital_usd=float(capital),
+        plazo=1,  # ✅ siempre T1
+    )
+
+    if cartera_df.empty:
+        st.warning("No pude armar cartera con la selección actual (faltan precios o flujos).")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Resumen ponderado (por USD asignado)
-    w_usd = portfolio["USD"].astype(float)
-
-    tir_tot = weighted_avg(portfolio["TIR (%)"], w_usd)
-    md_tot = weighted_avg(portfolio["MD"], w_usd)
-    dur_tot = weighted_avg(portfolio["Duration"], w_usd)
-
+    # ===== Resumen (con 2 decimales en TIR/MD/Duration)
     st.markdown("## Resumen")
-    k1, k2, k3, k4 = st.columns([0.34, 0.22, 0.22, 0.22], vertical_alignment="bottom")
+    k1, k2, k3, k4 = st.columns(4)
 
     with k1:
-        st.markdown('<div class="kpi-title">Capital</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="kpi-big">{_money_usd(float(capital))}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f"""
+<div class="kpi">
+  <div class="lbl">Capital</div>
+  <div class="val">{fmt_money_int(float(capital))}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
     with k2:
-        st.markdown('<div class="kpi-title">TIR total (pond.)</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="kpi-val">{_fmt2(tir_tot)}%</div>', unsafe_allow_html=True)
+        st.markdown(
+            f"""
+<div class="kpi">
+  <div class="lbl">TIR total (pond.)</div>
+  <div class="val">{fmt_pct_2(float(resumen["tir"]))}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
     with k3:
-        st.markdown('<div class="kpi-title">MD total (pond.)</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="kpi-val">{_fmt2(md_tot)}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f"""
+<div class="kpi">
+  <div class="lbl">MD total (pond.)</div>
+  <div class="val">{fmt_num_2(float(resumen["md"]))}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
     with k4:
-        st.markdown('<div class="kpi-title">Duration total (pond.)</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="kpi-val">{_fmt2(dur_tot)}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f"""
+<div class="kpi">
+  <div class="lbl">Duration total (pond.)</div>
+  <div class="val">{fmt_num_2(float(resumen["dur"]))}</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
-    st.markdown("### Cartera")
+    # ===== Tabla Cartera (formateada)
+    st.markdown("## Cartera")
 
-    # Formateo de salida: % sin decimales, USD/VN sin decimales, precio 2 decimales, TIR/MD/Dur 2 decimales
-    show = portfolio.copy()
-    show["%"] = pd.to_numeric(show["%"], errors="coerce").round(0).astype("Int64")
+    show = cartera_df.copy()
+
+    # Formatos solicitados
+    show["%"] = pd.to_numeric(show["%"], errors="coerce").round(2)
     show["USD"] = pd.to_numeric(show["USD"], errors="coerce").round(0)
-    show["VN estimada"] = pd.to_numeric(show["VN estimada"], errors="coerce").round(0)
     show["Precio (USD, VN100)"] = pd.to_numeric(show["Precio (USD, VN100)"], errors="coerce").round(2)
+    show["VN estimada"] = pd.to_numeric(show["VN estimada"], errors="coerce").round(0)
+
     show["TIR (%)"] = pd.to_numeric(show["TIR (%)"], errors="coerce").round(2)
     show["MD"] = pd.to_numeric(show["MD"], errors="coerce").round(2)
     show["Duration"] = pd.to_numeric(show["Duration"], errors="coerce").round(2)
 
-    # Vencimiento ok (dd/mm/yyyy)
-    show["Vencimiento"] = show["Vencimiento"].apply(lambda x: x.strftime("%d/%m/%Y") if isinstance(x, dt.date) else "")
+    # ✅ Vencimiento bien
+    show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
+
+    # Dataframe height prolijo
+    h = _height_for_rows(len(show), base=220, max_h=520)
 
     st.dataframe(
         show,
         hide_index=True,
         use_container_width=True,
+        height=h,
         column_config={
-            "Ticker": st.column_config.TextColumn("Ticker"),
-            "%": st.column_config.NumberColumn("%", format="%d"),
-            "USD": st.column_config.TextColumn("USD"),
+            "%": st.column_config.NumberColumn("%", format="%.2f"),
+            "USD": st.column_config.NumberColumn("USD", format="$ %.0f"),
             "Precio (USD, VN100)": st.column_config.NumberColumn("Precio (USD, VN100)", format="%.2f"),
             "VN estimada": st.column_config.NumberColumn("VN estimada", format="%.0f"),
             "TIR (%)": st.column_config.NumberColumn("TIR (%)", format="%.2f"),
             "MD": st.column_config.NumberColumn("MD", format="%.2f"),
             "Duration": st.column_config.NumberColumn("Duration", format="%.2f"),
-            "Vencimiento": st.column_config.TextColumn("Vencimiento"),
-            "Ley": st.column_config.TextColumn("Ley"),
-            "Issuer": st.column_config.TextColumn("Issuer"),
+            "Vencimiento": st.column_config.DateColumn("Vencimiento", format="DD/MM/YYYY"),
         },
     )
 
-    # Mostrar USD con símbolo $ (sin tocar cálculo)
-    # (Solo “visual”, por eso lo dejamos como texto al render)
-    # Re-render simple para USD con $:
-    # Nota: lo dejamos así para no complicar configs.
-
-    # ==========
-    # Flujos de fondos (con totales + filtro estético de fechas)
-    # ==========
+    # ===== Flujo de fondos (totales fila y columna)
     st.markdown("## Flujo de fondos")
-    calendar = build_cashflow_calendar(df_cf, show.rename(columns={"Ticker": "Ticker"}))
 
-    if calendar.empty:
-        st.info("No hay flujos para mostrar con esta cartera.")
+    if flows_pivot is None or flows_pivot.empty:
+        st.info("No hay flujos futuros para mostrar.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # filtro estético: rango de meses visibles (NO afecta cartera)
-    month_cols = [c for c in calendar.columns if isinstance(c, pd.Timestamp)]
-    if month_cols:
-        min_m = min(month_cols).date()
-        max_m = max(month_cols).date()
-        fcol1, fcol2 = st.columns([0.35, 0.65], vertical_alignment="center")
-        with fcol1:
-            rng = st.slider(
-                "Rango de fechas a mostrar (solo visual)",
-                min_value=min_m,
-                max_value=max_m,
-                value=(min_m, max_m),
-                key="cartera_cf_range",
-            )
-        start_d, end_d = rng
-        month_cols_keep = [c for c in month_cols if (c.date() >= start_d and c.date() <= end_d)]
-    else:
-        month_cols_keep = []
+    flows = flows_pivot.copy()
 
-    cols_keep = month_cols_keep + (["Total Ticker"] if "Total Ticker" in calendar.columns else [])
-    cal_show = calendar[cols_keep] if cols_keep else calendar.copy()
+    # columnas de fecha lindas
+    new_cols = []
+    for c in flows.columns:
+        if isinstance(c, (pd.Timestamp, dt.datetime)):
+            new_cols.append(pd.to_datetime(c).strftime("%b-%Y").capitalize())
+        else:
+            new_cols.append(str(c))
+    flows.columns = new_cols
 
-    # Formateo: sin decimales, con $ en display
-    cal_disp = cal_show.copy()
-    cal_disp = cal_disp.applymap(lambda v: 0.0 if (isinstance(v, float) and not np.isfinite(v)) else v)
-    cal_disp = cal_disp.round(0)
+    flows = flows.round(0)
 
-    # Renombrar meses a "MMM-YYYY" (estético)
-    rename_cols = {}
-    for c in cal_disp.columns:
-        if isinstance(c, pd.Timestamp):
-            rename_cols[c] = c.strftime("%b-%Y").capitalize()
-    cal_disp = cal_disp.rename(columns=rename_cols)
+    h2 = _height_for_rows(len(flows), base=240, max_h=560)
 
     st.dataframe(
-        cal_disp,
+        flows,
         use_container_width=True,
-        height=520,
+        height=h2,
+        column_config={col: st.column_config.NumberColumn(col, format="$ %.0f") for col in flows.columns},
     )
 
     st.markdown("</div>", unsafe_allow_html=True)
-
-
