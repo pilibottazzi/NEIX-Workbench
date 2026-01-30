@@ -770,16 +770,3 @@ def render(back_to_home=None):
             use_container_width=True,
             column_config={col: st.column_config.NumberColumn(col, format="$ %.0f") for col in cal_show.columns},
         )
-
-    # =========================
-    # Gráficos (sin plotly)
-    # =========================
-    st.markdown('<div class="section-title">Visualizaciones</div>', unsafe_allow_html=True)
-    g1, g2 = st.columns([0.45, 0.55], vertical_alignment="top")
-    with g1:
-        pie_allocation(port)
-    with g2:
-        if total_by_month is not None and not total_by_month.empty:
-            bar_monthly_cashflows(total_by_month)
-
-    st.markdown("</div>", unsafe_allow_html=True)
