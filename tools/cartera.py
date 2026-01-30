@@ -593,14 +593,10 @@ def _ui_css():
     st.markdown(
         """
 <style>
-  .wrap{ max-width: 1180px; margin: 0 auto; }
-  .block-container { padding-top: 0.9rem; padding-bottom: 1.6rem; }
+  .wrap{ max-width: 1250px; margin: 0 auto; }
+  .block-container { padding-top: 1.05rem; padding-bottom: 1.8rem; }
 
-  /* Títulos: más empresa (más chicos y con aire) */
-  h2 { font-size: 1.55rem !important; margin-bottom: .15rem !important; }
-  h3 { font-size: 1.15rem !important; margin-top: 1.0rem !important; }
-
-  /* Chips */
+  /* chips */
   div[data-baseweb="tag"]{
     background: rgba(17,24,39,.06) !important;
     color:#111827 !important;
@@ -609,32 +605,30 @@ def _ui_css():
     font-weight: 650 !important;
   }
 
-  /* Dataframes */
+  /* dataframes */
   div[data-testid="stDataFrame"] {
-    border-radius: 14px;
+    border-radius: 16px;
     overflow: hidden;
     border: 1px solid rgba(17,24,39,.10);
   }
 
-  /* KPIs: más minimal + tipografía más chica */
+  /* tarjetas resumen (mantiene estética default, sin tocar fonts globales) */
   .kpi{
     border: 1px solid rgba(17,24,39,.10);
-    border-radius: 16px;
-    padding: 12px 14px;
+    border-radius: 18px;
+    padding: 14px 16px;
     background: white;
   }
   .kpi .lbl{ color: rgba(17,24,39,.60); font-size: 12px; margin-bottom: 6px; }
-  .kpi .val{ font-size: 24px; font-weight: 800; color:#111827; letter-spacing: .01em; }
+  .kpi .val{ font-size: 28px; font-weight: 800; color:#111827; letter-spacing: .01em; }
 </style>
 """,
         unsafe_allow_html=True,
     )
 
 
-def _height_for_rows(n: int, row_h: int = 34, header_h: int = 38, padding: int = 14, max_h: int = 520) -> int:
-    n = max(1, int(n))
-    h = header_h + padding + row_h * n
-    return int(min(max_h, h)))))
+def _height_for_rows(n: int, base: int = 220, row_h: int = 28, max_h: int = 520) -> int:
+    return int(min(max_h, base + row_h * max(1, n)))
 
 
 def render(back_to_home=None):
@@ -644,8 +638,8 @@ def render(back_to_home=None):
     # ===== Header: título + botón en la misma línea
     left, right = st.columns([0.72, 0.28], vertical_alignment="center")
     with left:
-        st.markdown("## NEIX · Cartera Comercial")
-        st.caption("Arma tu cartera con precios online.")
+        st.markdown("## NEIX · Cartera Comercial (USD MEP)")
+        st.caption("Activos elegibles: con precio de mercado + TIR disponible. TIR fija en [-15.0, 20.0].")
     with right:
         refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_refresh")
 
@@ -801,7 +795,7 @@ def render(back_to_home=None):
         )
 
     # ===== Tabla Cartera (formateada)
-    st.markdown("## NEIX · Cartera Comercial")
+    st.markdown("## Cartera")
 
     show = cartera_df.copy()
 
@@ -819,7 +813,7 @@ def render(back_to_home=None):
     show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
 
     # Dataframe height prolijo
-    h = _height_for_rows(len(show), max_h=520)
+    h = _height_for_rows(len(show), base=220, max_h=520)
 
     st.dataframe(
         show,
@@ -859,7 +853,7 @@ def render(back_to_home=None):
 
     flows = flows.round(0)
 
-    h2 = _height_for_rows(len(flows), max_h=560)
+    h2 = _height_for_rows(len(flows), base=240, max_h=560)
 
     st.dataframe(
         flows,
@@ -869,3 +863,4 @@ def render(back_to_home=None):
     )
 
     st.markdown("</div>", unsafe_allow_html=True)
+
