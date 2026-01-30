@@ -643,8 +643,8 @@ def render(back_to_home=None):
     # ===== Header: título + botón en la misma línea
     left, right = st.columns([0.72, 0.28], vertical_alignment="center")
     with left:
-        st.markdown("## NEIX · Cartera Comercial (USD MEP)")
-        st.caption("Activos elegibles: con precio de mercado + TIR disponible. TIR fija en [-15.0, 20.0].")
+        st.markdown("## NEIX · Cartera Comercial")
+        st.caption("Arma tu cartera con precios online.")
     with right:
         refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_refresh")
 
@@ -752,7 +752,7 @@ def render(back_to_home=None):
         return
 
     # ===== Resumen (con 2 decimales en TIR/MD/Duration)
-    st.markdown("## Resumen")
+    st.markdown("## NEIX · Cartera Comercial")
     k1, k2, k3, k4 = st.columns(4)
 
     with k1:
@@ -800,7 +800,7 @@ def render(back_to_home=None):
         )
 
     # ===== Tabla Cartera (formateada)
-    st.markdown("## Cartera")
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
     show = cartera_df.copy()
 
@@ -837,6 +837,8 @@ def render(back_to_home=None):
         },
     )
 
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+    
     # ===== Flujo de fondos (totales fila y columna)
     st.markdown("## Flujo de fondos")
 
