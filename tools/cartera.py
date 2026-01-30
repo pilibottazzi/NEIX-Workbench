@@ -231,49 +231,63 @@ def fetch_market_prices() -> pd.DataFrame:
       - Precio
       - Volumen
 
-    Nota: NO mencionamos el proveedor en UI.
+    Lee varias páginas (bonos + ONs) y unifica.
     """
-    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
-
-    try:
-        tables = pd.read_html(url)  # intenta parser default (normalmente lxml)
-    except ImportError as e:
-        # Si falla por parsers, damos mensaje accionable
-        raise ImportError(
-            "Faltan dependencias para leer tablas HTML. "
-            "En tu requirements.txt agregá: lxml y html5lib."
-        ) from e
-    except Exception as e:
-        raise RuntimeError(f"No pude leer la tabla de precios. Error: {e}") from e
-
-    if not tables:
-        return pd.DataFrame()
-
-    bonos = tables[0]
-    cols = set(bonos.columns.astype(str))
-
-    if "Símbolo" not in cols or "Último Operado" not in cols:
-        return pd.DataFrame()
-
-    df = pd.DataFrame()
-    df["Ticker"] = bonos["Símbolo"].astype(str).str.strip().str.upper()
-
-    df["RawPrecio"] = bonos["Último Operado"].astype(str).str.strip()
-    df["Precio"] = bonos["Último Operado"].apply(parse_ar_number)
-    df["Precio"] = [
-        usd_fix_if_needed(tk, raw, val)
-        for tk, raw, val in zip(df["Ticker"], df["RawPrecio"], df["Precio"])
+    urls = [
+        "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos",
+        "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones-negociables/todos",
     ]
 
-    if "Monto Operado" in cols:
-        df["Volumen"] = bonos["Monto Operado"].apply(parse_ar_number).fillna(0)
-    else:
-        df["Volumen"] = 0
+    frames = []
 
-    df = df.dropna(subset=["Precio"]).set_index("Ticker")
-    df = df.sort_values("Volumen", ascending=False)
-    df = df[~df.index.duplicated(keep="first")]
-    return df.drop(columns=["RawPrecio"], errors="ignore")
+    for url in urls:
+        try:
+            tables = pd.read_html(url)
+        except ImportError as e:
+            raise ImportError(
+                "Faltan dependencias para leer tablas HTML. "
+                "En tu requirements.txt agregá: lxml y html5lib."
+            ) from e
+        except Exception as e:
+            # Si una de las páginas falla, seguimos con la otra
+            continue
+
+        if not tables:
+            continue
+
+        t0 = tables[0]
+        cols = set(t0.columns.astype(str))
+        if "Símbolo" not in cols or "Último Operado" not in cols:
+            continue
+
+        df = pd.DataFrame()
+        df["Ticker"] = t0["Símbolo"].astype(str).str.strip().str.upper()
+
+        df["RawPrecio"] = t0["Último Operado"].astype(str).str.strip()
+        df["Precio"] = t0["Último Operado"].apply(parse_ar_number)
+        df["Precio"] = [
+            usd_fix_if_needed(tk, raw, val)
+            for tk, raw, val in zip(df["Ticker"], df["RawPrecio"], df["Precio"])
+        ]
+
+        if "Monto Operado" in cols:
+            df["Volumen"] = t0["Monto Operado"].apply(parse_ar_number).fillna(0)
+        else:
+            df["Volumen"] = 0
+
+        df = df.dropna(subset=["Precio"])
+        df = df.set_index("Ticker")
+        df = df[~df.index.duplicated(keep="first")]
+        frames.append(df[["Precio", "Volumen"]])
+
+    if not frames:
+        return pd.DataFrame()
+
+    out = pd.concat(frames, axis=0)
+    # si el mismo ticker aparece en más de una tabla, nos quedamos con el de mayor volumen
+    out = out.sort_values("Volumen", ascending=False)
+    out = out[~out.index.duplicated(keep="first")]
+    return out
 
 
 # =========================
