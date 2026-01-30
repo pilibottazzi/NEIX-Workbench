@@ -1,6 +1,7 @@
 # app.py
 import streamlit as st
 
+from tools import cartera
 from tools import ons
 from tools import cauciones
 from tools import cheques
@@ -75,6 +76,8 @@ if tool:
     st.divider()
 
     try:
+        if tool == "cartera":
+            cartera.render(back_to_home)
         if tool == "ons":
             ons.render(back_to_home)
         elif tool == "bo_ppt_manana":
@@ -153,6 +156,7 @@ with tabs[2]:
     st.markdown(
         """
         <div class="tool-grid">
+          <a class="tool-btn" href="?tool=cartera" target="_self">Carteras</a>        
           <a class="tool-btn" href="?tool=cheques" target="_self">Cheques</a>
           <a class="tool-btn" href="?tool=cauciones_mae" target="_self">Cauciones MAE</a>
           <a class="tool-btn" href="?tool=cauciones_byma" target="_self">Cauciones BYMA</a>
