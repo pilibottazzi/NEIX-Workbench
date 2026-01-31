@@ -715,11 +715,7 @@ div[data-testid="stDataFrame"] tbody tr:has(td:first-child:contains("Totales")) 
 </style>
 """, unsafe_allow_html=True)
 
-  
-</style>
-""",
-        unsafe_allow_html=True,
-    )
+
 
 
 def _height_for_rows(n: int, row_h: int = 34, header: int = 42, pad: int = 18, max_h: int = 900) -> int:
