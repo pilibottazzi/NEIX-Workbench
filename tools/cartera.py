@@ -36,7 +36,6 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "GD35": "GD35D",
     "GD38": "GD38D",
     "GD41": "GD41D",
-    # si algún día aparecen así en cashflows
     "BPA7": "BPA7D",
     "BPB7": "BPB7D",
     "BPC7": "BPC7D",
@@ -183,15 +182,17 @@ def is_corporativo(issuer_norm: str) -> bool:
 
 def on_usd_ticker_from_species(species: str) -> str:
     """
-    Si en cashflows la ON viene como 'XXXO' (ej: IRCFO),
-    en precio USD suele estar como 'XXXD' (IRCFD).
+    Regla que pediste:
+      - si termina en 'O' => reemplazar por 'D'
+      - si ya termina en 'D' => dejar
+      - si no termina en O ni D => agregar 'D'
     """
     sp = (species or "").strip().upper()
     if sp.endswith("O") and len(sp) >= 2:
         return sp[:-1] + "D"
-    if not sp.endswith("D"):
-        return sp + "D"
-    return sp
+    if sp.endswith("D"):
+        return sp
+    return sp + "D"
 
 
 # =========================
@@ -209,9 +210,7 @@ def load_cashflows(path: str) -> pd.DataFrame:
     req = {"date", "species", "law", "issuer", "description", "flujo_total"}
     missing = req - set(df.columns)
     if missing:
-        raise ValueError(
-            f"Faltan columnas en {path}: {sorted(missing)} (requeridas: {sorted(req)})"
-        )
+        raise ValueError(f"Faltan columnas en {path}: {sorted(missing)} (requeridas: {sorted(req)})")
 
     df["species"] = df["species"].astype(str).str.strip().str.upper()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
@@ -245,17 +244,19 @@ def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
     )
     return meta
 
+
+# =========================
+# Market prices (Plan B: bonos + ONs)
+# =========================
 def _fetch_prices_from_url(url: str) -> pd.DataFrame:
     """
     Lee una tabla de IOL y devuelve un DF con index=TICKER y cols: Precio, Volumen.
-    Usa tus helpers: parse_ar_number() y usd_fix_if_needed().
     """
     try:
         tables = pd.read_html(url)
     except ImportError as e:
         raise ImportError(
-            "Faltan dependencias para leer tablas HTML. "
-            "En tu requirements.txt agregá: lxml y html5lib."
+            "Faltan dependencias para leer tablas HTML. En requirements.txt agregá: lxml y html5lib."
         ) from e
     except Exception as e:
         raise RuntimeError(f"No pude leer la tabla de precios. Error: {e}") from e
@@ -266,7 +267,6 @@ def _fetch_prices_from_url(url: str) -> pd.DataFrame:
     t = tables[0]
     cols = {str(c).strip() for c in t.columns}
 
-    # Columnas mínimas esperadas
     if "Símbolo" not in cols or "Último Operado" not in cols:
         return pd.DataFrame()
 
@@ -294,25 +294,23 @@ def _fetch_prices_from_url(url: str) -> pd.DataFrame:
 
 def fetch_market_prices() -> pd.DataFrame:
     """
-    Plan B robusto: une precios de BONOS + ONs en un solo DF.
+    Une precios de BONOS + ONs en un solo DF.
     Output:
       index = Ticker (uppercase)
       cols  = Precio, Volumen
     """
     url_bonos = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
-    url_ons   = "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"
+    url_ons = "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"
 
     bonos = _fetch_prices_from_url(url_bonos)
-    ons   = _fetch_prices_from_url(url_ons)
+    ons = _fetch_prices_from_url(url_ons)
 
     if bonos.empty and ons.empty:
         return pd.DataFrame()
 
-    # Unimos. Si aparece repetido un ticker, nos quedamos con el de mayor volumen.
     allp = pd.concat([bonos, ons], axis=0)
     allp = allp.sort_values("Volumen", ascending=False)
     allp = allp[~allp.index.duplicated(keep="first")]
-
     return allp
 
 
@@ -440,9 +438,10 @@ def build_eligible_universe(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: in
     for sp in meta.index:
         issuer = meta.loc[sp, "issuer_norm"]
 
-        # ✅ 1) si es ON corporativa: O -> D
         px = vol = np.nan
         px_ticker = ""
+
+        # 1) ON corporativa: O -> D (o +D)
         if is_corporativo(issuer):
             tk_on = on_usd_ticker_from_species(sp)
             if tk_on in prices.index:
@@ -450,7 +449,7 @@ def build_eligible_universe(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: in
                 vol = float(prices.loc[tk_on, "Volumen"])
                 px_ticker = tk_on
 
-        # 2) si no encontró: intento bonos (ticker->USD)
+        # 2) fallback general: ticker -> USD
         if not np.isfinite(px) or px <= 0:
             px, vol, px_ticker = pick_price_usd(prices, sp)
 
@@ -461,7 +460,6 @@ def build_eligible_universe(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: in
         if cf is None or cf.empty:
             continue
 
-        # tiene que tener flujos futuros
         settlement = _settlement(plazo)
         fut = _future_cashflows(cf, settlement)
         if fut.empty:
@@ -509,12 +507,6 @@ def build_portfolio_table(
     capital_usd: float,
     plazo: int = 1,
 ) -> tuple[pd.DataFrame, dict[str, float], pd.DataFrame]:
-    """
-    Retorna:
-      - tabla cartera
-      - resumen (tir/md/dur ponderadas)
-      - tabla flujos (pivot con totales)
-    """
     df_cf = df_cf.copy()
     df_cf["species"] = df_cf["species"].astype(str).str.upper().str.strip()
     selected = [str(x).upper().strip() for x in selected if str(x).strip()]
@@ -540,14 +532,14 @@ def build_portfolio_table(
 
         issuer = meta.loc[t, "issuer_norm"] if t in meta.index else "NA"
 
-        # ✅ 1) si es ON corporativa: O -> D
+        # 1) ON corporativa: O -> D (o +D)
         if t in meta.index and is_corporativo(issuer):
             tk_on = on_usd_ticker_from_species(t)
             if tk_on in prices.index:
                 px = float(prices.loc[tk_on, "Precio"])
                 px_ticker = tk_on
 
-        # 2) si no encontró: intento bonos (ticker->USD)
+        # 2) fallback general: ticker -> USD
         if not np.isfinite(px) or px <= 0:
             px, _, px_ticker = pick_price_usd(prices, t)
 
@@ -662,9 +654,20 @@ def _ui_css():
     st.markdown(
         """
 <style>
-  .wrap{ max-width: 1250px; margin: 0 auto; }
-  .block-container { padding-top: 1.05rem; padding-bottom: 1.8rem; }
+  .wrap{ max-width: 1180px; margin: 0 auto; }
+  .block-container { padding-top: 1.1rem; padding-bottom: 1.8rem; }
 
+  /* Títulos con aire (scoped a wrap) */
+  .wrap h2 { font-size: 1.65rem !important; margin: 0.20rem 0 0.55rem !important; }
+  .wrap h3 { font-size: 1.15rem !important; margin: 0.85rem 0 0.35rem !important; }
+  .wrap p  { margin: 0.15rem 0 0.55rem !important; }
+
+  .title{ font-size: 28px; font-weight: 850; letter-spacing: .02em; color:#111827; margin: 0; }
+  .sub{ color: rgba(17,24,39,.62); font-size: 13px; margin-top: 4px; }
+
+  .soft-hr{ height:1px; background:rgba(17,24,39,.10); margin: 14px 0 18px; }
+
+  /* Chips */
   div[data-baseweb="tag"]{
     background: rgba(17,24,39,.06) !important;
     color:#111827 !important;
@@ -673,43 +676,68 @@ def _ui_css():
     font-weight: 650 !important;
   }
 
+  /* Inputs / botones */
+  label { margin-bottom: 0.25rem !important; }
+  .stSelectbox div[data-baseweb="select"]{ border-radius: 12px; }
+  .stMultiSelect div[data-baseweb="select"]{ border-radius: 12px; }
+  .stButton > button { border-radius: 14px; padding: 0.60rem 1.0rem; }
+
+  /* Dataframes */
   div[data-testid="stDataFrame"] {
-    border-radius: 16px;
+    border-radius: 14px;
     overflow: hidden;
     border: 1px solid rgba(17,24,39,.10);
   }
 
+  /* KPI cards */
   .kpi{
     border: 1px solid rgba(17,24,39,.10);
-    border-radius: 18px;
-    padding: 14px 16px;
+    border-radius: 16px;
+    padding: 12px 14px;
     background: white;
   }
   .kpi .lbl{ color: rgba(17,24,39,.60); font-size: 12px; margin-bottom: 6px; }
-  .kpi .val{ font-size: 28px; font-weight: 800; color:#111827; letter-spacing: .01em; }
+  .kpi .val{ font-size: 26px; font-weight: 850; color:#111827; letter-spacing: .01em; }
+
+  /* Spacer util */
+  .sp-8{ height: 8px; }
+  .sp-12{ height: 12px; }
+  .sp-16{ height: 16px; }
+  .sp-20{ height: 20px; }
 </style>
 """,
         unsafe_allow_html=True,
     )
 
 
-def _height_for_rows(n: int, base: int = 220, row_h: int = 28, max_h: int = 520) -> int:
-    return int(min(max_h, base + row_h * max(1, n)))
+def _height_for_rows(n: int, row_h: int = 34, header: int = 42, pad: int = 18, max_h: int = 900) -> int:
+    """
+    Altura dinámica más ajustada (evita el "bloque vacío" enorme).
+    """
+    n = int(max(0, n))
+    h = header + pad + row_h * max(1, n + 1)  # +1 por header interno
+    return int(min(max_h, h))
+
+
+def _spacer(px: int = 14):
+    st.markdown(f'<div style="height:{int(px)}px"></div>', unsafe_allow_html=True)
 
 
 def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
 
+    # Header
     left, right = st.columns([0.72, 0.28], vertical_alignment="center")
     with left:
-        st.markdown("## NEIX · Cartera Comercial")
-        st.caption("Arma tu cartera con precios online.")
+        st.markdown('<div class="title">NEIX · Cartera Comercial</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub">Arma tu cartera con precios online.</div>', unsafe_allow_html=True)
     with right:
         refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_refresh")
 
-    st.divider()
+    st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
 
+    # Load cashflows
     try:
         df_cf = load_cashflows(CASHFLOW_PATH)
     except Exception as e:
@@ -717,6 +745,7 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
+    # Precios (cache)
     if refresh or "cartera_prices" not in st.session_state:
         with st.spinner("Actualizando precios..."):
             try:
@@ -738,14 +767,20 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
+    # =========================
+    # Selección
+    # =========================
     st.markdown("### Selección de activos")
     opts = universe["Ticker"].tolist()
+
     selected = st.multiselect(
         "Activos (bonos + ONs)",
         options=opts,
         default=opts[:6] if len(opts) >= 6 else opts,
         key="cartera_selected",
     )
+
+    _spacer(10)
 
     c1, c2 = st.columns([0.42, 0.58], vertical_alignment="bottom")
     with c1:
@@ -760,6 +795,11 @@ def render(back_to_home=None):
     with c2:
         calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_calc")
 
+    _spacer(6)
+
+    # =========================
+    # Asignación
+    # =========================
     st.markdown("### Asignación por activo")
     st.caption("Editá la columna %. Ideal: que sume 100% (si no, escala automáticamente).")
 
@@ -783,12 +823,18 @@ def render(back_to_home=None):
     )
 
     pct_map = {r["Ticker"]: float(r["%"]) for _, r in edited.iterrows()}
-    st.divider()
+
+    _spacer(10)
+    st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
+    _spacer(6)
 
     if not calc:
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
+    # =========================
+    # Calcular cartera
+    # =========================
     cartera_df, resumen, flows_pivot = build_portfolio_table(
         df_cf=df_cf,
         prices=prices,
@@ -803,10 +849,8 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    st.markdown("## NEIX · Cartera Comercial")
-
+    # KPIs
     k1, k2, k3, k4 = st.columns(4)
-
     with k1:
         st.markdown(
             f"""
@@ -817,7 +861,6 @@ def render(back_to_home=None):
 """,
             unsafe_allow_html=True,
         )
-
     with k2:
         st.markdown(
             f"""
@@ -828,7 +871,6 @@ def render(back_to_home=None):
 """,
             unsafe_allow_html=True,
         )
-
     with k3:
         st.markdown(
             f"""
@@ -839,7 +881,6 @@ def render(back_to_home=None):
 """,
             unsafe_allow_html=True,
         )
-
     with k4:
         st.markdown(
             f"""
@@ -851,7 +892,9 @@ def render(back_to_home=None):
             unsafe_allow_html=True,
         )
 
+    _spacer(14)
 
+    # Tabla cartera
     show = cartera_df.copy()
     show["%"] = pd.to_numeric(show["%"], errors="coerce").round(2)
     show["USD"] = pd.to_numeric(show["USD"], errors="coerce").round(0)
@@ -862,13 +905,13 @@ def render(back_to_home=None):
     show["Duration"] = pd.to_numeric(show["Duration"], errors="coerce").round(2)
     show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
 
-    h = _height_for_rows(len(show), base=220, max_h=520)
+    h_tbl = _height_for_rows(len(show), row_h=34, header=42, pad=12, max_h=780)
 
     st.dataframe(
         show.drop(columns=["Ticker precio"], errors="ignore"),
         hide_index=True,
         use_container_width=True,
-        height=h,
+        height=h_tbl,
         column_config={
             "%": st.column_config.NumberColumn("%", format="%.2f"),
             "USD": st.column_config.NumberColumn("USD", format="$ %.0f"),
@@ -881,6 +924,9 @@ def render(back_to_home=None):
         },
     )
 
+    _spacer(18)
+
+    # Flujos
     st.markdown("## Flujo de fondos")
 
     if flows_pivot is None or flows_pivot.empty:
@@ -899,12 +945,12 @@ def render(back_to_home=None):
     flows.columns = new_cols
 
     flows = flows.round(0)
-    h2 = _height_for_rows(len(flows), base=240, max_h=560)
+    h_flows = _height_for_rows(len(flows), row_h=34, header=42, pad=12, max_h=820)
 
     st.dataframe(
         flows,
         use_container_width=True,
-        height=h2,
+        height=h_flows,
         column_config={col: st.column_config.NumberColumn(col, format="$ %.0f") for col in flows.columns},
     )
 
