@@ -763,7 +763,7 @@ def process_all(
 # ============================================================
 # UI principal
 # ============================================================
-def render():
+def render(back_to_home):
     _inject_css()
 
     st.markdown(
