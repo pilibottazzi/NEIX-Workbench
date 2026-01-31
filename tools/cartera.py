@@ -850,6 +850,7 @@ def render(back_to_home=None):
         return
 
     # KPIs
+    st.markdown("### NEIX · Cartera Comercial") 
     k1, k2, k3, k4 = st.columns(4)
     with k1:
         st.markdown(
