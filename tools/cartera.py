@@ -806,7 +806,6 @@ def render(back_to_home=None):
     st.markdown("## NEIX · Cartera Comercial")
 
     k1, k2, k3, k4 = st.columns(4)
-    div[data-testid="stDataFrame"] div[role="row"] { min-height: 40px; }
 
     with k1:
         st.markdown(
