@@ -856,7 +856,7 @@ def render(back_to_home=None):
         st.markdown(
             f"""
 <div class="kpi">
-  <div class="lbl">Capital</div>
+  <div class="lbl">Capital (USD)</div>
   <div class="val">{fmt_money_int(float(capital))}</div>
 </div>
 """,
