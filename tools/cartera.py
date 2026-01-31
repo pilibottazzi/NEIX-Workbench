@@ -245,18 +245,11 @@ def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
     )
     return meta
 
-
-# =========================
-# Precios de mercado (bonos todos)
-# =========================
-def fetch_market_prices() -> pd.DataFrame:
+def _fetch_prices_from_url(url: str) -> pd.DataFrame:
     """
-    Devuelve DataFrame indexado por Ticker con columnas:
-      - Precio
-      - Volumen
+    Lee una tabla de IOL y devuelve un DF con index=TICKER y cols: Precio, Volumen.
+    Usa tus helpers: parse_ar_number() y usd_fix_if_needed().
     """
-    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
-
     try:
         tables = pd.read_html(url)
     except ImportError as e:
@@ -270,36 +263,59 @@ def fetch_market_prices() -> pd.DataFrame:
     if not tables:
         return pd.DataFrame()
 
-    bonos = tables[0]
-    cols = set(bonos.columns.astype(str))
+    t = tables[0]
+    cols = {str(c).strip() for c in t.columns}
 
+    # Columnas mínimas esperadas
     if "Símbolo" not in cols or "Último Operado" not in cols:
         return pd.DataFrame()
 
     df = pd.DataFrame()
-    df["Ticker"] = bonos["Símbolo"].astype(str).str.strip().str.upper()
+    df["Ticker"] = t["Símbolo"].astype(str).str.strip().str.upper()
 
-    df["RawPrecio"] = bonos["Último Operado"].astype(str).str.strip()
-    df["Precio"] = bonos["Último Operado"].apply(parse_ar_number)
+    df["RawPrecio"] = t["Último Operado"].astype(str).str.strip()
+    df["Precio"] = t["Último Operado"].apply(parse_ar_number)
     df["Precio"] = [
         usd_fix_if_needed(tk, raw, val)
         for tk, raw, val in zip(df["Ticker"], df["RawPrecio"], df["Precio"])
     ]
 
     if "Monto Operado" in cols:
-        df["Volumen"] = bonos["Monto Operado"].apply(parse_ar_number).fillna(0)
+        df["Volumen"] = t["Monto Operado"].apply(parse_ar_number).fillna(0)
     else:
         df["Volumen"] = 0
 
-    df = df.dropna(subset=["Precio"]).set_index("Ticker")
-    df = df.sort_values("Volumen", ascending=False)
+    df = df.dropna(subset=["Precio"]).copy()
+    df = df.set_index("Ticker")
     df = df[~df.index.duplicated(keep="first")]
-    return df.drop(columns=["RawPrecio"], errors="ignore")
+
+    return df[["Precio", "Volumen"]].sort_values("Volumen", ascending=False)
 
 
-# =========================
-# Ticker USD resolver (bonos)
-# =========================
+def fetch_market_prices() -> pd.DataFrame:
+    """
+    Plan B robusto: une precios de BONOS + ONs en un solo DF.
+    Output:
+      index = Ticker (uppercase)
+      cols  = Precio, Volumen
+    """
+    url_bonos = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
+    url_ons   = "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"
+
+    bonos = _fetch_prices_from_url(url_bonos)
+    ons   = _fetch_prices_from_url(url_ons)
+
+    if bonos.empty and ons.empty:
+        return pd.DataFrame()
+
+    # Unimos. Si aparece repetido un ticker, nos quedamos con el de mayor volumen.
+    allp = pd.concat([bonos, ons], axis=0)
+    allp = allp.sort_values("Volumen", ascending=False)
+    allp = allp[~allp.index.duplicated(keep="first")]
+
+    return allp
+
+
 def resolve_usd_ticker(species: str) -> str:
     sp = str(species).strip().upper()
     if sp.endswith("D"):
