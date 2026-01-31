@@ -736,6 +736,7 @@ def render(back_to_home=None):
         refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_refresh")
 
     st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
+    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
 
     # Load cashflows
     try:
