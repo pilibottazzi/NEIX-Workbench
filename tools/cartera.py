@@ -928,7 +928,7 @@ def render(back_to_home=None):
     _spacer(18)
 
     # Flujos
-    st.markdown("## Flujo de fondos")
+    st.markdown("### Flujo de fondos")
 
     if flows_pivot is None or flows_pivot.empty:
         st.info("No hay flujos futuros para mostrar.")
