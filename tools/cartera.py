@@ -705,13 +705,6 @@ def _ui_css():
   .sp-16{ height: 16px; }
   .sp-20{ height: 20px; }
 
-st.markdown("""
-<style>
-/* Fila Totales en DataFrame */
-div[data-testid="stDataFrame"] tbody tr:has(td:first-child:contains("Totales")) {
-    background-color: rgba(37, 99, 235, 0.08) !important;  /* azul suave */
-    font-weight: 700;
-}
 </style>
 """, unsafe_allow_html=True)
 
