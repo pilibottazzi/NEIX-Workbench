@@ -803,7 +803,7 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    st.markdown("## Resumen")
+    st.markdown("## NEIX · Cartera Comercial")
     k1, k2, k3, k4 = st.columns(4)
 
     with k1:
@@ -850,7 +850,6 @@ def render(back_to_home=None):
             unsafe_allow_html=True,
         )
 
-    st.markdown("## NEIX · Cartera Comercial")
 
     show = cartera_df.copy()
     show["%"] = pd.to_numeric(show["%"], errors="coerce").round(2)
