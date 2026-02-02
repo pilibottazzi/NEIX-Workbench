@@ -18,10 +18,6 @@ def go_home():
     st.rerun()
 
 def back_to_home_factory(tool_key: str):
-    """
-    Devuelve una función back_to_home() con key único por tool,
-    evitando StreamlitDuplicateElementId.
-    """
     def _back():
         if st.button("← Volver", key=f"btn_back_{tool_key}"):
             go_home()
@@ -35,59 +31,35 @@ def get_tool_param() -> str:
 
 
 # =========================================================
-# ESTÉTICA (si ya tenés general.css en /static, dejalo)
+# UI
 # =========================================================
 st.markdown(
     """
     <style>
-      .tool-grid{
-        display:flex;
-        gap:14px;
-        flex-wrap:wrap;
-        margin-top:10px;
-      }
+      .tool-grid{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;}
       .tool-btn{
-        display:inline-flex;
-        align-items:center;
-        justify-content:center;
-        padding:14px 18px;
-        border-radius:14px;
-        border:1px solid rgba(0,0,0,0.08);
-        background: white;
-        text-decoration:none !important;
-        font-weight:600;
-        color:#111827;
-        min-width: 240px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.04);
-        transition: transform .06s ease, box-shadow .06s ease;
+        display:inline-flex;align-items:center;justify-content:center;
+        padding:14px 18px;border-radius:14px;
+        border:1px solid rgba(0,0,0,0.08);background:white;
+        text-decoration:none !important;font-weight:600;color:#111827;
+        min-width:240px;box-shadow:0 2px 10px rgba(0,0,0,0.04);
+        transition:transform .06s ease, box-shadow .06s ease;
       }
-      .tool-btn:hover{
-        transform: translateY(-1px);
-        box-shadow: 0 6px 18px rgba(0,0,0,0.06);
-      }
-      .topbar{
-        display:flex; align-items:center; justify-content:space-between;
-        padding:10px 2px; margin-bottom:8px;
-      }
-      .brand{
-        display:flex; gap:10px; align-items:center;
-      }
+      .tool-btn:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(0,0,0,0.06);}
+      .topbar{display:flex;align-items:center;justify-content:space-between;padding:10px 2px;margin-bottom:8px;}
+      .brand{display:flex;gap:10px;align-items:center;}
       .logo{
-        width:40px; height:40px; border-radius:12px;
-        display:flex; align-items:center; justify-content:center;
-        font-weight:800; background:#111827; color:white;
+        width:40px;height:40px;border-radius:12px;
+        display:flex;align-items:center;justify-content:center;
+        font-weight:800;background:#111827;color:white;
       }
-      .muted{ color: rgba(17,24,39,0.65); margin-top:-6px; }
-      .section-title{ margin-top: 18px; }
+      .muted{color:rgba(17,24,39,0.65);margin-top:-6px;}
+      .section-title{margin-top:18px;}
     </style>
     """,
     unsafe_allow_html=True
 )
 
-
-# =========================================================
-# HEADER
-# =========================================================
 st.markdown(
     """
     <div class="topbar">
@@ -105,20 +77,13 @@ st.markdown(
 
 tool = get_tool_param()
 
-
-# =========================================================
-# ROUTER
-# =========================================================
 if tool:
-    # Ejecutar herramienta
     ok = run_tool(tool, back_to_home=back_to_home_factory(tool))
     if not ok:
-        st.error(f"No pude abrir la herramienta: '{tool}'. Revisá que exista el módulo y que tenga render().")
+        st.error(f"No pude abrir la herramienta: '{tool}'. Revisá registry.py y que el módulo tenga render().")
         if st.button("← Volver al inicio", key="btn_back_fallback"):
             go_home()
-
 else:
-    # HOME: mostrar tabs / secciones
     for section, items in TOOL_TABS.items():
         st.markdown(f"<h3 class='section-title'>{section}</h3>", unsafe_allow_html=True)
         html = ["<div class='tool-grid'>"]
@@ -126,4 +91,3 @@ else:
             html.append(f"<a class='tool-btn' href='?tool={it['id']}' target='_self'>{it['label']}</a>")
         html.append("</div>")
         st.markdown("\n".join(html), unsafe_allow_html=True)
-
