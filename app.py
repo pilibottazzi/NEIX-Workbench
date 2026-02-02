@@ -7,345 +7,242 @@ from tools.mesa import cartera, ons, vencimientos, bonos
 from tools.comerciales import cheques, cauciones_mae, cauciones_byma, alquileres
 from tools.backoffice import cauciones, control_sliq, moc_tarde, ppt_manana, acreditacion_mav
 
-st.set_page_config(
-    page_title="NEIX Workbench",
-    page_icon="🧰",
-    layout="wide"
+
+# =========================================================
+# CONFIG
+# =========================================================
+st.set_page_config(page_title="NEIX Workbench", page_icon="🧰", layout="wide")
+
+st.markdown(
+    """
+    <style>
+      /* ===== Layout general ===== */
+      .block-container{
+        padding-top: 1.6rem;
+        max-width: 1200px;
+      }
+
+      /* ===== Grid botones (tu estilo) ===== */
+      .tool-grid{
+        display:flex;
+        gap:14px;
+        flex-wrap:wrap;
+        margin-top:10px;
+      }
+
+      .tool-btn{
+        display:inline-flex;
+        align-items:center;
+        justify-content:center;
+
+        padding:14px 18px;
+        border-radius:14px;
+
+        border:1px solid rgba(0,0,0,0.08);
+        background:white;
+
+        text-decoration:none !important;
+        font-weight:600;
+        color:#111827;
+
+        min-width:220px;
+        box-shadow:0 2px 10px rgba(0,0,0,0.04);
+
+        transition: transform .06s ease, box-shadow .06s ease;
+      }
+
+      .tool-btn:hover{
+        transform: translateY(-1px);
+        box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+      }
+
+      /* ===== Textos ===== */
+      .top-note{
+        color:#6b7280;
+        font-size:0.92rem;
+      }
+
+      .back-link{
+        display:inline-block;
+        margin:10px 0 18px 0;
+        text-decoration:none;
+        font-weight:600;
+      }
+
+      /* ===== Header centrado (tu vibe) ===== */
+      .neix-title{
+        text-align:center;
+        font-weight:800;
+        letter-spacing: 0.08em;
+        margin: 0;
+        padding: 0;
+      }
+      .neix-caption{
+        text-align:center;
+        color:#6b7280;
+        margin-top: 6px;
+        margin-bottom: 10px;
+      }
+
+      /* ===== Tabs simples / prolijos ===== */
+      .stTabs [data-baseweb="tab-list"]{
+        gap:10px;
+        justify-content:center;
+      }
+      .stTabs [data-baseweb="tab"]{
+        border-radius:12px;
+        border:1px solid rgba(0,0,0,0.08);
+        height:44px;
+        padding: 0 14px;
+        background:#fff;
+        font-weight:600;
+      }
+      .stTabs [aria-selected="true"]{
+        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+      }
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
-# =========================
+
+# =========================================================
+# HELPERS NAV
+# =========================================================
+def go_home():
+    st.query_params.clear()
+    st.rerun()
+
+def back_to_home_factory(tool_key: str):
+    """
+    Devuelve una función back_to_home() con key único por tool,
+    evitando StreamlitDuplicateElementId.
+    """
+    def _back():
+        if st.button("← Volver", key=f"btn_back_{tool_key}"):
+            go_home()
+    return _back
+
+
+# =========================================================
 # ROUTER
-# =========================
-def run_tool(tool: str):
-    if tool == "cartera":
-        cartera.render()
-    elif tool == "ons":
-        ons.render()
-    elif tool == "bonos":
-        bonos.render()
-    elif tool == "vencimientos":
-        vencimientos.render()
-
-    elif tool == "cheques":
-        cheques.render()
-    elif tool == "cauciones_mae":
-        cauciones_mae.render()
-    elif tool == "cauciones_byma":
-        cauciones_byma.render()
-    elif tool == "alquileres":
-        alquileres.render()
-
-    elif tool == "cauciones":
-        cauciones.render()
-    elif tool == "control_sliq":
-        control_sliq.render()
-    elif tool == "moc_tarde":
-        moc_tarde.render()
-    elif tool == "ppt_manana":
-        ppt_manana.render()
-    elif tool == "acreditacion_mav":
-        acreditacion_mav.render()
-
-
-# =========================
-# SI ESTÁ EN UNA TOOL
-# =========================
-tool = st.query_params.get("tool")
+# =========================================================
+q = st.query_params
+tool = (q.get("tool") or "").strip().lower()
 
 if tool:
-    cols = st.columns([1,6,1])
-    with cols[0]:
-        if st.button("← Volver", use_container_width=True):
-            st.query_params.clear()
-            st.rerun()
+    st.markdown("<h2 class='neix-title'>N E I X &nbsp;&nbsp;Workbench</h2>", unsafe_allow_html=True)
+    st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
 
-    run_tool(tool)
+    back_to_home = back_to_home_factory(tool_key=tool)
+    back_to_home()
+
+    st.divider()
+
+    try:
+        if tool == "cartera":
+            cartera.render(back_to_home)
+
+        elif tool == "ons":
+            ons.render(back_to_home)
+
+        elif tool == "bonos":
+            bonos.render(back_to_home)
+
+        elif tool == "vencimientos":
+            vencimientos.render(back_to_home)
+
+        # Comerciales
+        elif tool == "cheques":
+            cheques.render(back_to_home)
+
+        elif tool in ("cauciones_mae", "cauciones-mae"):
+            cauciones_mae.render(back_to_home)
+
+        elif tool in ("cauciones_byma", "cauciones-byma"):
+            cauciones_byma.render(back_to_home)
+
+        elif tool == "alquileres":
+            alquileres.render(back_to_home)
+
+        # Backoffice
+        elif tool in ("bo_cauciones", "cauciones"):
+            cauciones.render(back_to_home)
+
+        elif tool in ("bo_control_sliq", "control_sliq"):
+            control_sliq.render(back_to_home)
+
+        elif tool in ("bo_moc_tarde", "moc_tarde"):
+            moc_tarde.render(back_to_home)
+
+        elif tool in ("bo_ppt_manana", "ppt_manana"):
+            ppt_manana.render(back_to_home)
+
+        elif tool in ("bo_acreditacion_mav", "acreditacion_mav"):
+            acreditacion_mav.render(back_to_home)
+
+        else:
+            st.error("Herramienta no encontrada.")
+            st.caption("Volvé a Home y verificá el link.")
+
+    except Exception as e:
+        st.error("Error cargando la herramienta.")
+        st.exception(e)
+
     st.stop()
 
 
-# =========================
-# CSS NEIX CORPORATE
-# =========================
-st.markdown("""
-<style>
-.block-container{
-  padding-top: 2.2rem;
-  padding-bottom: 2.8rem;
-  max-width: 1400px;
-}
+# =========================================================
+# HOME
+# =========================================================
+st.markdown("<h2 class='neix-title'>N E I X &nbsp;&nbsp;Workbench</h2>", unsafe_allow_html=True)
+st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
+st.divider()
 
-.neix-header{
-  text-align:center;
-  margin: 6px 0 18px 0;
-}
-.neix-title{
-  font-size: 46px;
-  font-weight: 850;
-  color: #0f172a;
-  letter-spacing: -0.03em;
-  line-height: 1.10;
-}
-.neix-subtitle{
-  font-size: 15px;
-  color: rgba(15, 23, 42, 0.62);
-  margin-top: 10px;
-}
+tabs = st.tabs(["Mesa", "Comercial", "Backoffice"])
 
-/* Tabs */
-.stTabs [data-baseweb="tab-list"]{
-  gap: 12px;
-  margin-top: 10px;
-}
-.stTabs [data-baseweb="tab"]{
-  height: 52px;
-  padding: 0 18px;
-  border-radius: 14px;
-  border: 1px solid rgba(15,23,42,0.12);
-  background: #ffffff;
-  font-size: 16px;
-  font-weight: 650;
-}
-.stTabs [aria-selected="true"]{
-  border-color: rgba(15,23,42,0.22);
-  box-shadow: 0 10px 26px rgba(15,23,42,0.08);
-}
+with tabs[0]:
+    st.subheader("Mesa")
+    st.caption("Elegí una herramienta")
+    st.markdown(
+        """
+        <div class="tool-grid">
+          <a class="tool-btn" href="?tool=bonos" target="_self">Bonos</a>
+          <a class="tool-btn" href="?tool=ons" target="_self">ON’s</a>
+          <a class="tool-btn" href="?tool=vencimientos" target="_self">Tenencias</a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-/* Panel */
-.neix-panel{
-  border: 1px solid rgba(15,23,42,0.08);
-  border-radius: 20px;
-  padding: 22px;
-  background: #ffffff;
-  box-shadow: 0 10px 28px rgba(15,23,42,0.05);
-  margin-top: 10px;
-}
+with tabs[1]:
+    st.subheader("Comercial")
+    st.caption("Elegí una herramienta")
+    st.markdown(
+        """
+        <div class="tool-grid">
+          <a class="tool-btn" href="?tool=cartera" target="_self">Carteras</a>
+          <a class="tool-btn" href="?tool=cheques" target="_self">Cheques</a>
+          <a class="tool-btn" href="?tool=cauciones_mae" target="_self">Cauciones MAE</a>
+          <a class="tool-btn" href="?tool=cauciones_byma" target="_self">Cauciones BYMA</a>
+          <a class="tool-btn" href="?tool=alquileres" target="_self">Alquileres</a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-.neix-section{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  margin-bottom: 16px;
-}
-.neix-section h3{
-  font-size: 18px;
-  font-weight: 750;
-  margin: 0;
-}
-.neix-section span{
-  font-size: 13px;
-  color: rgba(15,23,42,0.55);
-}
-
-/* Cards */
-.tool-grid{
-  display:grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.tool-card{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap: 14px;
-
-  padding: 18px;
-  border-radius: 16px;
-
-  border: 1px solid rgba(15,23,42,0.12);
-  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-  text-decoration: none !important;
-
-  color: #0f172a;
-  font-weight: 700;
-
-  box-shadow: 0 4px 16px rgba(15,23,42,0.06);
-  transition: transform .10s ease, box-shadow .10s ease;
-}
-.tool-card:hover{
-  transform: translateY(-2px);
-  box-shadow: 0 16px 34px rgba(15,23,42,0.10);
-}
-
-.tool-left{
-  display:flex;
-  flex-direction:column;
-}
-.tool-name{
-  font-size: 16px;
-}
-.tool-meta{
-  font-size: 13px;
-  color: rgba(15,23,42,0.58);
-  margin-top: 5px;
-}
-.tool-right{
-  font-size: 20px;
-  color: rgba(15,23,42,0.45);
-}
-</style>
-""", unsafe_allow_html=True)
-
-# =========================
-# HEADER
-# =========================
-st.markdown("""
-<div class="neix-header">
-  <div class="neix-title">NEIX Workbench</div>
-  <div class="neix-subtitle">Herramientas internas · Mesa · Comercial · Backoffice</div>
-</div>
-""", unsafe_allow_html=True)
-
-# =========================
-# TABS
-# =========================
-tab_mesa, tab_comercial, tab_backoffice = st.tabs(
-    ["Mesa", "Comercial", "Backoffice"]
-)
-
-# =========================
-# MESA
-# =========================
-with tab_mesa:
-    st.markdown("""
-    <div class="neix-panel">
-      <div class="neix-section">
-        <h3>Mesa / Trading</h3>
-        <span>Research · Pricing · Tenencias</span>
-      </div>
-      <div class="tool-grid">
-        <a class="tool-card" href="?tool=ons">
-          <div class="tool-left">
-            <div class="tool-name">ONs — Screener</div>
-            <div class="tool-meta">Curvas, TIR, duration, spreads</div>
-          </div>
-          <div class="tool-right">›</div>
-        </a>
-
-        <a class="tool-card" href="?tool=bonos">
-          <div class="tool-left">
-            <div class="tool-name">Bonos</div>
-            <div class="tool-meta">Pricing, métricas y comparables</div>
-          </div>
-          <div class="tool-right">›</div>
-        </a>
-
-        <a class="tool-card" href="?tool=vencimientos">
-          <div class="tool-left">
-            <div class="tool-name">Tenencias</div>
-            <div class="tool-meta">Vencimientos y composición</div>
-          </div>
-          <div class="tool-right">›</div>
-        </a>
-
-        <a class="tool-card" href="?tool=cartera">
-          <div class="tool-left">
-            <div class="tool-name">Carteras comerciales</div>
-            <div class="tool-meta">Seguimiento y resumen</div>
-          </div>
-          <div class="tool-right">›</div>
-        </a>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# =========================
-# COMERCIAL
-# =========================
-with tab_comercial:
-    st.markdown("""
-    <div class="neix-panel">
-      <div class="neix-section">
-        <h3>Comercial / Middle Office</h3>
-        <span>Controles · Garantías · Operativa</span>
-      </div>
-      <div class="tool-grid">
-        <a class="tool-card" href="?tool=cheques">
-          <div class="tool-left">
-            <div class="tool-name">Cheques y Pagarés</div>
-            <div class="tool-meta">Cruce, estado, alertas</div>
-          </div>
-          <div class="tool-right">›</div>
-        </a>
-
-        <a class="tool-card" href="?tool=cauciones_mae">
-          <div class="tool-left">
-            <div class="tool-name">Garantías MAE</div>
-            <div class="tool-meta">Aforos y validaciones</div>
-          </div>
-          <div class="tool-right">›</div>
-        </a>
-
-        <a class="tool-card" href="?tool=cauciones_byma">
-          <div class="tool-left">
-            <div class="tool-name">Garantías BYMA</div>
-            <div class="tool-meta">Validaciones y resumen</div>
-          </div>
-          <div class="tool-right">›</div>
-        </a>
-
-        <a class="tool-card" href="?tool=alquileres">
-          <div class="tool-left">
-            <div class="tool-name">Alquileres</div>
-            <div class="tool-meta">Control y seguimiento mensual</div>
-          </div>
-          <div class="tool-right">›</div>
-        </a>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# =========================
-# BACKOFFICE
-# =========================
-with tab_backoffice:
-    st.markdown("""
-    <div class="neix-panel">
-      <div class="neix-section">
-        <h3>Backoffice</h3>
-        <span>Procesos · Control · Reportes</span>
-      </div>
-      <div class="tool-grid">
-        <a class="tool-card" href="?tool=cauciones">
-          <div class="tool-left">
-            <div class="tool-name">Cauciones</div>
-            <div class="tool-meta">Control operativo</div>
-          </div>
-          <div class="tool-right">›</div>
-        </a>
-
-        <a class="tool-card" href="?tool=control_sliq">
-          <div class="tool-left">
-            <div class="tool-name">Control SLIQ</div>
-            <div class="tool-meta">Chequeos y validaciones</div>
-          </div>
-          <div class="tool-right">›</div>
-        </a>
-
-        <a class="tool-card" href="?tool=moc_tarde">
-          <div class="tool-left">
-            <div class="tool-name">MOC Tarde</div>
-            <div class="tool-meta">Papel de trabajo</div>
-          </div>
-          <div class="tool-right">›</div>
-        </a>
-
-        <a class="tool-card" href="?tool=ppt_manana">
-          <div class="tool-left">
-            <div class="tool-name">PPT Mañana</div>
-            <div class="tool-meta">Generación y control</div>
-          </div>
-          <div class="tool-right">›</div>
-        </a>
-
-        <a class="tool-card" href="?tool=acreditacion_mav">
-          <div class="tool-left">
-            <div class="tool-name">Acreditación MAV</div>
-            <div class="tool-meta">Monitoreo y estados</div>
-          </div>
-          <div class="tool-right">›</div>
-        </a>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
+with tabs[2]:
+    st.subheader("Backoffice")
+    st.caption("Elegí una herramienta")
+    st.markdown(
+        """
+        <div class="tool-grid">
+          <a class="tool-btn" href="?tool=bo_ppt_manana" target="_self">PPT Mañana</a>
+          <a class="tool-btn" href="?tool=bo_moc_tarde" target="_self">MOC Tarde</a>
+          <a class="tool-btn" href="?tool=bo_control_sliq" target="_self">Control SLIQ</a>
+          <a class="tool-btn" href="?tool=bo_acreditacion_mav" target="_self">Acreditación MAV</a>
+          <a class="tool-btn" href="?tool=bo_cauciones" target="_self">Cauciones</a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
