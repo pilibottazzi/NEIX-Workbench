@@ -337,7 +337,7 @@ def generate_moc_tarde(f_moc, f_mae, f_saldos, f_byma):
 
     # --- Excel output ---
     out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
         df_moc.to_excel(writer, sheet_name="MOC tarde", index=False)
         df_sal.to_excel(writer, sheet_name="SALDOS NEGATIVOS tarde", index=False)
 
@@ -417,7 +417,7 @@ def generate_ventas(f_moc, f_mae):
     df = pd.DataFrame(rows, columns=cols)
 
     out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="VENTAS", index=False)
         wb = writer.book
         fmt_acct = wb.add_format({"num_format": ACCT_FMT})
