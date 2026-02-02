@@ -216,7 +216,7 @@ def render(back_to_home=None):
 
         matched = int(match_mask.sum())
         total = int(len(df_all))
-        st.info(f"Cruce managers: **{matched} / {total}** filas matcheadas ({(matched/total*100):.1f}%). Si esto da bajo, el problema está en que esos comitentes no existen en managers_neix.xlsx o vienen con otro número.")
+        st.info(f"Cruce managers")
 
     # 4) filtros
     st.markdown("### Filtros (globales)")
