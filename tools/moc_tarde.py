@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 
 # ==========
-# IMPORTANTE: Igual al HTML
+# IGUAL AL HTML
 # ==========
 ACCT_FMT = '_-* #,##0_-;_-* (#,##0);_-* "-"??_-;_-@_-'
 
@@ -58,14 +58,16 @@ def to_num(v) -> float:
 
 
 # ---------------------------
-# Lectura de archivos
+# Lectura de archivos (robusta)
 # ---------------------------
 def read_any_to_df(uploaded_file) -> pd.DataFrame:
+    """
+    Lee CSV/XLSX/XLSM. Para XLS (viejo) NO usa xlrd (no lo queremos).
+    """
     name = (uploaded_file.name or "").lower()
 
     if name.endswith(".csv"):
         raw = uploaded_file.getvalue()
-        # intentar utf-8, sino latin1
         text = None
         for enc in ("utf-8", "latin1", "cp1252"):
             try:
@@ -93,8 +95,28 @@ def read_any_to_df(uploaded_file) -> pd.DataFrame:
 
         return pd.read_csv(io.StringIO(text), sep=sep, dtype=str)
 
-    # Excel
-    return pd.read_excel(uploaded_file, dtype=str)
+    # XLSX / XLSM
+    if name.endswith(".xlsx") or name.endswith(".xlsm"):
+        return pd.read_excel(uploaded_file, dtype=str, engine="openpyxl")
+
+    # XLS (viejo): NO soportamos en cloud sin librerías viejas -> fallback estilo "texto tabulado"
+    if name.endswith(".xls"):
+        raw = uploaded_file.getvalue()
+        # Intento "excel tabulado" (a veces funciona si el .xls viene exportado como texto)
+        for enc in ("latin1", "cp1252", "utf-8"):
+            try:
+                text = raw.decode(enc)
+                df = pd.read_csv(io.StringIO(text), sep="\t", dtype=str)
+                return df
+            except Exception:
+                continue
+        raise ValueError(
+            "Archivo .xls (Excel viejo) no soportado en este entorno sin librerías legacy.\n"
+            "Solución rápida: Abrilo y guardalo como .xlsx, y volvé a subirlo."
+        )
+
+    # fallback
+    return pd.read_excel(uploaded_file, dtype=str, engine="openpyxl")
 
 
 def detect_header_positions_aoa(aoa: list[list], sets: list[list[str]]):
@@ -126,13 +148,39 @@ def detect_header_positions_aoa(aoa: list[list], sets: list[list[str]]):
 
 
 def read_to_aoa(uploaded_file) -> list[list]:
+    """
+    Devuelve array-of-arrays como en el HTML (sheet_to_json header:1).
+    - CSV: usa read_any_to_df
+    - XLSX/XLSM: openpyxl
+    - XLS: intenta lectura tabulada; si no, pide convertir a XLSX
+    """
     name = (uploaded_file.name or "").lower()
+
     if name.endswith(".csv"):
         df = read_any_to_df(uploaded_file)
         return [df.columns.tolist()] + df.fillna("").values.tolist()
 
-    # excel: leer sin header para scanear
-    df0 = pd.read_excel(uploaded_file, header=None, dtype=str)
+    if name.endswith(".xlsx") or name.endswith(".xlsm"):
+        df0 = pd.read_excel(uploaded_file, header=None, dtype=str, engine="openpyxl")
+        df0 = df0.fillna("")
+        return df0.values.tolist()
+
+    if name.endswith(".xls"):
+        raw = uploaded_file.getvalue()
+        # Intento estilo "texto tabulado" (similar a cómo lo tolera SheetJS en algunos exports)
+        for enc in ("latin1", "cp1252", "utf-8"):
+            try:
+                text = raw.decode(enc)
+                df = pd.read_csv(io.StringIO(text), sep="\t", dtype=str)
+                df = df.fillna("")
+                return [df.columns.tolist()] + df.values.tolist()
+            except Exception:
+                continue
+        raise ValueError(
+            "Este archivo es .xls (Excel viejo). Guardalo como .xlsx (Guardar como) y volvé a subirlo."
+        )
+
+    df0 = pd.read_excel(uploaded_file, header=None, dtype=str, engine="openpyxl")
     df0 = df0.fillna("")
     return df0.values.tolist()
 
@@ -190,10 +238,10 @@ def build_mae_map(aoa_mae: list[list]) -> dict:
 
 
 # ---------------------------
-# Generadores (IGUAL HTML)
+# Generadores (igual HTML: fórmulas en Excel)
 # ---------------------------
 def generate_moc_tarde(f_moc, f_mae, f_saldos, f_byma):
-    # === MAE (opcional) ===
+    # MAE (opcional)
     mae_map = {}
     has_mae = False
     if f_mae is not None:
@@ -232,10 +280,7 @@ def generate_moc_tarde(f_moc, f_mae, f_saldos, f_byma):
 
     df_moc = pd.DataFrame(moc_rows, columns=moc_cols)
 
-    # Alinear tipos numéricos (igual HTML: contable en Excel, pero guardamos valores numéricos en celdas)
-    df_moc["COMITENTE"] = df_moc["COMITENTE"].apply(lambda x: int(to_num(x)) if str(x).strip() != "" else "")
-    df_moc["CODIGO"] = df_moc["CODIGO"].apply(lambda x: str(x).strip())
-
+    # limpiar y castear numéricos
     df_moc["COMPRAS"] = df_moc["COMPRAS"].apply(to_num)
     df_moc["VENTAS"] = df_moc["VENTAS"].apply(to_num)
     if has_mae:
@@ -276,9 +321,6 @@ def generate_moc_tarde(f_moc, f_mae, f_saldos, f_byma):
         saldo = to_num(base[i_saldo_s] if i_saldo_s < len(base) else 0)
         byma = byma_map.get(f"{cte}||{cod}", 0.0)
         otros = mae_map.get(f"{cte}||{cod}", 0.0) if has_mae else 0.0
-
-        # Igual HTML: TOTAL y Observación van como fórmula en Excel.
-        # Acá guardamos valores base; luego en Excel escribimos fórmulas.
         rows.append([cte, cod, neto, cant, saldo, byma, otros, None, None])
 
     df_sal = pd.DataFrame(
@@ -289,12 +331,11 @@ def generate_moc_tarde(f_moc, f_mae, f_saldos, f_byma):
         ]
     )
 
-    # Igual HTML: ordena por TOTAL numérico, pero en HTML el sort se hace antes de poner fórmulas.
-    # Acá lo replicamos con el mismo criterio: saldo + byma + otros
+    # igual HTML: ordenar por saldo+byma+otros antes de fórmulas
     df_sal["_SORT_TOTAL"] = df_sal["SALDO NEGATIVOS"] + df_sal["Garantías BYMA (Total)"] + df_sal["OTROS"]
     df_sal = df_sal.sort_values("_SORT_TOTAL", ascending=True).drop(columns=["_SORT_TOTAL"]).reset_index(drop=True)
 
-    # --- Excel output (xlsxwriter) ---
+    # --- Excel output ---
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
         df_moc.to_excel(writer, sheet_name="MOC tarde", index=False)
@@ -302,18 +343,15 @@ def generate_moc_tarde(f_moc, f_mae, f_saldos, f_byma):
 
         workbook = writer.book
         fmt_acct = workbook.add_format({"num_format": ACCT_FMT})
-        fmt_int0 = workbook.add_format({"num_format": "0"})  # enteros simples (comitente/codigo si aplica)
+        fmt_int0 = workbook.add_format({"num_format": "0"})
 
-        # ===== Sheet 1: MOC tarde =====
+        # Sheet MOC
         ws1 = writer.sheets["MOC tarde"]
-        ws1.set_column("A:A", 12, fmt_int0)  # COMITENTE
-        ws1.set_column("B:B", 12)            # CODIGO (texto)
-        # columnas contables
+        ws1.set_column("A:A", 12, fmt_int0)  # comitente
+        ws1.set_column("B:B", 12)            # codigo (texto)
         if has_mae:
-            ws1.set_column("C:E", 16, fmt_acct)  # compras, ventas, mae
-            ws1.set_column("F:F", 16, fmt_acct)  # neto
-            # escribir fórmula de NETO (igual HTML)
-            # fila Excel = i+2 (porque header en fila 1)
+            ws1.set_column("C:E", 16, fmt_acct)
+            ws1.set_column("F:F", 16, fmt_acct)
             for i in range(len(df_moc)):
                 excel_row = i + 2
                 ws1.write_formula(i + 1, 5, f"=C{excel_row}+D{excel_row}+E{excel_row}", fmt_acct)
@@ -324,25 +362,18 @@ def generate_moc_tarde(f_moc, f_mae, f_saldos, f_byma):
                 excel_row = i + 2
                 ws1.write_formula(i + 1, 4, f"=C{excel_row}+D{excel_row}", fmt_acct)
 
-        # ===== Sheet 2: SALDOS NEGATIVOS tarde =====
+        # Sheet SALDOS
         ws2 = writer.sheets["SALDOS NEGATIVOS tarde"]
-        ws2.set_column("A:A", 12, fmt_int0)  # comitente
-        ws2.set_column("B:B", 12)            # codigo
-        ws2.set_column("C:H", 18, fmt_acct)  # NETO..OTROS
-        ws2.set_column("I:I", 14)            # Observación
+        ws2.set_column("A:A", 12, fmt_int0)
+        ws2.set_column("B:B", 12)
+        ws2.set_column("C:H", 18, fmt_acct)
+        ws2.set_column("I:I", 14)
 
-        # Column indexes (0-based) según df_sal
-        COL = {
-            "COM": 0, "COD": 1, "NETO": 2, "CANT": 3, "SALDO": 4,
-            "BYMA": 5, "OTROS": 6, "TOTAL": 7, "OBS": 8
-        }
-
+        # TOTAL en col H (index 7) / OBS en col I (index 8)
         for i in range(len(df_sal)):
             excel_row = i + 2
-            # TOTAL = SALDO + BYMA + OTROS (igual HTML)
-            ws2.write_formula(i + 1, COL["TOTAL"], f"=E{excel_row}+F{excel_row}+G{excel_row}", fmt_acct)
-            # Observación = IF(TOTAL>=0,"OK","REVISAR") (igual HTML)
-            ws2.write_formula(i + 1, COL["OBS"], f'=IF(H{excel_row}>=0,"OK","REVISAR")')
+            ws2.write_formula(i + 1, 7, f"=E{excel_row}+F{excel_row}+G{excel_row}", fmt_acct)
+            ws2.write_formula(i + 1, 8, f'=IF(H{excel_row}>=0,"OK","REVISAR")')
 
     out.seek(0)
     return out.getvalue(), has_mae
@@ -393,17 +424,15 @@ def generate_ventas(f_moc, f_mae):
         fmt_int0 = wb.add_format({"num_format": "0"})
         ws = writer.sheets["VENTAS"]
 
-        ws.set_column("A:A", 12, fmt_int0)  # comitente
-        ws.set_column("B:B", 12)            # codigo
+        ws.set_column("A:A", 12, fmt_int0)
+        ws.set_column("B:B", 12)
         if has_mae:
             ws.set_column("C:E", 18, fmt_acct)
-            # NETO = VENTAS + MAE (igual HTML)
             for i in range(len(df)):
                 excel_row = i + 2
                 ws.write_formula(i + 1, 4, f"=C{excel_row}+D{excel_row}", fmt_acct)
         else:
             ws.set_column("C:D", 18, fmt_acct)
-            # NETO = VENTAS (igual HTML)
             for i in range(len(df)):
                 excel_row = i + 2
                 ws.write_formula(i + 1, 3, f"=C{excel_row}", fmt_acct)
@@ -413,13 +442,15 @@ def generate_ventas(f_moc, f_mae):
 
 
 # ---------------------------
-# Render (tool) - UI equivalente
+# Render (tool)
 # ---------------------------
 def render(back_to_home=None):
-    st.markdown("## MOC TARDE")
+    st.markdown("## 🌙 MOC TARDE")
     st.caption("Genera el Excel de MOC tarde + Saldos Negativos tarde, y un export de Ventas.")
 
-    # Igual HTML: 4 inputs
+    if back_to_home is not None:
+        st.button("← Volver", on_click=back_to_home)
+
     c1, c2 = st.columns(2)
     f_moc = c1.file_uploader("MOC Dashboard", type=["xlsx","xls","csv"], key="moc_file")
     f_mae = c2.file_uploader("MOC MAE GALLO (opcional)", type=["csv"], key="mae_file")
@@ -438,7 +469,6 @@ def render(back_to_home=None):
                 st.error("Faltan archivos: cargá MOC, Saldos Negativos y Lista BYMA. (MAE es opcional)")
             else:
                 try:
-                    # Logs equivalentes al HTML
                     if f_mae is None:
                         st.warning("MOC MAE no adjuntado: se continúa SIN MAE (sin merge).")
                     with st.spinner("Procesando..."):
@@ -480,4 +510,3 @@ def render(back_to_home=None):
                 except Exception as e:
                     st.error("Error generando VENTAS.")
                     st.exception(e)
-
