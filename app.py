@@ -48,141 +48,147 @@ def run_tool(tool: str):
 
 
 # =========================
-# HOME (estética NEIX minimal / corporate + tabs por área)
+# SI ESTÁ EN UNA TOOL
 # =========================
 tool = st.query_params.get("tool")
 
 if tool:
-    top = st.columns([1, 6, 1])
-    with top[0]:
+    cols = st.columns([1,6,1])
+    with cols[0]:
         if st.button("← Volver", use_container_width=True):
             st.query_params.clear()
             st.rerun()
+
     run_tool(tool)
     st.stop()
 
+
+# =========================
+# CSS NEIX CORPORATE
+# =========================
 st.markdown("""
 <style>
-/* ---- Layout general ---- */
-.block-container { padding-top: 1.2rem; padding-bottom: 2.5rem; max-width: 1180px; }
-h1, h2, h3, h4 { letter-spacing: -0.02em; }
+.block-container{
+  padding-top: 2.2rem;
+  padding-bottom: 2.8rem;
+  max-width: 1400px;
+}
 
-/* ---- Header centrado ---- */
 .neix-header{
   text-align:center;
   margin: 6px 0 18px 0;
 }
 .neix-title{
-  font-size: 36px;
-  font-weight: 800;
+  font-size: 46px;
+  font-weight: 850;
   color: #0f172a;
-  margin-bottom: 4px;
+  letter-spacing: -0.03em;
+  line-height: 1.10;
 }
 .neix-subtitle{
-  font-size: 14px;
-  color: rgba(15, 23, 42, 0.65);
-  margin-top: 0px;
+  font-size: 15px;
+  color: rgba(15, 23, 42, 0.62);
+  margin-top: 10px;
 }
 
-/* ---- Card contenedor de cada tab ---- */
+/* Tabs */
+.stTabs [data-baseweb="tab-list"]{
+  gap: 12px;
+  margin-top: 10px;
+}
+.stTabs [data-baseweb="tab"]{
+  height: 52px;
+  padding: 0 18px;
+  border-radius: 14px;
+  border: 1px solid rgba(15,23,42,0.12);
+  background: #ffffff;
+  font-size: 16px;
+  font-weight: 650;
+}
+.stTabs [aria-selected="true"]{
+  border-color: rgba(15,23,42,0.22);
+  box-shadow: 0 10px 26px rgba(15,23,42,0.08);
+}
+
+/* Panel */
 .neix-panel{
   border: 1px solid rgba(15,23,42,0.08);
-  border-radius: 18px;
-  padding: 18px 18px 8px 18px;
+  border-radius: 20px;
+  padding: 22px;
   background: #ffffff;
-  box-shadow: 0 6px 20px rgba(15,23,42,0.04);
+  box-shadow: 0 10px 28px rgba(15,23,42,0.05);
+  margin-top: 10px;
 }
 
-/* ---- Título de sección dentro del panel ---- */
 .neix-section{
   display:flex;
   align-items:center;
   justify-content:space-between;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
 .neix-section h3{
-  font-size: 16px;
-  font-weight: 700;
-  color: #0f172a;
+  font-size: 18px;
+  font-weight: 750;
   margin: 0;
 }
 .neix-section span{
-  font-size: 12px;
+  font-size: 13px;
   color: rgba(15,23,42,0.55);
 }
 
-/* ---- Grid de tools ---- */
+/* Cards */
 .tool-grid{
   display:grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin: 12px 0 6px 0;
-}
-@media (max-width: 900px){
-  .tool-grid{ grid-template-columns: 1fr; }
+  gap: 14px;
 }
 
-/* ---- Botón-card ---- */
 .tool-card{
   display:flex;
   align-items:center;
   justify-content:space-between;
-  gap: 12px;
+  gap: 14px;
 
-  padding: 14px 16px;
-  border-radius: 14px;
+  padding: 18px;
+  border-radius: 16px;
 
-  border: 1px solid rgba(15,23,42,0.10);
+  border: 1px solid rgba(15,23,42,0.12);
   background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
   text-decoration: none !important;
 
   color: #0f172a;
-  font-weight: 650;
+  font-weight: 700;
 
-  box-shadow: 0 2px 10px rgba(15,23,42,0.04);
-  transition: transform .08s ease, box-shadow .08s ease, border-color .08s ease;
+  box-shadow: 0 4px 16px rgba(15,23,42,0.06);
+  transition: transform .10s ease, box-shadow .10s ease;
 }
 .tool-card:hover{
-  transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(15,23,42,0.08);
-  border-color: rgba(15,23,42,0.18);
+  transform: translateY(-2px);
+  box-shadow: 0 16px 34px rgba(15,23,42,0.10);
 }
 
-/* ---- Texto secundario dentro de la card ---- */
-.tool-meta{
-  font-size: 12px;
-  font-weight: 500;
-  color: rgba(15,23,42,0.55);
-  margin-top: 2px;
-}
 .tool-left{
   display:flex;
   flex-direction:column;
-  line-height: 1.1;
+}
+.tool-name{
+  font-size: 16px;
+}
+.tool-meta{
+  font-size: 13px;
+  color: rgba(15,23,42,0.58);
+  margin-top: 5px;
 }
 .tool-right{
-  font-size: 16px;
+  font-size: 20px;
   color: rgba(15,23,42,0.45);
-}
-
-/* ---- Ajuste tabs Streamlit ---- */
-.stTabs [data-baseweb="tab-list"]{
-  gap: 10px;
-}
-.stTabs [data-baseweb="tab"]{
-  height: 44px;
-  padding: 0 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(15,23,42,0.10);
-  background: #ffffff;
-}
-.stTabs [aria-selected="true"]{
-  border-color: rgba(15,23,42,0.22);
-  box-shadow: 0 6px 16px rgba(15,23,42,0.06);
 }
 </style>
 """, unsafe_allow_html=True)
 
+# =========================
+# HEADER
+# =========================
 st.markdown("""
 <div class="neix-header">
   <div class="neix-title">NEIX Workbench</div>
@@ -190,8 +196,16 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-tab_mesa, tab_comercial, tab_backoffice = st.tabs(["Mesa", "Comercial", "Backoffice"])
+# =========================
+# TABS
+# =========================
+tab_mesa, tab_comercial, tab_backoffice = st.tabs(
+    ["Mesa", "Comercial", "Backoffice"]
+)
 
+# =========================
+# MESA
+# =========================
 with tab_mesa:
     st.markdown("""
     <div class="neix-panel">
@@ -202,28 +216,31 @@ with tab_mesa:
       <div class="tool-grid">
         <a class="tool-card" href="?tool=ons">
           <div class="tool-left">
-            ONs — Screener
+            <div class="tool-name">ONs — Screener</div>
             <div class="tool-meta">Curvas, TIR, duration, spreads</div>
           </div>
           <div class="tool-right">›</div>
         </a>
+
         <a class="tool-card" href="?tool=bonos">
           <div class="tool-left">
-            Bonos
+            <div class="tool-name">Bonos</div>
             <div class="tool-meta">Pricing, métricas y comparables</div>
           </div>
           <div class="tool-right">›</div>
         </a>
+
         <a class="tool-card" href="?tool=vencimientos">
           <div class="tool-left">
-            Tenencias
+            <div class="tool-name">Tenencias</div>
             <div class="tool-meta">Vencimientos y composición</div>
           </div>
           <div class="tool-right">›</div>
         </a>
+
         <a class="tool-card" href="?tool=cartera">
           <div class="tool-left">
-            Carteras comerciales
+            <div class="tool-name">Carteras comerciales</div>
             <div class="tool-meta">Seguimiento y resumen</div>
           </div>
           <div class="tool-right">›</div>
@@ -232,6 +249,9 @@ with tab_mesa:
     </div>
     """, unsafe_allow_html=True)
 
+# =========================
+# COMERCIAL
+# =========================
 with tab_comercial:
     st.markdown("""
     <div class="neix-panel">
@@ -242,28 +262,31 @@ with tab_comercial:
       <div class="tool-grid">
         <a class="tool-card" href="?tool=cheques">
           <div class="tool-left">
-            Cheques y Pagarés
+            <div class="tool-name">Cheques y Pagarés</div>
             <div class="tool-meta">Cruce, estado, alertas</div>
           </div>
           <div class="tool-right">›</div>
         </a>
+
         <a class="tool-card" href="?tool=cauciones_mae">
           <div class="tool-left">
-            Garantías MAE
-            <div class="tool-meta">Aforos, elegibles, inconsistencias</div>
+            <div class="tool-name">Garantías MAE</div>
+            <div class="tool-meta">Aforos y validaciones</div>
           </div>
           <div class="tool-right">›</div>
         </a>
+
         <a class="tool-card" href="?tool=cauciones_byma">
           <div class="tool-left">
-            Garantías BYMA
-            <div class="tool-meta">Validaciones, cortes y resumen</div>
+            <div class="tool-name">Garantías BYMA</div>
+            <div class="tool-meta">Validaciones y resumen</div>
           </div>
           <div class="tool-right">›</div>
         </a>
+
         <a class="tool-card" href="?tool=alquileres">
           <div class="tool-left">
-            Alquileres
+            <div class="tool-name">Alquileres</div>
             <div class="tool-meta">Control y seguimiento mensual</div>
           </div>
           <div class="tool-right">›</div>
@@ -272,6 +295,9 @@ with tab_comercial:
     </div>
     """, unsafe_allow_html=True)
 
+# =========================
+# BACKOFFICE
+# =========================
 with tab_backoffice:
     st.markdown("""
     <div class="neix-panel">
@@ -282,35 +308,39 @@ with tab_backoffice:
       <div class="tool-grid">
         <a class="tool-card" href="?tool=cauciones">
           <div class="tool-left">
-            Cauciones
-            <div class="tool-meta">Control operativo y conciliación</div>
+            <div class="tool-name">Cauciones</div>
+            <div class="tool-meta">Control operativo</div>
           </div>
           <div class="tool-right">›</div>
         </a>
+
         <a class="tool-card" href="?tool=control_sliq">
           <div class="tool-left">
-            Control SLIQ
+            <div class="tool-name">Control SLIQ</div>
             <div class="tool-meta">Chequeos y validaciones</div>
           </div>
           <div class="tool-right">›</div>
         </a>
+
         <a class="tool-card" href="?tool=moc_tarde">
           <div class="tool-left">
-            MOC Tarde
+            <div class="tool-name">MOC Tarde</div>
             <div class="tool-meta">Papel de trabajo</div>
           </div>
           <div class="tool-right">›</div>
         </a>
+
         <a class="tool-card" href="?tool=ppt_manana">
           <div class="tool-left">
-            PPT Mañana
+            <div class="tool-name">PPT Mañana</div>
             <div class="tool-meta">Generación y control</div>
           </div>
           <div class="tool-right">›</div>
         </a>
+
         <a class="tool-card" href="?tool=acreditacion_mav">
           <div class="tool-left">
-            Acreditación MAV
+            <div class="tool-name">Acreditación MAV</div>
             <div class="tool-meta">Monitoreo y estados</div>
           </div>
           <div class="tool-right">›</div>
@@ -318,5 +348,4 @@ with tab_backoffice:
       </div>
     </div>
     """, unsafe_allow_html=True)
-
 
