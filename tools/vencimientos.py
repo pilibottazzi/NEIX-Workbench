@@ -152,11 +152,8 @@ def _to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
 # UI
 # =========================
 def render(back_to_home=None):
-    st.markdown("## Vencimientos / TXT (por Activo)")
+    st.markdown("## Tenencias")
     st.caption("RUTA DE GALLO: BURSATIL -> CONSULTAS -> CONSULTAS DE TENENCIAS -> TENENCIAS -> POR ESPECIE")
-
-    if back_to_home is not None:
-        st.button("← Volver", on_click=back_to_home)
 
     # 1) managers obligatorio
     try:
