@@ -1,4 +1,3 @@
-# tools/registry.py
 import importlib
 
 # -------------------------
@@ -18,16 +17,16 @@ TOOL_TABS = {
         {"id": "alquileres", "label": "Alquileres"},
     ],
     "Backoffice": [
-        {"id": "bo_moc_tarde", "label": "MOC Tarde"},
-        {"id": "bo_control_sliq", "label": "Control SLIQ"},
-        {"id": "bo_ppt_manana", "label": "PPT Mañana"},
-        # {"id": "bo_acreditacion_mav", "label": "Acreditación MAV"},
-        {"id": "bo_cauciones", "label": "Cauciones (Backoffice)"},
+        {"id": "cauciones", "label": "Cauciones"},
+        {"id": "control_sliq", "label": "Control SLIQ"},
+        {"id": "moc_tarde", "label": "MOC Tarde"},
+        {"id": "ppt_manana", "label": "PPT Mañana"},
+        {"id": "acreditacion_mav", "label": "Acreditación MAV"},
     ],
 }
 
 # -------------------------
-# Mapa REAL de módulos (por tu nueva estructura)
+# Mapa tool_id -> módulo real
 # -------------------------
 TOOL_MODULES = {
     # Mesa
@@ -36,31 +35,24 @@ TOOL_MODULES = {
     "bonos": "tools.mesa.bonos",
     "vencimientos": "tools.mesa.vencimientos",
 
-    # Comerciales / Middle
+    # Comerciales
     "cheques": "tools.comerciales.cheques",
     "cauciones_mae": "tools.comerciales.cauciones_mae",
-    "cauciones-mae": "tools.comerciales.cauciones_mae",
     "cauciones_byma": "tools.comerciales.cauciones_byma",
-    "cauciones-byma": "tools.comerciales.cauciones_byma",
     "alquileres": "tools.comerciales.alquileres",
 
     # Backoffice
-    "bo_moc_tarde": "tools.backoffice.moc_tarde",
-    "bo_control_sliq": "tools.backoffice.control_sliq",
-    "bo_ppt_manana": "tools.backoffice.ppt_manana",
-    "bo_acreditacion_mav": "tools.backoffice.acreditacion_mav",
-    "bo_cauciones": "tools.backoffice.cauciones",
+    "cauciones": "tools.backoffice.cauciones",
+    "control_sliq": "tools.backoffice.control_sliq",
+    "moc_tarde": "tools.backoffice.moc_tarde",
+    "ppt_manana": "tools.backoffice.ppt_manana",
+    "acreditacion_mav": "tools.backoffice.acreditacion_mav",
 }
 
 # -------------------------
 # Router
 # -------------------------
 def run_tool(tool_id: str, back_to_home=None) -> bool:
-    """
-    Carga el módulo correcto y ejecuta render().
-    - Si render acepta back_to_home => render(back_to_home)
-    - Si no => render()
-    """
     module_name = TOOL_MODULES.get(tool_id)
     if not module_name:
         return False
@@ -74,14 +66,13 @@ def run_tool(tool_id: str, back_to_home=None) -> bool:
     if not callable(render_fn):
         return False
 
-    # Llamada tolerante a firmas distintas
+    # tolerante a firmas distintas
     try:
         if back_to_home is None:
             render_fn()
         else:
-            render_fn(back_to_home)
+            render_fn(lambda: back_to_home(tool_id))
     except TypeError:
         render_fn()
 
     return True
-
