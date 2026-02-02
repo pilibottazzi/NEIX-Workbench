@@ -249,21 +249,6 @@ def render(back_to_home=None):
     if "Oficial" in df_f.columns and "Todos" not in oficiales_sel:
         df_f = df_f[df_f["Oficial"].astype(str).isin(oficiales_sel)]
 
-    # 5) resumen
-    st.markdown("### Resumen")
-    cols_sum = [c for c in ["Saldo Tesoro", "Saldo Caja Val.", "Ob"] if c in df_f.columns]
-    if cols_sum:
-        st.markdown("**Por Activo**")
-        st.dataframe(df_f.groupby("Activo", as_index=False)[cols_sum].sum(numeric_only=True), use_container_width=True, hide_index=True)
-
-        if "Manager" in df_f.columns:
-            st.markdown("**Por Manager**")
-            st.dataframe(
-                df_f.groupby("Manager", as_index=False)[cols_sum].sum(numeric_only=True).sort_values(cols_sum[0], ascending=False),
-                use_container_width=True, hide_index=True
-            )
-    else:
-        st.warning("No encontré columnas numéricas para resumir (Saldo Tesoro / Saldo Caja Val. / Ob).")
 
     # 6) tablas por activo
     st.markdown("### Tablas por Activo")
@@ -298,15 +283,3 @@ def render(back_to_home=None):
     cols_show_all = [c for c in prefer_all if c in df_f.columns] + [c for c in df_f.columns if c not in prefer_all]
     st.dataframe(df_f[cols_show_all], use_container_width=True, hide_index=True)
 
-    # 7) export
-    st.markdown("### Exportar")
-    sheets = {"Consolidado": df_f}
-    for activo, df in dfs_por_activo.items():
-        sheets[activo] = df
-
-    st.download_button(
-        "📥 Descargar Excel",
-        data=_to_excel_bytes(sheets),
-        file_name="vencimientos_por_activo.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
