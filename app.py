@@ -1,173 +1,110 @@
 # app.py
 import streamlit as st
 
-# ==========================
-# IMPORTS POR ÁREA (nuevo)
-# ==========================
-from tools.mesa import cartera, ons, vencimientos, bonos
-from tools.backoffice import (
-    moc_tarde,
-    ppt_manana,
-    acreditacion_mav,
-    control_sliq,
-    cauciones as bo_cauciones,
-)
-from tools.comerciales import (
-    alquileres,
-    cheques,
-    cauciones_mae,
-    cauciones_byma,
+# Router / registro de herramientas
+from tools.registry import TOOL_TABS, run_tool
+
+
+# =========================
+# Config general
+# =========================
+st.set_page_config(
+    page_title="NEIX Workbench",
+    page_icon="🧰",
+    layout="wide"
 )
 
-# =========================================================
-# CONFIG
-# =========================================================
-st.set_page_config(page_title="NEIX Workbench", page_icon="🧰", layout="wide")
-
+# =========================
+# CSS NEIX (minimal)
+# =========================
 st.markdown(
     """
     <style>
-      .tool-grid{ display:flex; gap:14px; flex-wrap:wrap; margin-top:8px; }
-      .tool-btn{
-        display:inline-flex; align-items:center; justify-content:center;
-        padding:14px 18px; border-radius:14px;
-        border:1px solid rgba(0,0,0,0.08);
-        background:white; text-decoration:none !important;
-        font-weight:600; color:#111827; min-width:220px;
-        box-shadow:0 2px 10px rgba(0,0,0,0.04);
-        transition: transform .06s ease, box-shadow .06s ease;
+      .topbar{
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        padding: 10px 6px 2px 6px;
       }
-      .tool-btn:hover{ transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0,0,0,0.08); }
-      .top-note{ color:#6b7280; font-size:0.92rem; }
-      .back-link{ display:inline-block; margin:10px 0 18px 0; text-decoration:none; font-weight:600; }
+      .brand{
+        display:flex;
+        gap:10px;
+        align-items:center;
+      }
+      .logo{
+        width:40px;height:40px;border-radius:12px;
+        display:flex;align-items:center;justify-content:center;
+        font-weight:800;background:#111827;color:#fff;
+        box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+      }
+      .subtitle{color:#6b7280;margin-top:-6px}
+      .tool-grid{
+        display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;
+      }
+      .tool-btn{
+        display:inline-flex;align-items:center;justify-content:center;
+        padding:14px 18px;border-radius:14px;border:1px solid rgba(0,0,0,0.08);
+        background:#fff;text-decoration:none !important;font-weight:650;color:#111827;
+        min-width:220px;box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+        transition: transform .06s ease, box-shadow .06s ease;
+        cursor:pointer;
+      }
+      .tool-btn:hover{
+        transform: translateY(-1px);
+        box-shadow: 0 10px 28px rgba(0,0,0,0.10);
+      }
+      .card{
+        background:#fff;border:1px solid rgba(0,0,0,0.06);
+        border-radius:18px;padding:16px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+      }
+      .muted{color:#6b7280}
+      .hr{height:1px;background:rgba(0,0,0,0.06);margin:12px 0}
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# =========================================================
-# HELPERS NAV
-# =========================================================
-def go_home():
-    st.query_params.clear()
-    st.rerun()
+# =========================
+# Sidebar: selector de tool
+# =========================
+st.sidebar.markdown("### 🧰 NEIX Workbench")
+tab_names = list(TOOL_TABS.keys())
 
-def back_to_home_factory(tool_key: str):
-    def _back():
-        if st.button("← Volver", key=f"btn_back_{tool_key}"):
-            go_home()
-    return _back
+default_tab = tab_names[0] if tab_names else None
+selected_tab = st.sidebar.selectbox("Área", tab_names, index=0 if default_tab else None)
 
-def get_tool_param() -> str:
-    raw = st.query_params.get("tool", "")
-    if isinstance(raw, list):
-        raw = raw[0] if raw else ""
-    return str(raw).strip().lower()
+tool_names = TOOL_TABS.get(selected_tab, [])
+selected_tool = st.sidebar.selectbox("Herramienta", tool_names, index=0 if tool_names else None)
 
-# =========================================================
-# REGISTRO DE HERRAMIENTAS
-# =========================================================
-TOOL_REGISTRY = {
-    # Mesa
-    "cartera": cartera.render,
-    "bonos": bonos.render,
-    "ons": ons.render,
-    "vencimientos": vencimientos.render,
+st.sidebar.markdown("---")
+st.sidebar.caption("NEIX • Workbench")
 
-    # Backoffice
-    "bo_ppt_manana": ppt_manana.render,
-    "bo_moc_tarde": moc_tarde.render,
-    "bo_control_sliq": control_sliq.render,
-    "bo_acreditacion_mav": acreditacion_mav.render,
-    "bo_cauciones": bo_cauciones.render,
-
-    # Comerciales
-    "cheques": cheques.render,
-    "cauciones_mae": cauciones_mae.render,
-    "cauciones-mae": cauciones_mae.render,
-    "cauciones_byma": cauciones_byma.render,
-    "cauciones-byma": cauciones_byma.render,
-    "alquileres": alquileres.render,
-}
-
-# =========================================================
-# ROUTER
-# =========================================================
-tool = get_tool_param()
-
-if tool:
-    st.markdown("<h2 style='text-align:center;'>N E I X &nbsp;&nbsp;Workbench</h2>", unsafe_allow_html=True)
-
-    back_to_home = back_to_home_factory(tool_key=tool)
-    back_to_home()
-    st.divider()
-
-    render_fn = TOOL_REGISTRY.get(tool)
-
-    if render_fn is None:
-        st.error("Herramienta no encontrada.")
-        st.caption("Volvé a Home y verificá el link.")
-        st.stop()
-
-    try:
-        render_fn(back_to_home)
-    except Exception as e:
-        st.error("Error cargando la herramienta.")
-        st.exception(e)
-
-    st.stop()
-
-# =========================================================
-# HOME
-# =========================================================
-st.markdown("<h2 style='text-align:center;'>N E I X &nbsp;&nbsp;Workbench</h2>", unsafe_allow_html=True)
-st.caption("Navegación por áreas y proyectos")
-st.divider()
-
-tabs = st.tabs(["Mesa", "Backoffice", "Comerciales"])
-
-with tabs[0]:
-    st.subheader("Mesa")
-    st.caption("Elegí una herramienta")
-    st.markdown(
-        """
-        <div class="tool-grid">
-          <a class="tool-btn" href="?tool=cartera" target="_self">Carteras comerciales</a>
-          <a class="tool-btn" href="?tool=bonos" target="_self">Bonos</a>
-          <a class="tool-btn" href="?tool=ons" target="_self">Obligaciones negociables</a>
-          <a class="tool-btn" href="?tool=vencimientos" target="_self">Vencimientos / Tenencias</a>
+# =========================
+# Header
+# =========================
+st.markdown(
+    """
+    <div class="topbar">
+      <div class="brand">
+        <div class="logo">N</div>
+        <div>
+          <h2 style="margin:0">NEIX Workbench</h2>
+          <div class="subtitle">Herramientas internas • Mesa • BackOffice • Comerciales</div>
         </div>
-        """,
-        unsafe_allow_html=True
-    )
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
-with tabs[1]:
-    st.subheader("Backoffice")
-    st.caption("Elegí una herramienta")
-    st.markdown(
-        """
-        <div class="tool-grid">
-          <a class="tool-btn" href="?tool=bo_ppt_manana" target="_self">PPT Mañana</a>
-          <a class="tool-btn" href="?tool=bo_moc_tarde" target="_self">MOC Tarde</a>
-          <a class="tool-btn" href="?tool=bo_control_sliq" target="_self">Control SLIQ</a>
-          <a class="tool-btn" href="?tool=bo_acreditacion_mav" target="_self">Acreditación MAV</a>
-          <a class="tool-btn" href="?tool=bo_cauciones" target="_self">Cauciones</a>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 
-with tabs[2]:
-    st.subheader("Comerciales")
-    st.caption("Elegí una herramienta")
-    st.markdown(
-        """
-        <div class="tool-grid">
-          <a class="tool-btn" href="?tool=cheques" target="_self">Cheques</a>
-          <a class="tool-btn" href="?tool=cauciones_mae" target="_self">Cauciones MAE</a>
-          <a class="tool-btn" href="?tool=cauciones_byma" target="_self">Cauciones BYMA</a>
-          <a class="tool-btn" href="?tool=alquileres" target="_self">Alquileres</a>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+# =========================
+# Render tool
+# =========================
+if not selected_tool:
+    st.info("Seleccioná una herramienta desde la barra lateral.")
+else:
+    # Ejecuta la herramienta vía registry (evita imports rotos en app.py)
+    run_tool(selected_tool)
