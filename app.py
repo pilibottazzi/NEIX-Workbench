@@ -1,20 +1,23 @@
 # app.py
 import streamlit as st
 
-from tools import cartera
-from tools import ons
-from tools import cauciones
-from tools import cheques
-from tools import cauciones_mae
-from tools import cauciones_byma
-from tools import control_sliq
-from tools import alquileres
-from tools import moc_tarde
-from tools import bo_ppt_manana
-from tools import bo_acreditacion_mav
-from tools import vencimientos
-from tools import bonos
-
+# ==========================
+# IMPORTS POR ÁREA (nuevo)
+# ==========================
+from tools.mesa import cartera, ons, vencimientos, bonos
+from tools.backoffice import (
+    moc_tarde,
+    ppt_manana,
+    acreditacion_mav,
+    control_sliq,
+    cauciones as bo_cauciones,
+)
+from tools.comerciales import (
+    alquileres,
+    cheques,
+    cauciones_mae,
+    cauciones_byma,
+)
 
 # =========================================================
 # CONFIG
@@ -50,19 +53,12 @@ def go_home():
     st.rerun()
 
 def back_to_home_factory(tool_key: str):
-    """
-    Devuelve una función back_to_home() con key único por tool,
-    evitando StreamlitDuplicateElementId.
-    """
     def _back():
         if st.button("← Volver", key=f"btn_back_{tool_key}"):
             go_home()
     return _back
 
 def get_tool_param() -> str:
-    """
-    Streamlit a veces devuelve str o list[str] en query_params.
-    """
     raw = st.query_params.get("tool", "")
     if isinstance(raw, list):
         raw = raw[0] if raw else ""
@@ -72,23 +68,26 @@ def get_tool_param() -> str:
 # REGISTRO DE HERRAMIENTAS
 # =========================================================
 TOOL_REGISTRY = {
+    # Mesa
     "cartera": cartera.render,
     "bonos": bonos.render,
     "ons": ons.render,
+    "vencimientos": vencimientos.render,
 
-    "bo_ppt_manana": bo_ppt_manana.render,
+    # Backoffice
+    "bo_ppt_manana": ppt_manana.render,
     "bo_moc_tarde": moc_tarde.render,
     "bo_control_sliq": control_sliq.render,
-   # "bo_acreditacion_mav": bo_acreditacion_mav.render,
-    "bo_cauciones": cauciones.render,
+    "bo_acreditacion_mav": acreditacion_mav.render,
+    "bo_cauciones": bo_cauciones.render,
 
+    # Comerciales
     "cheques": cheques.render,
     "cauciones_mae": cauciones_mae.render,
     "cauciones-mae": cauciones_mae.render,
     "cauciones_byma": cauciones_byma.render,
     "cauciones-byma": cauciones_byma.render,
     "alquileres": alquileres.render,
-    "vencimientos": vencimientos.render,
 }
 
 # =========================================================
@@ -136,6 +135,7 @@ with tabs[0]:
           <a class="tool-btn" href="?tool=cartera" target="_self">Carteras comerciales</a>
           <a class="tool-btn" href="?tool=bonos" target="_self">Bonos</a>
           <a class="tool-btn" href="?tool=ons" target="_self">Obligaciones negociables</a>
+          <a class="tool-btn" href="?tool=vencimientos" target="_self">Vencimientos / Tenencias</a>
         </div>
         """,
         unsafe_allow_html=True
@@ -163,12 +163,10 @@ with tabs[2]:
     st.markdown(
         """
         <div class="tool-grid">
-          <a class="tool-btn" href="?tool=cartera" target="_self">Carteras comerciales</a>
           <a class="tool-btn" href="?tool=cheques" target="_self">Cheques</a>
           <a class="tool-btn" href="?tool=cauciones_mae" target="_self">Cauciones MAE</a>
           <a class="tool-btn" href="?tool=cauciones_byma" target="_self">Cauciones BYMA</a>
           <a class="tool-btn" href="?tool=alquileres" target="_self">Alquileres</a>
-          <a class="tool-btn" href="?tool=vencimientos" target="_self">Tenencias</a>
         </div>
         """,
         unsafe_allow_html=True
