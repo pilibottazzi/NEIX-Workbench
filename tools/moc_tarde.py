@@ -11,14 +11,14 @@ import streamlit as st
 # ==========
 ACCT_FMT = '_-* #,##0_-;_-* (#,##0);_-* "-"??_-;_-@_-'
 
-CTE_CANDS = ["comitente","nro comitente","nº comitente","nro. comitente","numero comitente","cliente","ctte"]
-COD_CANDS = ["codigo tv","codigo","símbolo","simbolo","ticker","cod tv"]
-TOT_CANDS = ["total","garantia total","garantias total","importe","monto","saldo","sdo","total garantia","importe total"]
-COMP_CANDS = ["compras","compra"]
-VENT_CANDS = ["ventas","venta"]
+CTE_CANDS = ["comitente", "nro comitente", "nº comitente", "nro. comitente", "numero comitente", "cliente", "ctte"]
+COD_CANDS = ["codigo tv", "codigo", "símbolo", "simbolo", "ticker", "cod tv"]
+TOT_CANDS = ["total", "garantia total", "garantias total", "importe", "monto", "saldo", "sdo", "total garantia", "importe total"]
+COMP_CANDS = ["compras", "compra"]
+VENT_CANDS = ["ventas", "venta"]
 NETO_CANDS = ["neto"]
-CANT_CANDS = ["cantidad","cant"]
-SALDO_CANDS = ["saldo negativos","saldo negativo","saldo","total","importe","monto","sdo"]
+CANT_CANDS = ["cantidad", "cant"]
+SALDO_CANDS = ["saldo negativos", "saldo negativo", "saldo", "total", "importe", "monto", "sdo"]
 
 
 # ---------------------------
@@ -28,14 +28,17 @@ def _strip_accents(s: str) -> str:
     import unicodedata
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
 
+
 def norm_cell(x) -> str:
     s = "" if x is None else str(x)
     s = _strip_accents(s).lower()
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
+
 def normalize_code(x) -> str:
     return ("" if x is None else str(x)).strip().upper()
+
 
 def normalize_comitente(x) -> str:
     raw = re.sub(r"\D", "", "" if x is None else str(x))
@@ -43,13 +46,13 @@ def normalize_comitente(x) -> str:
         return "999"
     return raw or ("" if x is None else str(x)).strip()
 
+
 def to_num(v) -> float:
     if v is None:
         return 0.0
     s = str(v).strip()
     if s == "":
         return 0.0
-    # AR -> num
     s = s.replace(".", "").replace(",", ".")
     try:
         return float(s)
@@ -62,7 +65,7 @@ def to_num(v) -> float:
 # ---------------------------
 def read_any_to_df(uploaded_file) -> pd.DataFrame:
     """
-    Lee CSV/XLSX/XLSM. Para XLS (viejo) NO usa xlrd (no lo queremos).
+    Lee CSV/XLSX/XLSM. Para XLS (viejo) NO usamos xlrd (no lo queremos en cloud).
     """
     name = (uploaded_file.name or "").lower()
 
@@ -95,27 +98,15 @@ def read_any_to_df(uploaded_file) -> pd.DataFrame:
 
         return pd.read_csv(io.StringIO(text), sep=sep, dtype=str)
 
-    # XLSX / XLSM
     if name.endswith(".xlsx") or name.endswith(".xlsm"):
         return pd.read_excel(uploaded_file, dtype=str, engine="openpyxl")
 
-    # XLS (viejo): NO soportamos en cloud sin librerías viejas -> fallback estilo "texto tabulado"
     if name.endswith(".xls"):
-        raw = uploaded_file.getvalue()
-        # Intento "excel tabulado" (a veces funciona si el .xls viene exportado como texto)
-        for enc in ("latin1", "cp1252", "utf-8"):
-            try:
-                text = raw.decode(enc)
-                df = pd.read_csv(io.StringIO(text), sep="\t", dtype=str)
-                return df
-            except Exception:
-                continue
         raise ValueError(
-            "Archivo .xls (Excel viejo) no soportado en este entorno sin librerías legacy.\n"
-            "Solución rápida: Abrilo y guardalo como .xlsx, y volvé a subirlo."
+            "Archivo .xls (Excel viejo) no soportado en este entorno.\n"
+            "Solución rápida: abrilo y guardalo como .xlsx, y volvé a subirlo."
         )
 
-    # fallback
     return pd.read_excel(uploaded_file, dtype=str, engine="openpyxl")
 
 
@@ -150,9 +141,6 @@ def detect_header_positions_aoa(aoa: list[list], sets: list[list[str]]):
 def read_to_aoa(uploaded_file) -> list[list]:
     """
     Devuelve array-of-arrays como en el HTML (sheet_to_json header:1).
-    - CSV: usa read_any_to_df
-    - XLSX/XLSM: openpyxl
-    - XLS: intenta lectura tabulada; si no, pide convertir a XLSX
     """
     name = (uploaded_file.name or "").lower()
 
@@ -166,16 +154,6 @@ def read_to_aoa(uploaded_file) -> list[list]:
         return df0.values.tolist()
 
     if name.endswith(".xls"):
-        raw = uploaded_file.getvalue()
-        # Intento estilo "texto tabulado" (similar a cómo lo tolera SheetJS en algunos exports)
-        for enc in ("latin1", "cp1252", "utf-8"):
-            try:
-                text = raw.decode(enc)
-                df = pd.read_csv(io.StringIO(text), sep="\t", dtype=str)
-                df = df.fillna("")
-                return [df.columns.tolist()] + df.values.tolist()
-            except Exception:
-                continue
         raise ValueError(
             "Este archivo es .xls (Excel viejo). Guardalo como .xlsx (Guardar como) y volvé a subirlo."
         )
@@ -197,7 +175,7 @@ def build_mae_map(aoa_mae: list[list]) -> dict:
     for i in range(min(20, len(aoa_mae))):
         row = aoa_mae[i] or []
         hc = [norm_cell(x) for x in row]
-        if ("comitente" in hc and "codigo" in hc and any(x in hc for x in ["compra","compras"]) and any(x in hc for x in ["venta","ventas"])):
+        if ("comitente" in hc and "codigo" in hc and any(x in hc for x in ["compra", "compras"]) and any(x in hc for x in ["venta", "ventas"])):
             header_row_idx = i
             break
 
@@ -238,8 +216,20 @@ def build_mae_map(aoa_mae: list[list]) -> dict:
 
 
 # ---------------------------
-# Generadores (igual HTML: fórmulas en Excel)
+# Excel helpers (openpyxl)
 # ---------------------------
+def _apply_col_widths(ws, widths: dict):
+    """
+    widths: {"A": 14, "B": 12, ...}
+    """
+    try:
+        for col, w in widths.items():
+            ws.column_dimensions[col].width = w
+    except Exception:
+        # si algo cambia en engine, no rompemos la generación
+        pass
+
+
 def generate_moc_tarde(f_moc, f_mae, f_saldos, f_byma):
     # MAE (opcional)
     mae_map = {}
@@ -280,12 +270,6 @@ def generate_moc_tarde(f_moc, f_mae, f_saldos, f_byma):
 
     df_moc = pd.DataFrame(moc_rows, columns=moc_cols)
 
-    # limpiar y castear numéricos
-    df_moc["COMPRAS"] = df_moc["COMPRAS"].apply(to_num)
-    df_moc["VENTAS"] = df_moc["VENTAS"].apply(to_num)
-    if has_mae:
-        df_moc["MAE"] = df_moc["MAE"].apply(to_num)
-
     # --- BYMA ---
     aoa_byma = read_to_aoa(f_byma)
     byma_pos = detect_header_positions_aoa(aoa_byma, [CTE_CANDS, COD_CANDS, TOT_CANDS])
@@ -321,53 +305,62 @@ def generate_moc_tarde(f_moc, f_mae, f_saldos, f_byma):
         saldo = to_num(base[i_saldo_s] if i_saldo_s < len(base) else 0)
         byma = byma_map.get(f"{cte}||{cod}", 0.0)
         otros = mae_map.get(f"{cte}||{cod}", 0.0) if has_mae else 0.0
-        rows.append([cte, cod, neto, cant, saldo, byma, otros, None, None])
+
+        total_num = saldo + byma + otros
+        rows.append([cte, cod, neto, cant, saldo, byma, otros, total_num])
 
     df_sal = pd.DataFrame(
         rows,
         columns=[
-            "COMITENTE","CODIGO","NETO","CANTIDAD","SALDO NEGATIVOS",
-            "Garantías BYMA (Total)","OTROS","TOTAL","Observación"
-        ]
-    )
+            "COMITENTE",
+            "CODIGO",
+            "NETO",
+            "CANTIDAD",
+            "SALDO NEGATIVOS",
+            "Garantías BYMA (Total)",
+            "OTROS",
+            "_TOTALNUM",
+        ],
+    ).sort_values("_TOTALNUM", ascending=True).reset_index(drop=True)
 
-    # igual HTML: ordenar por saldo+byma+otros antes de fórmulas
-    df_sal["_SORT_TOTAL"] = df_sal["SALDO NEGATIVOS"] + df_sal["Garantías BYMA (Total)"] + df_sal["OTROS"]
-    df_sal = df_sal.sort_values("_SORT_TOTAL", ascending=True).drop(columns=["_SORT_TOTAL"]).reset_index(drop=True)
+    # armamos columnas finales iguales al HTML (TOTAL y Observación como fórmula)
+    df_sal["TOTAL"] = ""
+    df_sal["Observación"] = ""
+    df_sal = df_sal.drop(columns=["_TOTALNUM"])
 
-    # --- Excel output ---
+    # --- Excel output (openpyxl) ---
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         df_moc.to_excel(writer, sheet_name="MOC tarde", index=False)
         df_sal.to_excel(writer, sheet_name="SALDOS NEGATIVOS tarde", index=False)
 
-        # Sheet MOC
         ws1 = writer.sheets["MOC tarde"]
-        if has_mae:
-            ws1.set_column("C:E", 16, fmt_acct)
-            ws1.set_column("F:F", 16, fmt_acct)
-            for i in range(len(df_moc)):
-                excel_row = i + 2
-                ws1.write_formula(i + 1, 5, f"=C{excel_row}+D{excel_row}+E{excel_row}", fmt_acct)
-        else:
-            ws1.set_column("C:D", 16, fmt_acct)
-            ws1.set_column("E:E", 16, fmt_acct)
-            for i in range(len(df_moc)):
-                excel_row = i + 2
-                ws1.write_formula(i + 1, 4, f"=C{excel_row}+D{excel_row}", fmt_acct)
-
-        # Sheet SALDOS
         ws2 = writer.sheets["SALDOS NEGATIVOS tarde"]
-        ws2.set_column("A:A", 12, fmt_int0)
-        ws2.set_column("B:B", 12)
-        ws2.set_column("C:H", 18, fmt_acct)
-        ws2.set_column("I:I", 14)
 
-        # TOTAL en col H (index 7) / OBS en col I (index 8)
-        for i in range(len(df_sal)):
-            excel_row = i + 2
-            ws2.write_formula(i + 1, 7, f"=E{excel_row}+F{excel_row}+G{excel_row}", fmt_acct)
-            ws2.write_formula(i + 1, 8, f'=IF(H{excel_row}>=0,"OK","REVISAR")')
+        # Anchos (opcional, no rompe)
+        if has_mae:
+            _apply_col_widths(ws1, {"A": 12, "B": 12, "C": 14, "D": 14, "E": 14, "F": 14})
+        else:
+            _apply_col_widths(ws1, {"A": 12, "B": 12, "C": 14, "D": 14, "E": 14})
+        _apply_col_widths(ws2, {"A": 12, "B": 12, "C": 14, "D": 12, "E": 16, "F": 18, "G": 12, "H": 14, "I": 14})
+
+        # Fórmulas NETO en MOC (igual HTML)
+        nrows_moc = len(df_moc)
+        if has_mae:
+            # columnas: A COMITENTE, B CODIGO, C COMPRAS, D VENTAS, E MAE, F NETO
+            for i in range(2, nrows_moc + 2):  # Excel row
+                ws1[f"F{i}"].value = f"=C{i}+D{i}+E{i}"
+        else:
+            # columnas: A COMITENTE, B CODIGO, C COMPRAS, D VENTAS, E NETO
+            for i in range(2, nrows_moc + 2):
+                ws1[f"E{i}"].value = f"=C{i}+D{i}"
+
+        # Fórmulas TOTAL + Observación en SALDOS (igual HTML)
+        nrows_sal = len(df_sal)
+        # columnas: A COMITENTE, B CODIGO, C NETO, D CANTIDAD, E SALDO, F BYMA, G OTROS, H TOTAL, I OBS
+        for i in range(2, nrows_sal + 2):
+            ws2[f"H{i}"].value = f"=E{i}+F{i}+G{i}"
+            ws2[f"I{i}"].value = f'=IF(H{i}>=0,"OK","REVISAR")'
 
     out.seek(0)
     return out.getvalue(), has_mae
@@ -407,29 +400,30 @@ def generate_ventas(f_moc, f_mae):
         else:
             rows.append([cte, cod, vent, ""])
 
-    cols = ["COMITENTE","CODIGO","VENTAS","MAE","NETO"] if has_mae else ["COMITENTE","CODIGO","VENTAS","NETO"]
+    cols = ["COMITENTE", "CODIGO", "VENTAS", "MAE", "NETO"] if has_mae else ["COMITENTE", "CODIGO", "VENTAS", "NETO"]
     df = pd.DataFrame(rows, columns=cols)
 
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="VENTAS", index=False)
-        wb = writer.book
-        fmt_acct = wb.add_format({"num_format": ACCT_FMT})
-        fmt_int0 = wb.add_format({"num_format": "0"})
         ws = writer.sheets["VENTAS"]
 
-        ws.set_column("A:A", 12, fmt_int0)
-        ws.set_column("B:B", 12)
+        # anchos (opcional)
         if has_mae:
-            ws.set_column("C:E", 18, fmt_acct)
-            for i in range(len(df)):
-                excel_row = i + 2
-                ws.write_formula(i + 1, 4, f"=C{excel_row}+D{excel_row}", fmt_acct)
+            _apply_col_widths(ws, {"A": 12, "B": 12, "C": 14, "D": 14, "E": 14})
         else:
-            ws.set_column("C:D", 18, fmt_acct)
-            for i in range(len(df)):
-                excel_row = i + 2
-                ws.write_formula(i + 1, 3, f"=C{excel_row}", fmt_acct)
+            _apply_col_widths(ws, {"A": 12, "B": 12, "C": 14, "D": 14})
+
+        # fórmula NETO (igual HTML)
+        n = len(df)
+        if has_mae:
+            # A COM, B COD, C VENTAS, D MAE, E NETO
+            for i in range(2, n + 2):
+                ws[f"E{i}"].value = f"=C{i}+D{i}"
+        else:
+            # A COM, B COD, C VENTAS, D NETO
+            for i in range(2, n + 2):
+                ws[f"D{i}"].value = f"=C{i}"
 
     out.seek(0)
     return out.getvalue(), has_mae
@@ -446,12 +440,12 @@ def render(back_to_home=None):
         st.button("← Volver", on_click=back_to_home)
 
     c1, c2 = st.columns(2)
-    f_moc = c1.file_uploader("MOC Dashboard", type=["xlsx","xls","csv"], key="moc_file")
+    f_moc = c1.file_uploader("MOC Dashboard", type=["xlsx", "xls", "csv"], key="moc_file")
     f_mae = c2.file_uploader("MOC MAE GALLO (opcional)", type=["csv"], key="mae_file")
 
     c3, c4 = st.columns(2)
-    f_saldos = c3.file_uploader("NEGATIVOS Dashboard", type=["xlsx","xls","csv"], key="neg_file")
-    f_byma = c4.file_uploader("Lista de Saldos BYMA", type=["xlsx","xls","csv"], key="byma_file")
+    f_saldos = c3.file_uploader("NEGATIVOS Dashboard", type=["xlsx", "xls", "csv"], key="neg_file")
+    f_byma = c4.file_uploader("Lista de Saldos BYMA", type=["xlsx", "xls", "csv"], key="byma_file")
 
     st.divider()
 
