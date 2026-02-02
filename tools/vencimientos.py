@@ -113,11 +113,9 @@ def cargar_managers_excel() -> pd.DataFrame:
     df["NumeroComitente"] = _norm_num(df["NumeroComitente"])
 
     # dejamos SOLO columnas reales del archivo (no agregamos inventadas)
-    # pero normalizamos por las dudas algunos nombres comunes
-    rename_map = {}
+    # normalizamos nombre para evitar confusión con "Comitente" vs cliente
     if "Comitente" in df.columns:
-        rename_map["Comitente"] = "Nombre Comitente"
-    df = df.rename(columns=rename_map)
+        df = df.rename(columns={"Comitente": "Nombre Comitente"})
 
     return df
 
@@ -126,7 +124,8 @@ def _merge_managers_strict(df_txt: pd.DataFrame, df_mgr: pd.DataFrame) -> pd.Dat
     """
     Cruce obligatorio por Cliente (TXT) = NumeroComitente (Excel).
     """
-    cols_keep = [c for c in ["NumeroComitente", "Nombre Comitente", "NumeroManager", "Manager", "NumeroOficial", "Oficial"] if c in df_mgr.columns]
+    cols_keep = [c for c in ["NumeroComitente", "Nombre Comitente", "NumeroManager", "Manager", "NumeroOficial", "Oficial"]
+                 if c in df_mgr.columns]
 
     out = df_txt.merge(
         df_mgr[cols_keep],
@@ -152,8 +151,15 @@ def _to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
 # UI
 # =========================
 def render(back_to_home=None):
-    st.markdown("## Tenencias")
-    st.caption("RUTA DE GALLO: BURSATIL -> CONSULTAS -> CONSULTAS DE TENENCIAS -> TENENCIAS -> POR ESPECIE")
+    st.markdown("## Vencimientos / TXT (por Activo)")
+    st.caption(
+        "Subís 1 o varios .txt (separados por `;`). "
+        "El Activo se toma del nombre del archivo. "
+        "Cruce por **NumeroComitente** con `data/managers_neix.xlsx`."
+    )
+
+    if back_to_home is not None:
+        st.button("← Volver", on_click=back_to_home)
 
     # 1) managers obligatorio
     try:
@@ -185,7 +191,20 @@ def render(back_to_home=None):
             df = _read_txt_uploaded(f)
             df.insert(0, "Activo", activo)
             df = _merge_managers_strict(df, df_mgr)
+
+            # =========================
+            # Ajustes solicitados:
+            # - "Saldo Caja Val." => "Nominales"
+            # - sacar Fecha, Saldo Tesoro, Ob
+            # =========================
+            if "Saldo Caja Val." in df.columns:
+                df = df.rename(columns={"Saldo Caja Val.": "Nominales"})
+
+            drop_cols = ["Fecha", "Saldo Tesoro", "Ob"]
+            df = df.drop(columns=[c for c in drop_cols if c in df.columns])
+
             dfs_por_activo[activo] = df
+
         except Exception as e:
             errores.append((activo, str(e)))
 
@@ -200,10 +219,8 @@ def render(back_to_home=None):
     df_all = pd.concat(dfs_por_activo.values(), ignore_index=True)
 
     # 3) indicador de match del cruce
-    # consideramos match si hay Manager u Oficial
     has_manager = "Manager" in df_all.columns
     has_oficial = "Oficial" in df_all.columns
-
     if has_manager or has_oficial:
         match_mask = pd.Series(False, index=df_all.index)
         if has_manager:
@@ -213,7 +230,11 @@ def render(back_to_home=None):
 
         matched = int(match_mask.sum())
         total = int(len(df_all))
-        st.info(f"Cruce managers")
+        st.info(
+            f"Cruce managers: **{matched} / {total}** filas matcheadas "
+            f"({(matched/total*100):.1f}%). "
+            "Si esto da bajo, esos comitentes no existen en managers_neix.xlsx o vienen con otro número."
+        )
 
     # 4) filtros
     st.markdown("### Filtros (globales)")
@@ -246,37 +267,70 @@ def render(back_to_home=None):
     if "Oficial" in df_f.columns and "Todos" not in oficiales_sel:
         df_f = df_f[df_f["Oficial"].astype(str).isin(oficiales_sel)]
 
+    # 5) resumen
+    st.markdown("### Resumen")
+    cols_sum = [c for c in ["Nominales"] if c in df_f.columns]
+    if cols_sum:
+        st.markdown("**Por Activo**")
+        st.dataframe(
+            df_f.groupby("Activo", as_index=False)[cols_sum].sum(numeric_only=True),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        if "Manager" in df_f.columns:
+            st.markdown("**Por Manager**")
+            st.dataframe(
+                df_f.groupby("Manager", as_index=False)[cols_sum].sum(numeric_only=True).sort_values(cols_sum[0], ascending=False),
+                use_container_width=True,
+                hide_index=True
+            )
+    else:
+        st.warning("No encontré la columna 'Nominales' para resumir.")
 
     # 6) tablas por activo
     st.markdown("### Tablas por Activo")
     tabs = st.tabs(sorted(dfs_por_activo.keys()))
     for activo, tab in zip(sorted(dfs_por_activo.keys()), tabs):
         with tab:
-            df_tab = dfs_por_activo[activo]
+            df_tab = dfs_por_activo[activo].copy()
 
             # aplicar mismos filtros al tab
-            df_tab_f = df_tab.copy()
-            if "Todos" not in managers_sel and "Manager" in df_tab_f.columns:
-                df_tab_f = df_tab_f[df_tab_f["Manager"].astype(str).isin(managers_sel)]
-            if "Todos" not in oficiales_sel and "Oficial" in df_tab_f.columns:
-                df_tab_f = df_tab_f[df_tab_f["Oficial"].astype(str).isin(oficiales_sel)]
+            if "Todos" not in managers_sel and "Manager" in df_tab.columns:
+                df_tab = df_tab[df_tab["Manager"].astype(str).isin(managers_sel)]
+            if "Todos" not in oficiales_sel and "Oficial" in df_tab.columns:
+                df_tab = df_tab[df_tab["Oficial"].astype(str).isin(oficiales_sel)]
 
             prefer = [
                 "Activo", "Cliente", "Nombre del Cliente",
-                "Saldo Tesoro", "Saldo Caja Val.", "Ob", "Fecha",
-                "NumeroManager", "Manager", "NumeroOficial", "Oficial",
+                "Nominales",
+                "NumeroManager", "Manager",
+                "NumeroOficial", "Oficial",
                 "Nombre Comitente",
             ]
-            cols_show = [c for c in prefer if c in df_tab_f.columns] + [c for c in df_tab_f.columns if c not in prefer]
-            st.dataframe(df_tab_f[cols_show], use_container_width=True, hide_index=True)
+            cols_show = [c for c in prefer if c in df_tab.columns] + [c for c in df_tab.columns if c not in prefer]
+            st.dataframe(df_tab[cols_show], use_container_width=True, hide_index=True)
 
     st.markdown("### Consolidado (todo junto)")
     prefer_all = [
         "Activo", "Cliente", "Nombre del Cliente",
-        "Saldo Tesoro", "Saldo Caja Val.", "Ob", "Fecha",
-        "NumeroManager", "Manager", "NumeroOficial", "Oficial",
+        "Nominales",
+        "NumeroManager", "Manager",
+        "NumeroOficial", "Oficial",
         "Nombre Comitente",
     ]
     cols_show_all = [c for c in prefer_all if c in df_f.columns] + [c for c in df_f.columns if c not in prefer_all]
     st.dataframe(df_f[cols_show_all], use_container_width=True, hide_index=True)
 
+    # 7) export
+    st.markdown("### Exportar")
+    sheets = {"Consolidado": df_f}
+    for activo, df in dfs_por_activo.items():
+        sheets[activo] = df
+
+    st.download_button(
+        "📥 Descargar Excel",
+        data=_to_excel_bytes(sheets),
+        file_name="vencimientos_por_activo.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
