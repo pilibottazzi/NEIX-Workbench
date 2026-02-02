@@ -6,9 +6,6 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-# ==========
-# IGUAL AL HTML
-# ==========
 ACCT_FMT = '_-* #,##0_-;_-* (#,##0);_-* "-"??_-;_-@_-'
 
 CTE_CANDS = ["comitente", "nro comitente", "nº comitente", "nro. comitente", "numero comitente", "cliente", "ctte"]
@@ -20,10 +17,6 @@ NETO_CANDS = ["neto"]
 CANT_CANDS = ["cantidad", "cant"]
 SALDO_CANDS = ["saldo negativos", "saldo negativo", "saldo", "total", "importe", "monto", "sdo"]
 
-
-# ---------------------------
-# Utils (normalización)
-# ---------------------------
 def _strip_accents(s: str) -> str:
     import unicodedata
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
@@ -214,10 +207,6 @@ def build_mae_map(aoa_mae: list[list]) -> dict:
 
     return mp
 
-
-# ---------------------------
-# Excel helpers (openpyxl)
-# ---------------------------
 def _apply_col_widths(ws, widths: dict):
     """
     widths: {"A": 14, "B": 12, ...}
@@ -428,16 +417,9 @@ def generate_ventas(f_moc, f_mae):
     out.seek(0)
     return out.getvalue(), has_mae
 
-
-# ---------------------------
-# Render (tool)
-# ---------------------------
 def render(back_to_home=None):
-    st.markdown("## 🌙 MOC TARDE")
-    st.caption("Genera el Excel de MOC tarde + Saldos Negativos tarde, y un export de Ventas.")
-
-    if back_to_home is not None:
-        st.button("← Volver", on_click=back_to_home)
+    st.markdown("## MOC TARDE")
+    st.caption("Genera el Excel de MOC tarde + un export de Ventas.")
 
     c1, c2 = st.columns(2)
     f_moc = c1.file_uploader("MOC Dashboard", type=["xlsx", "xls", "csv"], key="moc_file")
