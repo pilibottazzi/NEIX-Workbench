@@ -341,14 +341,8 @@ def generate_moc_tarde(f_moc, f_mae, f_saldos, f_byma):
         df_moc.to_excel(writer, sheet_name="MOC tarde", index=False)
         df_sal.to_excel(writer, sheet_name="SALDOS NEGATIVOS tarde", index=False)
 
-        workbook = writer.book
-        fmt_acct = workbook.add_format({"num_format": ACCT_FMT})
-        fmt_int0 = workbook.add_format({"num_format": "0"})
-
         # Sheet MOC
         ws1 = writer.sheets["MOC tarde"]
-        ws1.set_column("A:A", 12, fmt_int0)  # comitente
-        ws1.set_column("B:B", 12)            # codigo (texto)
         if has_mae:
             ws1.set_column("C:E", 16, fmt_acct)
             ws1.set_column("F:F", 16, fmt_acct)
