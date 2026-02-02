@@ -416,11 +416,8 @@ def generate_ventas(f_moc, f_mae):
 # Render (tool) - UI equivalente
 # ---------------------------
 def render(back_to_home=None):
-    st.markdown("## 🌙 MOC TARDE")
+    st.markdown("## MOC TARDE")
     st.caption("Genera el Excel de MOC tarde + Saldos Negativos tarde, y un export de Ventas.")
-
-    if back_to_home is not None:
-        st.button("← Volver", on_click=back_to_home)
 
     # Igual HTML: 4 inputs
     c1, c2 = st.columns(2)
