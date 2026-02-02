@@ -1,9 +1,6 @@
 # tools/registry.py
 import importlib
 
-# -------------------------
-# Tabs del Workbench (UI)
-# -------------------------
 TOOL_TABS = {
     "Mesa / Trading": [
         {"id": "cartera", "label": "Carteras comerciales"},
@@ -26,10 +23,6 @@ TOOL_TABS = {
     ],
 }
 
-# -------------------------
-# Mapa: tool_id -> módulo real
-# (ACÁ se arregla el cambio de carpetas)
-# -------------------------
 TOOL_IMPORTS = {
     # Mesa
     "cartera": "tools.mesa.cartera",
@@ -37,12 +30,12 @@ TOOL_IMPORTS = {
     "ons": "tools.mesa.ons",
     "vencimientos": "tools.mesa.vencimientos",
 
-    # Comerciales / Middle
+    # Comerciales
     "cheques": "tools.comerciales.cheques",
     "cauciones_mae": "tools.comerciales.cauciones_mae",
-    "cauciones-mae": "tools.comerciales.cauciones_mae",   # alias por si quedó link viejo
+    "cauciones-mae": "tools.comerciales.cauciones_mae",
     "cauciones_byma": "tools.comerciales.cauciones_byma",
-    "cauciones-byma": "tools.comerciales.cauciones_byma", # alias por si quedó link viejo
+    "cauciones-byma": "tools.comerciales.cauciones_byma",
     "alquileres": "tools.comerciales.alquileres",
 
     # Backoffice
@@ -53,17 +46,7 @@ TOOL_IMPORTS = {
     "bo_acreditacion_mav": "tools.backoffice.acreditacion_mav",
 }
 
-
-# -------------------------
-# Router
-# -------------------------
 def run_tool(tool_id: str, back_to_home=None) -> bool:
-    """
-    Importa el módulo correcto según TOOL_IMPORTS y ejecuta render().
-
-    back_to_home: callable opcional. Si el render acepta parámetro,
-    lo llamamos como render(back_to_home=...), si no, render().
-    """
     module_path = TOOL_IMPORTS.get(tool_id)
     if not module_path:
         return False
@@ -77,12 +60,10 @@ def run_tool(tool_id: str, back_to_home=None) -> bool:
     if not callable(render_fn):
         return False
 
-    # Llamada tolerante a firmas distintas
     try:
         if back_to_home is None:
             render_fn()
         else:
-            # preferimos keyword, pero si no existe cae al except TypeError
             render_fn(back_to_home=back_to_home)
     except TypeError:
         try:
