@@ -1,17 +1,101 @@
 # tools/control_sliq.py
+from __future__ import annotations
+
 import io
 import re
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any, List
 
 import pandas as pd
 import streamlit as st
 
 
-# =========================
-# Helpers
-# =========================
+# =========================================================
+# UI (estilo parecido al HTML)
+# =========================================================
+def _inject_ui_css():
+    st.markdown(
+        """
+        <style>
+          .sliq-topbar{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            padding: 10px 6px 14px 6px;
+          }
+          .sliq-brand{
+            display:flex;
+            align-items:center;
+            gap:12px;
+          }
+          .sliq-logo{
+            width:34px; height:34px;
+            border-radius:10px;
+            border:1px solid rgba(0,0,0,0.10);
+            display:flex; align-items:center; justify-content:center;
+            font-weight:900;
+            color:#111827;
+            background:#fff;
+            box-shadow:0 2px 10px rgba(0,0,0,0.04);
+          }
+          .sliq-title{
+            margin:0;
+            font-size: 1.35rem;
+            font-weight: 900;
+            color:#111827;
+          }
+          .sliq-sub{
+            margin: 2px 0 0 0;
+            color:#6b7280;
+            font-size:.92rem;
+          }
+
+          .sliq-card{
+            border:1px solid rgba(0,0,0,0.08);
+            border-radius:16px;
+            padding:18px;
+            background:#fff;
+            box-shadow:0 2px 10px rgba(0,0,0,0.04);
+            margin-top: 10px;
+          }
+
+          .sliq-logs{
+            margin-top: 12px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            border: 1px solid rgba(0,0,0,0.08);
+            background: rgba(249,250,251,0.9);
+            font-size: .92rem;
+            color:#111827;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# =========================================================
+# Helpers de parsing / normalización (replica JS)
+# =========================================================
 def _clean_str(x) -> str:
     return "" if x is None else str(x).strip()
+
+
+def _strip_accents(s: str) -> str:
+    # Normalización simple sin depender de unidecode
+    # (quita marcas diacríticas unicode)
+    return "".join(ch for ch in s.normalize("NFD") if not ("\u0300" <= ch <= "\u036f"))
+
+
+def _norm_header(s: Any) -> str:
+    s = _clean_str(s).lower()
+    # quita tildes/acentos y compacta espacios
+    try:
+        s = _strip_accents(s)  # type: ignore[attr-defined]
+    except Exception:
+        # fallback (por si no existe normalize)
+        pass
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 
 def _to_num_es(v) -> Optional[float]:
@@ -24,14 +108,11 @@ def _to_num_es(v) -> Optional[float]:
     if not s:
         return None
 
-    # dejar dígitos, coma, punto, signo
     s = re.sub(r"[^\d,.\-]", "", s)
 
     if "," in s and "." in s:
-        # miles con '.', decimal con ','
         s = s.replace(".", "").replace(",", ".")
     elif "," in s and "." not in s:
-        # decimal con coma
         s = s.replace(",", ".")
 
     try:
@@ -41,270 +122,379 @@ def _to_num_es(v) -> Optional[float]:
         return None
 
 
-def _read_csv_bytes(file, sep: str) -> pd.DataFrame:
+def _read_text_with_fallback(file) -> str:
     """
-    Lee CSV desde st.file_uploader (bytes). Prueba utf-8 y fallback cp1252.
+    Lee st.file_uploader (bytes) como texto.
+    Prueba utf-8, si aparecen caracteres raros, intenta cp1252.
     """
     raw = file.getvalue()
-
     for enc in ("utf-8", "cp1252"):
         try:
-            return pd.read_csv(io.BytesIO(raw), sep=sep, dtype=str, encoding=enc)
+            txt = raw.decode(enc)
+            # Si hay � (replacement char), probamos el otro
+            if "\uFFFD" in txt and enc != "cp1252":
+                continue
+            return txt
         except Exception:
             continue
-
-    # último intento: deja que pandas infiera
-    return pd.read_csv(io.BytesIO(raw), sep=sep, dtype=str)
-
-
-def _normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
+    # último recurso
+    return raw.decode("utf-8", errors="replace")
 
 
-# =========================
-# Core logic
-# =========================
-def _build_nasdaq_detalle(df_nas: pd.DataFrame) -> Tuple[pd.DataFrame, dict]:
+def _read_csv_as_table(text: str, sep: str) -> pd.DataFrame:
     """
-    Replica tu lógica JS:
-    - Filtra ref que NO empieza con "SLIQ-"
-    - Cuenta == "7142/10000"
-    - Estado != "CANCELADO"
-    Devuelve:
-      - detalle (df) con columnas:
-        Instrumento, Referencia instrucción, Cantidad/nominal, Cuenta..., Estado...
-      - sumByInst: {instrumento_int: suma_cantidad_int}
+    Lee CSV a DataFrame sin header (header=None) para poder detectar header row como en JS.
+    Maneja BOM.
     """
-    df = _normalize_cols(df_nas)
+    if text.startswith("\ufeff"):
+        text = text.lstrip("\ufeff")
 
-    # columnas exactas esperadas
-    wanted = [
+    # engine="python" suele ser más tolerante con CSV raros
+    return pd.read_csv(
+        io.StringIO(text),
+        sep=sep,
+        header=None,
+        dtype=str,
+        engine="python",
+        keep_default_na=False,
+    )
+
+
+def _find_header_row(df0: pd.DataFrame, max_rows: int = 20) -> int:
+    """
+    Replica findHeaderRow(aoa): elige la fila con mayor "ancho" (celdas no vacías) en las primeras N filas.
+    """
+    lim = min(max_rows, len(df0))
+    best = 0
+    best_w = -1
+
+    for r in range(lim):
+        row = df0.iloc[r].tolist()
+        # contamos celdas NO vacías (similar a "len" útil)
+        w = sum(1 for x in row if _clean_str(x) != "")
+        if w > best_w:
+            best_w = w
+            best = r
+    return best
+
+
+def _map_exact_indexes(header_row: List[Any], wanted: List[str]) -> List[int]:
+    """
+    Replica mapExactIndexes: mapea wanted -> índice en header, usando normHeader.
+    """
+    header_map = {_norm_header(h): i for i, h in enumerate(header_row)}
+    out = []
+    for w in wanted:
+        key = _norm_header(w)
+        out.append(header_map.get(key, -1))
+    return out
+
+
+# =========================================================
+# Core logic (idéntica al JS)
+# =========================================================
+def _build_nasdaq_detalle_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[int, int]]:
+    """
+    NASDAQ:
+    - Detecta header row
+    - Mapea columnas exactas por nombre normalizado (sin tildes, etc.)
+    - Filtra:
+        ref NO empieza con "SLIQ-"
+        cuenta == "7142/10000"
+        estado != "CANCELADO"
+    - Detalle: (Instrumento, Referencia, Cantidad, Cuenta, Estado)
+    - sumByInst: suma Cantidad por Instrumento (enteros redondeados)
+    """
+    hdr_idx = _find_header_row(df0)
+    header = df0.iloc[hdr_idx].tolist()
+
+    want = [
         "Instrumento",
         "Referencia instrucción",
         "Cantidad/nominal",
         "Cuenta de valores negociables",
         "Estado de instrucción",
     ]
-    missing = [c for c in wanted if c not in df.columns]
-    if missing:
-        raise ValueError(f"NASDAQ: faltan columnas {missing}. Columnas disponibles: {list(df.columns)}")
+    idx = _map_exact_indexes(header, want)
+    if any(i < 0 for i in idx):
+        raise ValueError(
+            "NASDAQ: falta alguna columna exacta (según encabezados). "
+            f"Busco: {want}. Header detectado: {header}"
+        )
 
-    # preparar
-    ref = df["Referencia instrucción"].fillna("").astype(str).str.strip().str.upper()
-    cuenta = df["Cuenta de valores negociables"].fillna("").astype(str).str.strip()
-    estado = df["Estado de instrucción"].fillna("").astype(str).str.strip().str.upper()
+    detalle_rows: List[List[Any]] = []
+    sum_by_inst: Dict[int, int] = {}
 
-    mask = (~ref.str.startswith("SLIQ-")) & (cuenta == "7142/10000") & (estado != "CANCELADO")
-    df_f = df.loc[mask, wanted].copy()
-
-    # Instrumento y Cantidad como num ES
-    df_f["Instrumento_num"] = df_f["Instrumento"].apply(_to_num_es)
-    df_f["Cantidad_num"] = df_f["Cantidad/nominal"].apply(_to_num_es)
-
-    # JS hacía round() a enteros
-    df_f["Instrumento_int"] = df_f["Instrumento_num"].apply(lambda x: int(round(x)) if x is not None else None)
-    df_f["Cantidad_int"] = df_f["Cantidad_num"].apply(lambda x: int(round(x)) if x is not None else None)
-
-    # detalle output
-    out = pd.DataFrame({
-        "Instrumento": df_f["Instrumento_int"].fillna("").astype(object),
-        "Referencia instrucción": df_f["Referencia instrucción"].fillna("").astype(str),
-        "Cantidad/nominal": df_f["Cantidad_int"].fillna("").astype(object),
-        "Cuenta de valores negociables": df_f["Cuenta de valores negociables"].fillna("").astype(str),
-        "Estado de instrucción": df_f["Estado de instrucción"].fillna("").astype(str),
-    })
-
-    # sumByInst
-    sum_by = {}
-    for _, r in df_f.iterrows():
-        inst = r["Instrumento_int"]
-        qty = r["Cantidad_int"]
-        if inst is None or qty is None:
+    # iterar filas de datos
+    for r in range(hdr_idx + 1, len(df0)):
+        row = df0.iloc[r].tolist()
+        if all(_clean_str(x) == "" for x in row):
             continue
-        sum_by[inst] = sum_by.get(inst, 0) + int(qty)
 
-    return out, sum_by
+        ref = _clean_str(row[idx[1]]).upper()
+        if ref.startswith("SLIQ-"):
+            continue
+
+        cuenta = _clean_str(row[idx[3]])
+        if cuenta != "7142/10000":
+            continue
+
+        estado = _clean_str(row[idx[4]]).upper()
+        if estado == "CANCELADO":
+            continue
+
+        inst_num = _to_num_es(row[idx[0]])
+        q_num = _to_num_es(row[idx[2]])
+
+        inst_int = int(round(inst_num)) if inst_num is not None else None
+        q_int = int(round(q_num)) if q_num is not None else None
+
+        detalle_rows.append([
+            inst_int if inst_int is not None else "",
+            _clean_str(row[idx[1]]),
+            q_int if q_int is not None else "",
+            cuenta,
+            _clean_str(row[idx[4]]),
+        ])
+
+        if inst_int is not None and q_int is not None:
+            sum_by_inst[inst_int] = sum_by_inst.get(inst_int, 0) + int(q_int)
+
+    out = pd.DataFrame(
+        detalle_rows,
+        columns=[
+            "Instrumento",
+            "Referencia instrucción",
+            "Cantidad/nominal",
+            "Cuenta de valores negociables",
+            "Estado de instrucción",
+        ],
+    )
+    return out, sum_by_inst
 
 
-def _build_sliq_raw(df_sliq: pd.DataFrame) -> Tuple[pd.DataFrame, dict]:
+def _build_sliq_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[int, Dict[str, Any]]]:
     """
-    Replica tu lógica JS SLIQ:
+    SLIQ (replica JS):
+    - Detecta header row (aunque el JS usa la misma lógica)
     - Toma columnas por posición: 0 Código, 1 Especie, 2 Denominacion, 3 Neto a Liquidar
-    - Suma neto por código
+    - Suma neto por código (manteniendo especie/denom como first-non-empty)
     """
-    df = _normalize_cols(df_sliq)
-
-    # A veces viene sin headers, a veces con headers. Tu JS usa "row[0..3]" igual.
-    # Entonces acá: si detectamos que tiene al menos 4 columnas, usamos por posición.
-    if df.shape[1] < 4:
+    hdr_idx = _find_header_row(df0)
+    # data desde hdr_idx+1
+    if df0.shape[1] < 4:
         raise ValueError("SLIQ: el CSV debe tener al menos 4 columnas (Código, Especie, Denominación, Neto).")
 
-    col0, col1, col2, col3 = df.columns[:4]
+    out_rows: List[List[Any]] = []
+    by_code: Dict[int, Dict[str, Any]] = {}
 
-    df_out = pd.DataFrame({
-        "Código": df[col0],
-        "Especie": df[col1],
-        "Denominacion": df[col2],
-        "Neto a Liquidar": df[col3],
-    }).copy()
-
-    df_out["Código_num"] = df_out["Código"].apply(_to_num_es)
-    df_out["Neto_num"] = df_out["Neto a Liquidar"].apply(_to_num_es)
-
-    # output raw (Código y Neto como num si se puede)
-    raw = pd.DataFrame({
-        "Código": df_out["Código_num"].apply(lambda x: int(round(x)) if x is not None else ""),
-        "Especie": df_out["Especie"].fillna("").astype(str),
-        "Denominacion": df_out["Denominacion"].fillna("").astype(str),
-        "Neto a Liquidar": df_out["Neto_num"].apply(lambda x: float(x) if x is not None else ""),
-    })
-
-    # agrupado por código (no cero)
-    by_code = {}
-    for _, r in df_out.iterrows():
-        cod = r["Código_num"]
-        if cod is None:
+    for r in range(hdr_idx + 1, len(df0)):
+        row = df0.iloc[r].tolist()
+        if all(_clean_str(x) == "" for x in row):
             continue
-        key = int(round(cod))
-        especie = _clean_str(r["Especie"])
-        denom = _clean_str(r["Denominacion"])
-        neto = r["Neto_num"] if r["Neto_num"] is not None else 0.0
 
-        prev = by_code.get(key, {"especie": "", "denom": "", "neto": 0.0})
-        by_code[key] = {
-            "especie": prev["especie"] or especie,
-            "denom": prev["denom"] or denom,
-            "neto": prev["neto"] + float(neto),
-        }
+        cod = _to_num_es(row[0])
+        especie = _clean_str(row[1])
+        denom = _clean_str(row[2])
+        neto = _to_num_es(row[3])
 
-    return raw, by_code
+        cod_int = int(round(cod)) if cod is not None else None
+        neto_val = float(neto) if neto is not None else None
+
+        out_rows.append([
+            cod_int if cod_int is not None else "",
+            especie,
+            denom,
+            neto_val if neto_val is not None else "",
+        ])
+
+        if cod_int is not None:
+            prev = by_code.get(cod_int, {"especie": "", "denom": "", "neto": 0.0})
+            by_code[cod_int] = {
+                "especie": prev["especie"] or especie,
+                "denom": prev["denom"] or denom,
+                "neto": float(prev["neto"]) + (float(neto_val) if neto_val is not None else 0.0),
+            }
+
+    out = pd.DataFrame(out_rows, columns=["Código", "Especie", "Denominacion", "Neto a Liquidar"])
+    return out, by_code
 
 
-def _build_control(sum_by_inst: dict, sliq_by_code: dict) -> pd.DataFrame:
+def _build_control(sum_by_inst: Dict[int, int], sliq_by_code: Dict[int, Dict[str, Any]]) -> pd.DataFrame:
     """
-    Hoja "Control SLIQ tarde":
-    Instrumento/Código | Especie | Denominación | Q NASDAQ | Neto a Liquidar | Q SLIQ (fórmula) | Observación (fórmula)
-    Excluye claves con neto=0 y qnas=0 como en tu JS.
+    Control SLIQ tarde (idéntico a JS):
+    - Excluye ceros: qnas!=0 o neto!=0
+    - Unión de keys
+    - Orden: primero REVISAR (qnas+neto != 0), luego por código
+    - Q SLIQ y Observación se llenan con fórmulas al exportar
     """
     nz_inst = {k: v for k, v in sum_by_inst.items() if v != 0}
     nz_sliq = {k: v for k, v in sliq_by_code.items() if float(v.get("neto", 0.0)) != 0.0}
 
     keys = set(nz_inst.keys()) | set(nz_sliq.keys())
-    data = []
+
+    data: List[Dict[str, Any]] = []
     for k in keys:
         qnas = nz_inst.get(k, 0)
         s = nz_sliq.get(k, {"especie": "", "denom": "", "neto": 0.0})
+        neto = float(s.get("neto", 0.0))
+        revisar = (qnas + neto) != 0
+
         data.append({
+            "_revisar": revisar,
+            "_k": k,
             "Instrumento/Código": k,
             "Especie": s.get("especie", ""),
             "Denominación": s.get("denom", ""),
             "Q NASDAQ": qnas,
-            "Neto a Liquidar": float(s.get("neto", 0.0)),
-            "Q SLIQ": "",         # la llenamos con fórmula al exportar
-            "Observación": "",    # fórmula al exportar
+            "Neto a Liquidar": neto,
+            "Q SLIQ": "",
+            "Observación": "",
         })
 
-    # ordenar: primero los que revisar (qnas+neto != 0), luego por instrumento
-    def revisar(row):
-        return (row["Q NASDAQ"] + row["Neto a Liquidar"]) != 0
+    data.sort(key=lambda d: (not d["_revisar"], d["_k"]))
 
-    data.sort(key=lambda r: (not revisar(r), r["Instrumento/Código"]))
-    return pd.DataFrame(data)
+    for d in data:
+        d.pop("_revisar", None)
+        d.pop("_k", None)
+
+    return pd.DataFrame(data, columns=[
+        "Instrumento/Código", "Especie", "Denominación",
+        "Q NASDAQ", "Neto a Liquidar", "Q SLIQ", "Observación"
+    ])
 
 
 def _export_excel(df_nasdaq: pd.DataFrame, df_control: pd.DataFrame, df_sliq: pd.DataFrame) -> bytes:
     """
-    Exporta a Excel con fórmulas en Q SLIQ y Observación.
+    Exporta Excel:
+      - Nasdaq
+      - Control SLIQ tarde (con fórmulas)
+      - SLIQ
     """
     output = io.BytesIO()
+
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        # hojas
         df_nasdaq.to_excel(writer, sheet_name="Nasdaq", index=False)
         df_control.to_excel(writer, sheet_name="Control SLIQ tarde", index=False)
         df_sliq.to_excel(writer, sheet_name="SLIQ", index=False)
 
         wb = writer.book
-        ws_control = writer.sheets["Control SLIQ tarde"]
 
-        # Formatos numéricos (similar a tu JS)
         fmt_int = wb.add_format({"num_format": "#,##0"})
-        fmt_2d  = wb.add_format({"num_format": "#,##0.00"})
+        fmt_2d = wb.add_format({"num_format": "#,##0.00"})
 
-        # Column widths (un poco más prolijo)
-        ws_control.set_column("A:A", 18, fmt_int)
-        ws_control.set_column("B:B", 14)
-        ws_control.set_column("C:C", 30)
-        ws_control.set_column("D:D", 12, fmt_int)
-        ws_control.set_column("E:E", 16, fmt_2d)
-        ws_control.set_column("F:F", 12, fmt_2d)
-        ws_control.set_column("G:G", 14)
+        # ---- Nasdaq formatting
+        ws_n = writer.sheets["Nasdaq"]
+        ws_n.set_column("A:A", 14, fmt_int)
+        ws_n.set_column("B:B", 28)
+        ws_n.set_column("C:C", 16, fmt_int)
+        ws_n.set_column("D:D", 28)
+        ws_n.set_column("E:E", 20)
 
-        # Fórmulas fila por fila (como tu JS: F = D+E ; G = IF(F=0,"OK","REVISAR"))
-        # Excel: fila 2 es la primera de datos (fila 1 headers)
+        # ---- SLIQ formatting
+        ws_s = writer.sheets["SLIQ"]
+        ws_s.set_column("A:A", 12, fmt_int)
+        ws_s.set_column("B:B", 14)
+        ws_s.set_column("C:C", 32)
+        ws_s.set_column("D:D", 18, fmt_2d)
+
+        # ---- Control formatting + formulas
+        ws_c = writer.sheets["Control SLIQ tarde"]
+        ws_c.set_column("A:A", 20, fmt_int)
+        ws_c.set_column("B:B", 14)
+        ws_c.set_column("C:C", 34)
+        ws_c.set_column("D:D", 12, fmt_int)
+        ws_c.set_column("E:E", 16, fmt_2d)
+        ws_c.set_column("F:F", 12, fmt_2d)
+        ws_c.set_column("G:G", 14)
+
+        # Fórmulas: F = D + E ; G = IF(F=0,"OK","REVISAR")
         nrows = len(df_control)
         for i in range(nrows):
-            excel_row = i + 2
-            ws_control.write_formula(i + 1, 5, f"=D{excel_row}+E{excel_row}")               # col F
-            ws_control.write_formula(i + 1, 6, f'=IF(F{excel_row}=0,"OK","REVISAR")')       # col G
-
-        # Nasdaq formats (Instrumento y Cantidad)
-        ws_nas = writer.sheets["Nasdaq"]
-        ws_nas.set_column("A:A", 14, fmt_int)
-        ws_nas.set_column("B:B", 24)
-        ws_nas.set_column("C:C", 16, fmt_int)
-        ws_nas.set_column("D:D", 26)
-        ws_nas.set_column("E:E", 20)
-
-        # SLIQ formats (Código int y neto 2d)
-        ws_sliq = writer.sheets["SLIQ"]
-        ws_sliq.set_column("A:A", 12, fmt_int)
-        ws_sliq.set_column("B:B", 14)
-        ws_sliq.set_column("C:C", 30)
-        ws_sliq.set_column("D:D", 16, fmt_2d)
+            excel_row = i + 2  # fila 2 es primer dato
+            ws_c.write_formula(i + 1, 5, f"=D{excel_row}+E{excel_row}")
+            ws_c.write_formula(i + 1, 6, f'=IF(F{excel_row}=0,"OK","REVISAR")')
 
     return output.getvalue()
 
 
-# =========================
-# Render (Workbench)
-# =========================
+# =========================================================
+# Render (Streamlit tool)
+# =========================================================
 def render(back_to_home=None):
-    # IMPORTANTE: no llamar back_to_home() acá
-    st.markdown("## ⚠️ Control SLIQ")
-    st.caption("Subí NASDAQ (CSV con coma) y SLIQ (CSV con ;). Genera 'Control SLIQ tarde.xlsx'.")
+    _inject_ui_css()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        f_nasdaq = st.file_uploader("Instr. de Liquidación NASDAQ (.csv)", type=["csv"], key="sliq_nasdaq")
-    with col2:
-        f_sliq = st.file_uploader("Especies para un Participante (.csv)", type=["csv"], key="sliq_sliq")
+    # Header como tu HTML (logo + título)
+    st.markdown(
+        """
+        <div class="sliq-topbar">
+          <div class="sliq-brand">
+            <div class="sliq-logo">N</div>
+            <div>
+              <div class="sliq-title">⚠️ Control SLIQ</div>
+              <div class="sliq-sub">Genera el Excel "Control SLIQ tarde.xlsx" a partir de NASDAQ y SLIQ.</div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown('<div class="sliq-card">', unsafe_allow_html=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        f_nasdaq = st.file_uploader("Instr. de Liquidación NASDAQ", type=["csv"], key="sliq_nasdaq")
+    with c2:
+        f_sliq = st.file_uploader("Especies para un Participante", type=["csv"], key="sliq_sliq")
+
+    run = st.button('Generar "Control SLIQ"', type="primary", key="sliq_run")
+
+    st.markdown("</div>", unsafe_allow_html=True)  # cierre card
+
+    if not run:
+        return
 
     if not f_nasdaq or not f_sliq:
-        st.info("Cargá ambos archivos para habilitar el botón.")
+        st.error("Faltan archivos: cargá NASDAQ y SLIQ (CSV).")
         return
 
-    if not st.button('Generar "Control SLIQ"', type="primary", key="sliq_run"):
-        return
+    logs: List[str] = []
+    def log(m: str):
+        logs.append(m)
 
     try:
-        with st.spinner("Leyendo archivos…"):
-            df_nas = _read_csv_bytes(f_nasdaq, sep=",")
-            df_slq = _read_csv_bytes(f_sliq, sep=";")
+        log("Leyendo NASDAQ (,) y SLIQ (;)…")
 
-        with st.spinner("Procesando NASDAQ…"):
-            df_nas_out, sum_by_inst = _build_nasdaq_detalle(df_nas)
+        # ---- NASDAQ
+        nas_txt = _read_text_with_fallback(f_nasdaq)
+        df_n0 = _read_csv_as_table(nas_txt, sep=",")
+        if df_n0.empty:
+            st.error("NASDAQ: archivo vacío.")
+            return
 
-        with st.spinner("Procesando SLIQ…"):
-            df_sliq_out, sliq_by_code = _build_sliq_raw(df_slq)
+        log("Procesando NASDAQ…")
+        df_nas_out, sum_by_inst = _build_nasdaq_detalle_from_table(df_n0)
 
-        with st.spinner("Armando Control…"):
-            df_control = _build_control(sum_by_inst, sliq_by_code)
+        # ---- SLIQ
+        sliq_txt = _read_text_with_fallback(f_sliq)
+        df_s0 = _read_csv_as_table(sliq_txt, sep=";")
+        if df_s0.empty:
+            st.error("SLIQ: archivo vacío.")
+            return
 
+        log("Procesando SLIQ…")
+        df_sliq_out, sliq_by_code = _build_sliq_from_table(df_s0)
+
+        # ---- CONTROL
+        log("Armando Control SLIQ tarde…")
+        df_control = _build_control(sum_by_inst, sliq_by_code)
+
+        # ---- EXCEL
+        log("Generando Excel…")
         xlsx_bytes = _export_excel(df_nas_out, df_control, df_sliq_out)
 
-        st.success("Listo ✅ Se generó el Excel.")
+        st.success("Listo ✅ Se generó el archivo.")
         st.download_button(
             "Descargar Control SLIQ tarde.xlsx",
             data=xlsx_bytes,
@@ -313,10 +503,19 @@ def render(back_to_home=None):
             key="sliq_download",
         )
 
-        # Preview chica
+        # Logs + preview (opcional, pero útil)
+        st.markdown('<div class="sliq-logs">', unsafe_allow_html=True)
+        st.write("\n".join(f"• {m}" for m in logs))
+        st.markdown("</div>", unsafe_allow_html=True)
+
         st.divider()
-        st.subheader("Preview (Control SLIQ tarde)")
-        st.dataframe(df_control.head(50), use_container_width=True, hide_index=True)
+        st.subheader("Preview — Control SLIQ tarde")
+        st.dataframe(df_control.head(80), use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error("Error generando el Control SLIQ.")
+        st.exception(e)
+
 
     except Exception as e:
         st.error("Error generando el Control SLIQ.")
