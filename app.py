@@ -135,7 +135,6 @@ def go_home():
 
 def back_to_home_factory(tool_key: str):
     def _back():
-          go_home()
     return _back
 
 
