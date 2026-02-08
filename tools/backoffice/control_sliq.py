@@ -1,8 +1,10 @@
-# tools/control_sliq.py
+# tools/backoffice/control_sliq.py
 from __future__ import annotations
 
 import io
 import re
+import csv
+from io import StringIO
 from typing import Optional, Tuple, Dict, Any, List
 
 import pandas as pd
@@ -10,9 +12,9 @@ import streamlit as st
 
 
 # =========================================================
-# UI (estilo parecido al HTML)
+# UI (similar al HTML)
 # =========================================================
-def _inject_ui_css():
+def _inject_ui_css() -> None:
     st.markdown(
         """
         <style>
@@ -81,18 +83,15 @@ def _clean_str(x) -> str:
 
 
 def _strip_accents(s: str) -> str:
-    # Normalización simple sin depender de unidecode
-    # (quita marcas diacríticas unicode)
+    # Quita tildes / marcas diacríticas unicode
     return "".join(ch for ch in s.normalize("NFD") if not ("\u0300" <= ch <= "\u036f"))
 
 
 def _norm_header(s: Any) -> str:
     s = _clean_str(s).lower()
-    # quita tildes/acentos y compacta espacios
     try:
-        s = _strip_accents(s)  # type: ignore[attr-defined]
+        s = _strip_accents(s)
     except Exception:
-        # fallback (por si no existe normalize)
         pass
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -116,8 +115,7 @@ def _to_num_es(v) -> Optional[float]:
         s = s.replace(",", ".")
 
     try:
-        n = float(s)
-        return n
+        return float(s)
     except Exception:
         return None
 
@@ -125,52 +123,85 @@ def _to_num_es(v) -> Optional[float]:
 def _read_text_with_fallback(file) -> str:
     """
     Lee st.file_uploader (bytes) como texto.
-    Prueba utf-8, si aparecen caracteres raros, intenta cp1252.
+    Prueba utf-8 y fallback cp1252.
     """
     raw = file.getvalue()
     for enc in ("utf-8", "cp1252"):
         try:
             txt = raw.decode(enc)
-            # Si hay � (replacement char), probamos el otro
             if "\uFFFD" in txt and enc != "cp1252":
                 continue
             return txt
         except Exception:
             continue
-    # último recurso
     return raw.decode("utf-8", errors="replace")
 
 
 def _read_csv_as_table(text: str, sep: str) -> pd.DataFrame:
     """
-    Lee CSV a DataFrame sin header (header=None) para poder detectar header row como en JS.
-    Maneja BOM.
+    CSV ultra-tolerante (para igualar el HTML):
+    1) pandas normal
+    2) pandas tolerante (on_bad_lines="skip")
+    3) fallback manual (csv.reader + fix de comillas impares)
     """
     if text.startswith("\ufeff"):
         text = text.lstrip("\ufeff")
 
-    # engine="python" suele ser más tolerante con CSV raros
-    return pd.read_csv(
-        io.StringIO(text),
-        sep=sep,
-        header=None,
-        dtype=str,
-        engine="python",
-        keep_default_na=False,
-    )
+    # --- intento 1: pandas normal ---
+    try:
+        return pd.read_csv(
+            io.StringIO(text),
+            sep=sep,
+            header=None,
+            dtype=str,
+            engine="python",
+            keep_default_na=False,
+        )
+    except Exception:
+        pass
+
+    # --- intento 2: pandas tolerante ---
+    try:
+        return pd.read_csv(
+            io.StringIO(text),
+            sep=sep,
+            header=None,
+            dtype=str,
+            engine="python",
+            keep_default_na=False,
+            on_bad_lines="skip",
+            quoting=csv.QUOTE_MINIMAL,
+            escapechar="\\",
+        )
+    except Exception:
+        pass
+
+    # --- intento 3: manual (más parecido a JS) ---
+    fixed_lines: List[str] = []
+    for line in text.splitlines():
+        # Si hay comillas impares, las duplicamos para “cerrar”
+        if line.count('"') % 2 == 1:
+            line = line.replace('"', '""')
+        fixed_lines.append(line)
+
+    reader = csv.reader(StringIO("\n".join(fixed_lines)), delimiter=sep, quotechar='"')
+    data = list(reader)
+
+    max_len = max((len(r) for r in data), default=0)
+    padded = [r + [""] * (max_len - len(r)) for r in data]
+
+    return pd.DataFrame(padded, dtype=str)
 
 
 def _find_header_row(df0: pd.DataFrame, max_rows: int = 20) -> int:
     """
-    Replica findHeaderRow(aoa): elige la fila con mayor "ancho" (celdas no vacías) en las primeras N filas.
+    Replica JS findHeaderRow: elige la fila con más celdas no vacías.
     """
     lim = min(max_rows, len(df0))
     best = 0
     best_w = -1
-
     for r in range(lim):
         row = df0.iloc[r].tolist()
-        # contamos celdas NO vacías (similar a "len" útil)
         w = sum(1 for x in row if _clean_str(x) != "")
         if w > best_w:
             best_w = w
@@ -180,13 +211,12 @@ def _find_header_row(df0: pd.DataFrame, max_rows: int = 20) -> int:
 
 def _map_exact_indexes(header_row: List[Any], wanted: List[str]) -> List[int]:
     """
-    Replica mapExactIndexes: mapea wanted -> índice en header, usando normHeader.
+    Replica JS mapExactIndexes usando normHeader (sin tildes, etc).
     """
     header_map = {_norm_header(h): i for i, h in enumerate(header_row)}
     out = []
     for w in wanted:
-        key = _norm_header(w)
-        out.append(header_map.get(key, -1))
+        out.append(header_map.get(_norm_header(w), -1))
     return out
 
 
@@ -194,17 +224,6 @@ def _map_exact_indexes(header_row: List[Any], wanted: List[str]) -> List[int]:
 # Core logic (idéntica al JS)
 # =========================================================
 def _build_nasdaq_detalle_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[int, int]]:
-    """
-    NASDAQ:
-    - Detecta header row
-    - Mapea columnas exactas por nombre normalizado (sin tildes, etc.)
-    - Filtra:
-        ref NO empieza con "SLIQ-"
-        cuenta == "7142/10000"
-        estado != "CANCELADO"
-    - Detalle: (Instrumento, Referencia, Cantidad, Cuenta, Estado)
-    - sumByInst: suma Cantidad por Instrumento (enteros redondeados)
-    """
     hdr_idx = _find_header_row(df0)
     header = df0.iloc[hdr_idx].tolist()
 
@@ -218,14 +237,14 @@ def _build_nasdaq_detalle_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, D
     idx = _map_exact_indexes(header, want)
     if any(i < 0 for i in idx):
         raise ValueError(
-            "NASDAQ: falta alguna columna exacta (según encabezados). "
-            f"Busco: {want}. Header detectado: {header}"
+            "NASDAQ: falta alguna columna exacta.\n"
+            f"Busco: {want}\n"
+            f"Header detectado: {header}"
         )
 
     detalle_rows: List[List[Any]] = []
     sum_by_inst: Dict[int, int] = {}
 
-    # iterar filas de datos
     for r in range(hdr_idx + 1, len(df0)):
         row = df0.iloc[r].tolist()
         if all(_clean_str(x) == "" for x in row):
@@ -274,16 +293,10 @@ def _build_nasdaq_detalle_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, D
 
 
 def _build_sliq_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[int, Dict[str, Any]]]:
-    """
-    SLIQ (replica JS):
-    - Detecta header row (aunque el JS usa la misma lógica)
-    - Toma columnas por posición: 0 Código, 1 Especie, 2 Denominacion, 3 Neto a Liquidar
-    - Suma neto por código (manteniendo especie/denom como first-non-empty)
-    """
     hdr_idx = _find_header_row(df0)
-    # data desde hdr_idx+1
+
     if df0.shape[1] < 4:
-        raise ValueError("SLIQ: el CSV debe tener al menos 4 columnas (Código, Especie, Denominación, Neto).")
+        raise ValueError("SLIQ: el CSV debe tener al menos 4 columnas.")
 
     out_rows: List[List[Any]] = []
     by_code: Dict[int, Dict[str, Any]] = {}
@@ -321,13 +334,6 @@ def _build_sliq_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[int, D
 
 
 def _build_control(sum_by_inst: Dict[int, int], sliq_by_code: Dict[int, Dict[str, Any]]) -> pd.DataFrame:
-    """
-    Control SLIQ tarde (idéntico a JS):
-    - Excluye ceros: qnas!=0 o neto!=0
-    - Unión de keys
-    - Orden: primero REVISAR (qnas+neto != 0), luego por código
-    - Q SLIQ y Observación se llenan con fórmulas al exportar
-    """
     nz_inst = {k: v for k, v in sum_by_inst.items() if v != 0}
     nz_sliq = {k: v for k, v in sliq_by_code.items() if float(v.get("neto", 0.0)) != 0.0}
 
@@ -358,19 +364,21 @@ def _build_control(sum_by_inst: Dict[int, int], sliq_by_code: Dict[int, Dict[str
         d.pop("_revisar", None)
         d.pop("_k", None)
 
-    return pd.DataFrame(data, columns=[
-        "Instrumento/Código", "Especie", "Denominación",
-        "Q NASDAQ", "Neto a Liquidar", "Q SLIQ", "Observación"
-    ])
+    return pd.DataFrame(
+        data,
+        columns=[
+            "Instrumento/Código",
+            "Especie",
+            "Denominación",
+            "Q NASDAQ",
+            "Neto a Liquidar",
+            "Q SLIQ",
+            "Observación",
+        ],
+    )
 
 
 def _export_excel(df_nasdaq: pd.DataFrame, df_control: pd.DataFrame, df_sliq: pd.DataFrame) -> bytes:
-    """
-    Exporta Excel:
-      - Nasdaq
-      - Control SLIQ tarde (con fórmulas)
-      - SLIQ
-    """
     output = io.BytesIO()
 
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
@@ -379,11 +387,9 @@ def _export_excel(df_nasdaq: pd.DataFrame, df_control: pd.DataFrame, df_sliq: pd
         df_sliq.to_excel(writer, sheet_name="SLIQ", index=False)
 
         wb = writer.book
-
         fmt_int = wb.add_format({"num_format": "#,##0"})
         fmt_2d = wb.add_format({"num_format": "#,##0.00"})
 
-        # ---- Nasdaq formatting
         ws_n = writer.sheets["Nasdaq"]
         ws_n.set_column("A:A", 14, fmt_int)
         ws_n.set_column("B:B", 28)
@@ -391,14 +397,12 @@ def _export_excel(df_nasdaq: pd.DataFrame, df_control: pd.DataFrame, df_sliq: pd
         ws_n.set_column("D:D", 28)
         ws_n.set_column("E:E", 20)
 
-        # ---- SLIQ formatting
         ws_s = writer.sheets["SLIQ"]
         ws_s.set_column("A:A", 12, fmt_int)
         ws_s.set_column("B:B", 14)
         ws_s.set_column("C:C", 32)
         ws_s.set_column("D:D", 18, fmt_2d)
 
-        # ---- Control formatting + formulas
         ws_c = writer.sheets["Control SLIQ tarde"]
         ws_c.set_column("A:A", 20, fmt_int)
         ws_c.set_column("B:B", 14)
@@ -408,10 +412,9 @@ def _export_excel(df_nasdaq: pd.DataFrame, df_control: pd.DataFrame, df_sliq: pd
         ws_c.set_column("F:F", 12, fmt_2d)
         ws_c.set_column("G:G", 14)
 
-        # Fórmulas: F = D + E ; G = IF(F=0,"OK","REVISAR")
         nrows = len(df_control)
         for i in range(nrows):
-            excel_row = i + 2  # fila 2 es primer dato
+            excel_row = i + 2
             ws_c.write_formula(i + 1, 5, f"=D{excel_row}+E{excel_row}")
             ws_c.write_formula(i + 1, 6, f'=IF(F{excel_row}=0,"OK","REVISAR")')
 
@@ -424,7 +427,6 @@ def _export_excel(df_nasdaq: pd.DataFrame, df_control: pd.DataFrame, df_sliq: pd
 def render(back_to_home=None):
     _inject_ui_css()
 
-    # Header como tu HTML (logo + título)
     st.markdown(
         """
         <div class="sliq-topbar">
@@ -432,7 +434,7 @@ def render(back_to_home=None):
             <div class="sliq-logo">N</div>
             <div>
               <div class="sliq-title">⚠️ Control SLIQ</div>
-              <div class="sliq-sub">Genera el Excel "Control SLIQ tarde.xlsx" a partir de NASDAQ y SLIQ.</div>
+              <div class="sliq-sub">Cargá NASDAQ (,) y SLIQ (;). Genera "Control SLIQ tarde.xlsx".</div>
             </div>
           </div>
         </div>
@@ -450,7 +452,7 @@ def render(back_to_home=None):
 
     run = st.button('Generar "Control SLIQ"', type="primary", key="sliq_run")
 
-    st.markdown("</div>", unsafe_allow_html=True)  # cierre card
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if not run:
         return
@@ -478,6 +480,12 @@ def render(back_to_home=None):
 
         # ---- SLIQ
         sliq_txt = _read_text_with_fallback(f_sliq)
+
+        # Aviso útil si viene “roto” (comillas impares)
+        bad_quotes = sum(1 for ln in sliq_txt.splitlines() if ln.count('"') % 2 == 1)
+        if bad_quotes:
+            st.warning(f"SLIQ: detecté {bad_quotes} línea(s) con comillas desbalanceadas. Se corrigieron automáticamente.")
+
         df_s0 = _read_csv_as_table(sliq_txt, sep=";")
         if df_s0.empty:
             st.error("SLIQ: archivo vacío.")
@@ -503,7 +511,6 @@ def render(back_to_home=None):
             key="sliq_download",
         )
 
-        # Logs + preview (opcional, pero útil)
         st.markdown('<div class="sliq-logs">', unsafe_allow_html=True)
         st.write("\n".join(f"• {m}" for m in logs))
         st.markdown("</div>", unsafe_allow_html=True)
@@ -515,9 +522,3 @@ def render(back_to_home=None):
     except Exception as e:
         st.error("Error generando el Control SLIQ.")
         st.exception(e)
-
-
-    except Exception as e:
-        st.error("Error generando el Control SLIQ.")
-        st.exception(e)
-
