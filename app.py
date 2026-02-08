@@ -25,14 +25,14 @@ st.markdown(
     <style>
     /* ===== Contenedor general ===== */
     .block-container{
-        padding-top: 2.4rem;          /* aire suficiente */
+        padding-top: 2.4rem;
         max-width: 1240px;
     }
 
-    /* Oculta header nativo SIN colapsar espacio */
+    /* Oculta header nativo SIN romper layout */
     header[data-testid="stHeader"]{
         visibility: hidden;
-        height: 3.25rem;              /* CLAVE: evita que se corte el título */
+        height: 3.25rem;
     }
 
     /* ===== Header ===== */
@@ -51,7 +51,7 @@ st.markdown(
         margin-bottom: 18px;
     }
 
-    /* ===== Tabs arriba (izquierda) ===== */
+    /* ===== Tabs arriba (alineadas a la izquierda) ===== */
     .stTabs [data-baseweb="tab-list"]{
         justify-content: flex-start;
         gap: 6px;
@@ -127,18 +127,6 @@ st.markdown(
 )
 
 # =========================================================
-# HELPERS NAV
-# =========================================================
-def go_home():
-    st.query_params.clear()
-    st.rerun()
-
-def back_to_home_factory(tool_key: str):
-    def _back():
-    return _back
-
-
-# =========================================================
 # ROUTER (?tool=...)
 # =========================================================
 tool = (st.query_params.get("tool") or "").lower().strip()
@@ -146,43 +134,40 @@ tool = (st.query_params.get("tool") or "").lower().strip()
 if tool:
     st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
     st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
-
-    back_to_home = back_to_home_factory(tool)
-    back_to_home()
     st.divider()
 
     try:
         # Mesa
         if tool == "bonos":
-            bonos.render(back_to_home)
+            bonos.render(None)
         elif tool == "ons":
-            ons.render(back_to_home)
+            ons.render(None)
         elif tool == "cartera":
-            cartera.render(back_to_home)
+            cartera.render(None)
         elif tool in ("tenencia", "tenencias", "vencimientos"):
-            vencimientos.render(back_to_home)
+            vencimientos.render(None)
 
         # Comercial
         elif tool == "cheques":
-            cheques.render(back_to_home)
+            cheques.render(None)
         elif tool == "cauciones_mae":
-            cauciones_mae.render(back_to_home)
+            cauciones_mae.render(None)
         elif tool == "cauciones_byma":
-            cauciones_byma.render(back_to_home)
+            cauciones_byma.render(None)
         elif tool == "alquileres":
-            alquileres.render(back_to_home)
+            alquileres.render(None)
 
         # Operaciones
         elif tool == "ppt_manana":
-            ppt_manana.render(back_to_home)
+            ppt_manana.render(None)
         elif tool == "moc_tarde":
-            moc_tarde.render(back_to_home)
+            moc_tarde.render(None)
         elif tool == "control_sliq":
-            control_sliq.render(back_to_home)
+            control_sliq.render(None)
         elif tool == "acreditacion_mav":
-            acreditacion_mav.render(back_to_home)
+            acreditacion_mav.render(None)
         elif tool == "cauciones":
-            cauciones.render(back_to_home)
+            cauciones.render(None)
 
         else:
             st.error("Herramienta no encontrada")
@@ -263,3 +248,4 @@ with tabs[2]:
         """,
         unsafe_allow_html=True
     )
+
