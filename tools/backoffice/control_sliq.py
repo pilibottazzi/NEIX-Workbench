@@ -12,67 +12,143 @@ import streamlit as st
 
 
 # =========================================================
-# UI (similar al HTML)
+# UI (NEIX Premium, sin tocar la lógica)
 # =========================================================
+NEIX_RED = "#ff3b30"     # ajustalo si querés
+TEXT = "#111827"
+MUTED = "#6b7280"
+BORDER = "rgba(17,24,39,0.08)"
+CARD_BG = "rgba(255,255,255,0.92)"
+
+
 def _inject_ui_css() -> None:
     st.markdown(
-        """
+        f"""
         <style>
-          .sliq-topbar{
+          /* Layout general */
+          .block-container {{
+            max-width: 1180px;
+            padding-top: 1.2rem;
+            padding-bottom: 2rem;
+          }}
+
+          /* Header / Topbar del tool */
+          .sliq-head {{
             display:flex;
             align-items:center;
-            justify-content:space-between;
-            padding: 10px 6px 14px 6px;
-          }
-          .sliq-brand{
+            gap:14px;
+            border: 1px solid {BORDER};
+            background: {CARD_BG};
+            border-radius: 18px;
+            padding: 14px 16px;
+            box-shadow: 0 2px 14px rgba(0,0,0,0.04);
+            backdrop-filter: blur(6px);
+            margin-bottom: 14px;
+          }}
+          .sliq-badge {{
+            width:44px;
+            height:44px;
+            border-radius: 14px;
+            border: 1px solid {BORDER};
             display:flex;
             align-items:center;
-            gap:12px;
-          }
-          .sliq-logo{
-            width:34px; height:34px;
-            border-radius:10px;
-            border:1px solid rgba(0,0,0,0.10);
-            display:flex; align-items:center; justify-content:center;
-            font-weight:900;
-            color:#111827;
-            background:#fff;
-            box-shadow:0 2px 10px rgba(0,0,0,0.04);
-          }
-          .sliq-title{
-            margin:0;
-            font-size: 1.35rem;
+            justify-content:center;
             font-weight: 900;
-            color:#111827;
-          }
-          .sliq-sub{
-            margin: 2px 0 0 0;
-            color:#6b7280;
+            letter-spacing: .06em;
+            color: {TEXT};
+            background: #fff;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+            flex: 0 0 auto;
+          }}
+          .sliq-title {{
+            margin:0;
+            font-size: 1.25rem;
+            font-weight: 900;
+            color: {TEXT};
+            line-height: 1.2;
+          }}
+          .sliq-sub {{
+            margin: 4px 0 0 0;
+            color:{MUTED};
             font-size:.92rem;
-          }
+          }}
+          .sliq-dot {{
+            display:inline-block;
+            width:8px; height:8px;
+            border-radius:999px;
+            background:{NEIX_RED};
+            margin-right:8px;
+            vertical-align: middle;
+          }}
 
-          .sliq-card{
-            border:1px solid rgba(0,0,0,0.08);
-            border-radius:16px;
-            padding:18px;
-            background:#fff;
-            box-shadow:0 2px 10px rgba(0,0,0,0.04);
-            margin-top: 10px;
-          }
+          /* Cards */
+          .sliq-card {{
+            border:1px solid {BORDER};
+            border-radius:18px;
+            padding:16px;
+            background:{CARD_BG};
+            box-shadow:0 2px 14px rgba(0,0,0,0.04);
+            backdrop-filter: blur(6px);
+          }}
+          .sliq-card-title {{
+            margin:0 0 4px 0;
+            font-weight: 900;
+            color:{TEXT};
+            font-size: 1.0rem;
+          }}
+          .sliq-card-hint {{
+            margin:0 0 10px 0;
+            color:{MUTED};
+            font-size: .88rem;
+          }}
 
-          .sliq-logs{
+          /* File uploader dropzone */
+          [data-testid="stFileUploaderDropzone"] {{
+            border-radius: 16px !important;
+            border: 1px dashed rgba(17,24,39,0.22) !important;
+            background: rgba(249,250,251,0.82) !important;
+          }}
+
+          /* Botón primary (Streamlit) */
+          div.stButton > button[kind="primary"] {{
+            width: 100%;
+            background: {NEIX_RED};
+            border: 1px solid rgba(0,0,0,0.06);
+            color: #fff;
+            border-radius: 14px;
+            padding: 10px 14px;
+            font-weight: 900;
+            box-shadow: 0 10px 22px rgba(255,59,48,0.18);
+            transition: transform .06s ease, box-shadow .12s ease, filter .12s ease;
+          }}
+          div.stButton > button[kind="primary"]:hover {{
+            transform: translateY(-1px);
+            filter: brightness(0.98);
+            box-shadow: 0 14px 28px rgba(255,59,48,0.22);
+          }}
+
+          /* Logs */
+          .sliq-logs {{
             margin-top: 12px;
-            padding: 10px 12px;
-            border-radius: 12px;
-            border: 1px solid rgba(0,0,0,0.08);
-            background: rgba(249,250,251,0.9);
+            padding: 12px 14px;
+            border-radius: 16px;
+            border: 1px solid {BORDER};
+            background: rgba(249,250,251,0.86);
             font-size: .92rem;
-            color:#111827;
-          }
+            color:{TEXT};
+          }}
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+
+def _card_open() -> None:
+    st.markdown('<div class="sliq-card">', unsafe_allow_html=True)
+
+
+def _card_close() -> None:
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # =========================================================
@@ -381,6 +457,8 @@ def _build_control(sum_by_inst: Dict[int, int], sliq_by_code: Dict[int, Dict[str
 def _export_excel(df_nasdaq: pd.DataFrame, df_control: pd.DataFrame, df_sliq: pd.DataFrame) -> bytes:
     output = io.BytesIO()
 
+    # OJO: esto requiere xlsxwriter instalado.
+    # Si en Streamlit Cloud te da ModuleNotFoundError, cambiamos a openpyxl.
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         df_nasdaq.to_excel(writer, sheet_name="Nasdaq", index=False)
         df_control.to_excel(writer, sheet_name="Control SLIQ tarde", index=False)
@@ -428,31 +506,36 @@ def render(back_to_home=None):
     _inject_ui_css()
 
     st.markdown(
-        """
-        <div class="sliq-topbar">
-          <div class="sliq-brand">
-            <div class="sliq-logo">N</div>
-            <div>
-              <div class="sliq-title">⚠️ Control SLIQ</div>
-              <div class="sliq-sub">Cargá NASDAQ (,) y SLIQ (;). Genera "Control SLIQ tarde.xlsx".</div>
-            </div>
+        f"""
+        <div class="sliq-head">
+          <div class="sliq-badge">N</div>
+          <div>
+            <div class="sliq-title"><span class="sliq-dot"></span>⚠️ Control SLIQ</div>
+            <div class="sliq-sub">Cargá NASDAQ (,) y SLIQ (;). Genera <b>"Control SLIQ tarde.xlsx"</b>.</div>
           </div>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
-    st.markdown('<div class="sliq-card">', unsafe_allow_html=True)
+    c1, c2 = st.columns(2, gap="large")
 
-    c1, c2 = st.columns(2)
     with c1:
-        f_nasdaq = st.file_uploader("Instr. de Liquidación NASDAQ", type=["csv"], key="sliq_nasdaq")
+        _card_open()
+        st.markdown('<div class="sliq-card-title">Instr. de Liquidación NASDAQ</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sliq-card-hint">CSV separado por coma (<b>,</b>)</div>', unsafe_allow_html=True)
+        f_nasdaq = st.file_uploader("", type=["csv"], key="sliq_nasdaq", label_visibility="collapsed")
+        _card_close()
+
     with c2:
-        f_sliq = st.file_uploader("Especies para un Participante", type=["csv"], key="sliq_sliq")
+        _card_open()
+        st.markdown('<div class="sliq-card-title">Especies para un Participante</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sliq-card-hint">CSV separado por punto y coma (<b>;</b>)</div>', unsafe_allow_html=True)
+        f_sliq = st.file_uploader("", type=["csv"], key="sliq_sliq", label_visibility="collapsed")
+        _card_close()
 
+    st.write("")
     run = st.button('Generar "Control SLIQ"', type="primary", key="sliq_run")
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
     if not run:
         return
@@ -462,6 +545,7 @@ def render(back_to_home=None):
         return
 
     logs: List[str] = []
+
     def log(m: str):
         logs.append(m)
 
@@ -480,8 +564,6 @@ def render(back_to_home=None):
 
         # ---- SLIQ
         sliq_txt = _read_text_with_fallback(f_sliq)
-
-        # Aviso útil si viene “roto” (comillas impares)
         bad_quotes = sum(1 for ln in sliq_txt.splitlines() if ln.count('"') % 2 == 1)
         if bad_quotes:
             st.warning(f"SLIQ: detecté {bad_quotes} línea(s) con comillas desbalanceadas. Se corrigieron automáticamente.")
