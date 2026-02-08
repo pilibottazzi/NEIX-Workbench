@@ -18,41 +18,42 @@ st.set_page_config(
 )
 
 # =========================================================
-# ESTÉTICA PREMIUM
+# ESTÉTICA PREMIUM (ESTABLE)
 # =========================================================
 st.markdown(
     """
     <style>
     /* ===== Contenedor general ===== */
     .block-container{
-        padding-top: 2.6rem;
+        padding-top: 2.4rem;          /* aire suficiente */
         max-width: 1240px;
     }
 
-    /* Oculta header nativo sin romper layout */
+    /* Oculta header nativo SIN colapsar espacio */
     header[data-testid="stHeader"]{
-        height: 0rem;
+        visibility: hidden;
+        height: 3.25rem;              /* CLAVE: evita que se corte el título */
     }
 
     /* ===== Header ===== */
     .neix-title{
-        text-align: center;          /* ✅ CENTRADO */
+        text-align: center;
         font-weight: 900;
         letter-spacing: .12em;
         font-size: 1.55rem;
-        margin-top: .4rem;
+        margin-top: .2rem;
         margin-bottom: 4px;
     }
     .neix-caption{
-        text-align: center;          /* ✅ CENTRADO */
+        text-align: center;
         color:#6b7280;
         font-size:.95rem;
         margin-bottom: 18px;
     }
 
-    /* ===== Tabs arriba, alineadas a la izquierda ===== */
+    /* ===== Tabs arriba (izquierda) ===== */
     .stTabs [data-baseweb="tab-list"]{
-        justify-content: flex-start;      /* ← izquierda */
+        justify-content: flex-start;
         gap: 6px;
         border-bottom: 1px solid rgba(0,0,0,0.08);
         padding-left: 2px;
@@ -134,8 +135,10 @@ def go_home():
 
 def back_to_home_factory(tool_key: str):
     def _back():
-        if st.button("← Volver", key=f"back_{tool_key}"):
-            go_home()
+        with st.sidebar:
+            st.markdown("###")
+            if st.button("← Volver", key=f"back_{tool_key}"):
+                go_home()
     return _back
 
 
