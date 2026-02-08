@@ -18,15 +18,20 @@ st.set_page_config(
 )
 
 # =========================================================
-# ESTÉTICA PREMIUM
+# ESTÉTICA PREMIUM (tabs arriba izquierda + título visible)
 # =========================================================
 st.markdown(
     """
     <style>
     /* ===== Contenedor general ===== */
     .block-container{
-        padding-top: 1.4rem;
+        padding-top: 2.6rem;        /* ✅ FIX: más aire arriba para que no se corte el título */
         max-width: 1240px;
+    }
+
+    /* Oculta el header nativo pero sin romper el layout */
+    header[data-testid="stHeader"]{
+        height: 0rem;
     }
 
     /* ===== Header ===== */
@@ -34,6 +39,7 @@ st.markdown(
         font-weight: 900;
         letter-spacing: .12em;
         font-size: 1.55rem;
+        margin-top: .4rem;          /* ✅ extra suave */
         margin-bottom: 4px;
     }
     .neix-caption{
@@ -44,10 +50,11 @@ st.markdown(
 
     /* ===== Tabs arriba, izquierda ===== */
     .stTabs [data-baseweb="tab-list"]{
-        justify-content: flex-start;
+        justify-content: flex-start;          /* ✅ izquierda */
         gap: 6px;
         border-bottom: 1px solid rgba(0,0,0,0.08);
         padding-left: 2px;
+        margin-top: 6px;
     }
 
     .stTabs [data-baseweb="tab"]{
@@ -66,7 +73,7 @@ st.markdown(
 
     .stTabs [aria-selected="true"]{
         color:#111827;
-        border-bottom: 3px solid #ef4444; /* rojo NEIX */
+        border-bottom: 3px solid #ef4444; /* ✅ rojo NEIX */
     }
 
     /* ===== Secciones ===== */
@@ -131,7 +138,7 @@ def back_to_home_factory(tool_key: str):
 
 
 # =========================================================
-# ROUTER
+# ROUTER (?tool=...)
 # =========================================================
 tool = (st.query_params.get("tool") or "").lower().strip()
 
@@ -143,36 +150,46 @@ if tool:
     back_to_home()
     st.divider()
 
-    if tool == "bonos":
-        bonos.render(back_to_home)
-    elif tool == "ons":
-        ons.render(back_to_home)
-    elif tool == "cartera":
-        cartera.render(back_to_home)
-    elif tool in ("tenencia", "vencimientos"):
-        vencimientos.render(back_to_home)
+    try:
+        # Mesa
+        if tool == "bonos":
+            bonos.render(back_to_home)
+        elif tool == "ons":
+            ons.render(back_to_home)
+        elif tool == "cartera":
+            cartera.render(back_to_home)
+        elif tool in ("tenencia", "tenencias", "vencimientos"):
+            vencimientos.render(back_to_home)
 
-    elif tool == "cheques":
-        cheques.render(back_to_home)
-    elif tool == "cauciones_mae":
-        cauciones_mae.render(back_to_home)
-    elif tool == "cauciones_byma":
-        cauciones_byma.render(back_to_home)
-    elif tool == "alquileres":
-        alquileres.render(back_to_home)
+        # Comercial
+        elif tool == "cheques":
+            cheques.render(back_to_home)
+        elif tool in ("cauciones_mae", "cauciones-mae"):
+            cauciones_mae.render(back_to_home)
+        elif tool in ("cauciones_byma", "cauciones-byma"):
+            cauciones_byma.render(back_to_home)
+        elif tool == "alquileres":
+            alquileres.render(back_to_home)
 
-    elif tool == "ppt_manana":
-        ppt_manana.render(back_to_home)
-    elif tool == "moc_tarde":
-        moc_tarde.render(back_to_home)
-    elif tool == "control_sliq":
-        control_sliq.render(back_to_home)
-    elif tool == "acreditacion_mav":
-        acreditacion_mav.render(back_to_home)
-    elif tool == "cauciones":
-        cauciones.render(back_to_home)
-    else:
-        st.error("Herramienta no encontrada")
+        # Operaciones
+        elif tool in ("ppt_manana", "bo_ppt_manana"):
+            ppt_manana.render(back_to_home)
+        elif tool in ("moc_tarde", "bo_moc_tarde"):
+            moc_tarde.render(back_to_home)
+        elif tool in ("control_sliq", "bo_control_sliq"):
+            control_sliq.render(back_to_home)
+        elif tool in ("acreditacion_mav", "bo_acreditacion_mav"):
+            acreditacion_mav.render(back_to_home)
+        elif tool in ("cauciones", "bo_cauciones"):
+            cauciones.render(back_to_home)
+
+        else:
+            st.error("Herramienta no encontrada.")
+            st.caption("Volvé al Home y verificá el parámetro ?tool=...")
+
+    except Exception as e:
+        st.error("Error cargando la herramienta.")
+        st.exception(e)
 
     st.stop()
 
@@ -196,9 +213,9 @@ with tabs[0]:
     st.markdown(
         """
         <div class="tool-grid">
-          <a class="tool-btn" href="?tool=bonos">Bonos</a>
-          <a class="tool-btn" href="?tool=ons">Obligaciones Negociables</a>
-          <a class="tool-btn" href="?tool=cartera">Carteras</a>
+          <a class="tool-btn" href="?tool=bonos" target="_self">Bonos</a>
+          <a class="tool-btn" href="?tool=ons" target="_self">Obligaciones Negociables</a>
+          <a class="tool-btn" href="?tool=cartera" target="_self">Carteras</a>
         </div>
         """,
         unsafe_allow_html=True
@@ -215,12 +232,12 @@ with tabs[1]:
     st.markdown(
         """
         <div class="tool-grid">
-          <a class="tool-btn" href="?tool=cartera">Carteras</a>
-          <a class="tool-btn" href="?tool=cauciones_mae">Cauciones MAE</a>
-          <a class="tool-btn" href="?tool=cauciones_byma">Cauciones BYMA</a>
-          <a class="tool-btn" href="?tool=cheques">Cheques</a>
-          <a class="tool-btn" href="?tool=alquileres">Alquileres</a>
-          <a class="tool-btn" href="?tool=tenencia">Tenencia</a>
+          <a class="tool-btn" href="?tool=cartera" target="_self">Carteras</a>
+          <a class="tool-btn" href="?tool=cauciones_mae" target="_self">Cauciones MAE</a>
+          <a class="tool-btn" href="?tool=cauciones_byma" target="_self">Cauciones BYMA</a>
+          <a class="tool-btn" href="?tool=cheques" target="_self">Cheques</a>
+          <a class="tool-btn" href="?tool=alquileres" target="_self">Alquileres</a>
+          <a class="tool-btn" href="?tool=tenencia" target="_self">Tenencia</a>
         </div>
         """,
         unsafe_allow_html=True
@@ -237,12 +254,13 @@ with tabs[2]:
     st.markdown(
         """
         <div class="tool-grid">
-          <a class="tool-btn" href="?tool=ppt_manana">PPT Mañana</a>
-          <a class="tool-btn" href="?tool=moc_tarde">MOC Tarde</a>
-          <a class="tool-btn" href="?tool=control_sliq">Control SLIQ</a>
-          <a class="tool-btn" href="?tool=acreditacion_mav">Acreditación MAV</a>
-          <a class="tool-btn" href="?tool=cauciones">Cauciones</a>
+          <a class="tool-btn" href="?tool=ppt_manana" target="_self">PPT Mañana</a>
+          <a class="tool-btn" href="?tool=moc_tarde" target="_self">MOC Tarde</a>
+          <a class="tool-btn" href="?tool=control_sliq" target="_self">Control SLIQ</a>
+          <a class="tool-btn" href="?tool=acreditacion_mav" target="_self">Acreditación MAV</a>
+          <a class="tool-btn" href="?tool=cauciones" target="_self">Cauciones</a>
         </div>
         """,
         unsafe_allow_html=True
     )
+)
