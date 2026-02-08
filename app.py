@@ -133,6 +133,11 @@ def go_home():
     st.query_params.clear()
     st.rerun()
 
+def back_to_home_factory(tool_key: str):
+    def _back():
+          go_home()
+    return _back
+
 
 # =========================================================
 # ROUTER (?tool=...)
@@ -142,6 +147,10 @@ tool = (st.query_params.get("tool") or "").lower().strip()
 if tool:
     st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
     st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
+
+    back_to_home = back_to_home_factory(tool)
+    back_to_home()
+    st.divider()
 
     try:
         # Mesa
@@ -255,4 +264,3 @@ with tabs[2]:
         """,
         unsafe_allow_html=True
     )
-
