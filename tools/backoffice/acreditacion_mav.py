@@ -23,6 +23,17 @@ def _norm_header(s: str) -> str:
     return s
 
 
+def _safe_str(v) -> str:
+    """String safe: NaN/None/float -> '' / str(value)."""
+    if v is None:
+        return ""
+    if isinstance(v, float) and pd.isna(v):
+        return ""
+    if pd.isna(v):
+        return ""
+    return str(v)
+
+
 def find_col(headers, candidates) -> int:
     H = [_norm_header(h) for h in headers]
 
@@ -53,22 +64,14 @@ def parse_qty_int(v) -> int | None:
     En tu CSV viene como miles con coma: -12,500 => -12500
     Regla: para qty, coma y punto son separadores -> se eliminan.
     """
-    if v is None:
-        return None
-    s = str(v).strip()
+    s = _safe_str(v).strip()
     if not s or s == "-":
         return None
 
-    # deja signo
     sign = -1 if s.startswith("-") else 1
 
-    # saca todo menos digitos y separadores
     s = re.sub(r"[^\d\.,\-]", "", s)
-
-    # elimina signo para limpiar
     s = s.replace("-", "")
-
-    # para qty: sacamos TODO separador
     s = s.replace(".", "").replace(",", "").strip()
     if not s:
         return None
@@ -85,31 +88,23 @@ def parse_monto_float(v) -> float | None:
     Puede venir 1.807.030,50 o 1807030.50 o 1,807,030.50.
     Regla: detecta decimal por el separador final.
     """
-    if v is None:
-        return None
-    s = str(v).strip()
+    s = _safe_str(v).strip()
     if not s or s == "-":
         return None
 
     s = s.replace(" ", "")
 
-    # si tiene , y . => el último define decimal
     if "," in s and "." in s:
         if s.rfind(",") > s.rfind("."):
-            # decimal = coma
             s = s.replace(".", "").replace(",", ".")
         else:
-            # decimal = punto
             s = s.replace(",", "")
     elif "," in s and "." not in s:
-        # asumimos coma decimal
         s = s.replace(".", "").replace(",", ".")
     else:
-        # solo puntos: si hay 2+ puntos, son miles
         if s.count(".") >= 2:
             s = s.replace(".", "")
 
-    # deja solo número
     s = re.sub(r"[^\d\.\-]", "", s)
 
     try:
@@ -127,16 +122,13 @@ def parse_date_cell(v):
     - con hora al final
     Devuelve datetime.date o None
     """
-    if v is None:
-        return None
-    s = str(v).strip()
+    s = _safe_str(v).strip()
     if not s:
         return None
+
     s = s.split(" ")[0]
 
-    # dd/mm/yyyy
     m1 = re.match(r"^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$", s)
-    # yyyy-mm-dd
     m2 = re.match(r"^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$", s)
 
     try:
@@ -161,11 +153,9 @@ def parse_date_cell(v):
 # CSV reader (latin1 + sep auto)
 # =========================
 def read_csv_auto(uploaded_file) -> pd.DataFrame:
-    # lee como bytes y decodifica latin1 para ser idéntico al JS
     raw = uploaded_file.getvalue()
     text = raw.decode("latin1", errors="replace")
 
-    # autodetect ; o ,
     first = text.splitlines()[0] if text.splitlines() else ""
     sep = ";" if first.count(";") > first.count(",") else ","
 
@@ -225,7 +215,6 @@ def render(back_to_home=None):
         qty_col = headers[qty_idx]
         monto_col = headers[monto_idx]
 
-        # filtro: qty <= 0
         kept_mask = []
         invalid = 0
         dropped = 0
@@ -234,7 +223,7 @@ def render(back_to_home=None):
             n = parse_qty_int(v)
             if n is None:
                 invalid += 1
-                kept_mask.append(False)  # igual que JS: inválidos no pasan
+                kept_mask.append(False)
                 continue
             if n <= 0:
                 kept_mask.append(True)
@@ -244,11 +233,10 @@ def render(back_to_home=None):
 
         df_cheques = df_nasdaq.loc[kept_mask].copy()
 
-        # limpiar qty y monto (como el stripDotsInColumn del JS, pero bien para qty)
         df_cheques[qty_col] = df_cheques[qty_col].apply(parse_qty_int)
         df_cheques[monto_col] = df_cheques[monto_col].apply(parse_monto_float)
 
-        # formateo fechas (si existen)
+        # formateo fechas si existen (por nombre)
         for col in df_cheques.columns:
             if "fecha" in _norm_header(col):
                 df_cheques[col] = df_cheques[col].apply(parse_date_cell)
@@ -279,70 +267,70 @@ def render(back_to_home=None):
 
         gallo_rows = []
         for _, row in df_cheques.iterrows():
-            instrumento = (row.iloc[baseIdxs[0]] if baseIdxs[0] != -1 else "") or ""
-            cuenta = (row.iloc[baseIdxs[1]] if baseIdxs[1] != -1 else "") or ""
-            cuenta = str(cuenta).strip().replace("5992/", "")
-            cantidad = (row.iloc[baseIdxs[2]] if baseIdxs[2] != -1 else "") or ""
-            monto = (row.iloc[baseIdxs[3]] if baseIdxs[3] != -1 else "") or ""
-            moneda = (row.iloc[baseIdxs[4]] if baseIdxs[4] != -1 else "") or ""
-            fecha = (row.iloc[baseIdxs[5]] if baseIdxs[5] != -1 else "") or ""
+            instrumento = _safe_str(row.iloc[baseIdxs[0]] if baseIdxs[0] != -1 else "").strip()
+            cuenta = _safe_str(row.iloc[baseIdxs[1]] if baseIdxs[1] != -1 else "").strip().replace("5992/", "")
+            cantidad = row.iloc[baseIdxs[2]] if baseIdxs[2] != -1 else ""
+            monto = row.iloc[baseIdxs[3]] if baseIdxs[3] != -1 else ""
+            moneda = _safe_str(row.iloc[baseIdxs[4]] if baseIdxs[4] != -1 else "").strip()
+            fecha = row.iloc[baseIdxs[5]] if baseIdxs[5] != -1 else ""
 
             gallo_rows.append([
                 "",
                 "",
-                f"ACRED {str(instrumento).strip()}",
+                f"ACRED {instrumento}",
                 cuenta,
                 monto,
                 cantidad,
-                str(moneda).strip(),
+                moneda,
                 fecha,
             ])
 
         df_gallo = pd.DataFrame(gallo_rows, columns=galloCols)
 
-        # limpiar qty y monto en gallo (qty INT, monto float)
         if "Cantidad/nominal" in df_gallo.columns:
             df_gallo["Cantidad/nominal"] = df_gallo["Cantidad/nominal"].apply(parse_qty_int)
         if "Monto de liquidacion" in df_gallo.columns:
             df_gallo["Monto de liquidacion"] = df_gallo["Monto de liquidacion"].apply(parse_monto_float)
-
-        # formatear fechas
         if "Fecha efectiva de liquidacion" in df_gallo.columns:
             df_gallo["Fecha efectiva de liquidacion"] = df_gallo["Fecha efectiva de liquidacion"].apply(parse_date_cell)
 
         # Agregar "Cheque Nro" después de Referencia
         if "Referencia" in df_gallo.columns:
             idx_ref = df_gallo.columns.get_loc("Referencia")
-            cheque_num = df_gallo["Referencia"].astype(str).str.extract(r"(\d{5})\D*$", expand=False).fillna("")
+            cheque_num = (
+                df_gallo["Referencia"]
+                .astype(str)
+                .str.extract(r"(\d{5})\D*$", expand=False)
+                .fillna("")
+            )
             df_gallo.insert(idx_ref + 1, "Cheque Nro", cheque_num)
 
         # ======================
-        # 3) Merge con CPD (igual JS)
+        # 3) Merge con CPD (FIX NaN/float)
         # ======================
         df_cpd = read_csv_auto(cpd_file)
         if len(df_cpd) > 0 and df_cpd.shape[1] >= 19:
-            # JS: codInstr = fila[1], nroCheque = fila[18], guarda nroCheque por codInstr
+            # JS: codInstr = fila[1], nroCheque = fila[18]
             cpd_map = {}
             for _, fila in df_cpd.iterrows():
-                codInstr = (fila.iloc[1] or "").strip()
-                nroCheque = (fila.iloc[18] or "").strip()
+                codInstr = _safe_str(fila.iloc[1] if df_cpd.shape[1] > 1 else "").strip()
+                nroCheque = _safe_str(fila.iloc[18] if df_cpd.shape[1] > 18 else "").strip()
                 if codInstr:
                     cpd_map[codInstr] = nroCheque
 
-            # JS: relMap por Instrumento en cheques
+            # rel_map: instrumento en cheques -> nroCheque
             instr_idx_cheques = find_col(headers, ["Instrumento"])
             rel_map = {}
             if instr_idx_cheques != -1:
                 for _, rr in df_cheques.iterrows():
-                    instr = (rr.iloc[instr_idx_cheques] or "").strip()
+                    instr = _safe_str(rr.iloc[instr_idx_cheques]).strip()
                     if instr and instr in cpd_map:
                         rel_map[instr] = cpd_map[instr]
 
-            # JS: en GALLO: colCOD = 1, colREF = 2 (Referencia)
-            # set COD.INSTRUMENTO = relMap[refSinACRED]
+            # set COD.INSTRUMENTO según Referencia sin "ACRED "
             if "COD.INSTRUMENTO" in df_gallo.columns and "Referencia" in df_gallo.columns:
                 for i in range(len(df_gallo)):
-                    ref_val = str(df_gallo.at[i, "Referencia"] or "")
+                    ref_val = _safe_str(df_gallo.at[i, "Referencia"])
                     ref_clean = re.sub(r"^ACRED\s+", "", ref_val, flags=re.IGNORECASE).strip()
                     if ref_clean in rel_map:
                         df_gallo.at[i, "COD.INSTRUMENTO"] = rel_map[ref_clean]
@@ -360,7 +348,6 @@ def render(back_to_home=None):
         teamsIdxs = [find_col(headers, [c]) for c in teamsColsNames]
 
         if any(i == -1 for i in teamsIdxs):
-            # no rompemos todo, pero avisamos qué faltó
             faltan = [teamsColsNames[i] for i, idx in enumerate(teamsIdxs) if idx == -1]
             st.warning(f"PARA TEAMS: no encontré columnas: {faltan}. Reviso headers del CSV.")
             df_teams = pd.DataFrame(columns=teamsColsNames)
@@ -374,12 +361,12 @@ def render(back_to_home=None):
                 if monto_num is None or monto_num == 0:
                     continue
 
-                instrumento = str(rr.iloc[teamsIdxs[0]] or "").strip()
-                cuenta = str(rr.iloc[teamsIdxs[1]] or "").strip().replace("5992/", "")
-                moneda = str(rr.iloc[teamsIdxs[3]] or "").strip()
-                fecha = rr.iloc[teamsIdxs[4]]
+                instrumento = _safe_str(rr.iloc[teamsIdxs[0]]).strip()
+                cuenta = _safe_str(rr.iloc[teamsIdxs[1]]).strip().replace("5992/", "")
+                moneda = _safe_str(rr.iloc[teamsIdxs[3]]).strip()
+                fecha = parse_date_cell(rr.iloc[teamsIdxs[4]])
 
-                teams_rows.append([instrumento, cuenta, monto_num, moneda, parse_date_cell(fecha)])
+                teams_rows.append([instrumento, cuenta, monto_num, moneda, fecha])
 
             df_teams = pd.DataFrame(teams_rows, columns=teamsColsNames)
             if len(df_teams) > 0:
@@ -393,7 +380,6 @@ def render(back_to_home=None):
             df_cheques.to_excel(writer, sheet_name="Cheques", index=False)
             df_gallo.to_excel(writer, sheet_name="PARA GALLO", index=False)
             df_teams.to_excel(writer, sheet_name="PARA TEAMS", index=False)
-
         out.seek(0)
 
     today = dt.date.today().strftime("%d-%m-%Y")
@@ -411,4 +397,3 @@ def render(back_to_home=None):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
-
