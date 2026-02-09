@@ -224,18 +224,23 @@ def _norm_header(s: Any) -> str:
 
 
 def _to_num_es(v) -> Optional[float]:
+    """
+    IGUAL al HTML:
+    parseFloat(s.replace(/\./g,"").replace(",","."))
+
+    - Quita puntos (miles)
+    - Cambia coma a punto (decimales)
+    - Tolera signo negativo
+    """
     s = _clean_str(v)
     if not s:
         return None
 
+    # deja solo dígitos, puntos, comas y '-'
     s = re.sub(r"[^\d,.\-]", "", s)
 
-    has_comma = "," in s
-    has_dot = "." in s
-    if has_comma and has_dot:
-        s = s.replace(".", "").replace(",", ".")
-    elif has_comma and not has_dot:
-        s = s.replace(",", ".")
+    # igual al JS: borra todos los '.' y cambia ',' por '.'
+    s = s.replace(".", "").replace(",", ".")
 
     try:
         return float(s)
