@@ -12,25 +12,27 @@ import streamlit as st
 
 
 # =========================================================
-# UI (NEIX — limpio y normal)
+# UI (NEIX — minimal, elegante)
 # =========================================================
 NEIX_RED = "#ff3b30"
-TEXT = "#111827"
-MUTED = "#6b7280"
-BORDER = "rgba(17,24,39,0.10)"
-CARD_BG = "#ffffff"
+TEXT = "#0f172a"
+MUTED = "rgba(15,23,42,.62)"
+BORDER = "rgba(15,23,42,.12)"
+CARD_BG = "rgba(255,255,255,.92)"
 
 
 def _inject_ui_css() -> None:
     st.markdown(
         f"""
         <style>
+          /* Layout */
           .block-container {{
             max-width: 1120px;
-            padding-top: 1.25rem;
-            padding-bottom: 2.25rem;
+            padding-top: 1.2rem;
+            padding-bottom: 2.2rem;
           }}
 
+          /* Header */
           .sliq-head {{ margin: 0 0 10px 0; }}
           .sliq-kicker {{
             display:flex; align-items:center; gap:10px;
@@ -38,18 +40,19 @@ def _inject_ui_css() -> None:
           }}
           .sliq-badge {{
             width:38px; height:38px;
-            border-radius: 12px;
+            border-radius: 14px;
             border: 1px solid {BORDER};
             display:flex; align-items:center; justify-content:center;
-            font-weight: 800;
-            letter-spacing: .05em;
-            background:#fff;
+            font-weight: 900;
+            letter-spacing: .06em;
+            background: rgba(255,255,255,.95);
+            box-shadow: 0 6px 16px rgba(2,6,23,.08);
           }}
           .sliq-title {{
             margin:0;
-            font-size: 1.75rem;
-            font-weight: 800;
-            line-height: 1.15;
+            font-size: 1.70rem;
+            font-weight: 900;
+            line-height: 1.1;
             color:{TEXT};
           }}
           .sliq-sub {{
@@ -58,16 +61,17 @@ def _inject_ui_css() -> None:
             font-size: .95rem;
           }}
 
+          /* Cards */
           .sliq-card {{
             border:1px solid {BORDER};
-            border-radius:16px;
-            padding:14px 14px 12px 14px;
+            border-radius: 18px;
+            padding: 14px 14px 12px 14px;
             background:{CARD_BG};
-            box-shadow: 0 2px 12px rgba(0,0,0,0.03);
+            box-shadow: 0 10px 30px rgba(2,6,23,.10);
           }}
           .sliq-card-title {{
             margin:0 0 2px 0;
-            font-weight: 700;
+            font-weight: 800;
             font-size: 1.02rem;
             color:{TEXT};
           }}
@@ -77,30 +81,39 @@ def _inject_ui_css() -> None:
             font-size: .88rem;
           }}
 
+          /* Uploader */
           [data-testid="stFileUploaderDropzone"] {{
-            border-radius: 14px !important;
-            border: 1px dashed rgba(17,24,39,0.22) !important;
-            background: rgba(249,250,251,0.75) !important;
+            border-radius: 16px !important;
+            border: 1px dashed rgba(15,23,42,.22) !important;
+            background: rgba(248,250,252,.78) !important;
           }}
           [data-testid="stFileUploaderDropzone"] > div {{
-            padding: 0.65rem 0.85rem !important;
+            padding: .65rem .85rem !important;
           }}
 
+          /* Primary button */
           div.stButton > button[kind="primary"] {{
             width: 100%;
             background: {NEIX_RED};
             border: 1px solid rgba(0,0,0,0.06);
             color: #fff;
-            border-radius: 14px;
+            border-radius: 16px;
             padding: 10px 14px;
-            font-weight: 800;
-            box-shadow: 0 10px 20px rgba(255,59,48,0.16);
+            font-weight: 900;
+            box-shadow: 0 16px 30px rgba(255,59,48,.18);
             transition: transform .06s ease, box-shadow .12s ease, filter .12s ease;
           }}
           div.stButton > button[kind="primary"]:hover {{
             transform: translateY(-1px);
             filter: brightness(0.98);
-            box-shadow: 0 14px 26px rgba(255,59,48,0.20);
+            box-shadow: 0 22px 40px rgba(255,59,48,.22);
+          }}
+
+          /* Dataframe look */
+          [data-testid="stDataFrame"] {{
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid {BORDER};
           }}
 
           hr {{ margin: 1.1rem 0; }}
@@ -119,13 +132,14 @@ def _card_close() -> None:
 
 
 # =========================================================
-# Helpers de parsing / normalización (replica JS)
+# Helpers de parsing / normalización (IGUAL al HTML)
 # =========================================================
 def _clean_str(x) -> str:
     return "" if x is None else str(x).strip()
 
 
 def _strip_accents(s: str) -> str:
+    # igual a JS: normalize NFD y quitar diacríticos
     return "".join(ch for ch in s.normalize("NFD") if not ("\u0300" <= ch <= "\u036f"))
 
 
@@ -140,15 +154,24 @@ def _norm_header(s: Any) -> str:
 
 
 def _to_num_es(v) -> Optional[float]:
+    """
+    IGUAL al HTML corregido:
+    - Trim
+    - Limpia todo excepto dígitos , . -
+    - Si hay ',' y '.', asume miles '.' y decimal ','
+    - Si solo ',', decimal ','
+    """
     s = _clean_str(v)
     if not s:
         return None
 
     s = re.sub(r"[^\d,.\-]", "", s)
 
-    if "," in s and "." in s:
+    has_comma = "," in s
+    has_dot = "." in s
+    if has_comma and has_dot:
         s = s.replace(".", "").replace(",", ".")
-    elif "," in s and "." not in s:
+    elif has_comma and not has_dot:
         s = s.replace(",", ".")
 
     try:
@@ -171,6 +194,11 @@ def _read_text_with_fallback(file) -> str:
 
 
 def _read_csv_as_table(text: str, sep: str) -> pd.DataFrame:
+    """
+    Mantengo tu robustez, pero sin "inventar" nada:
+    - lee header=None (igual)
+    - si hay problemas de comillas, intenta fallback
+    """
     if text.startswith("\ufeff"):
         text = text.lstrip("\ufeff")
 
@@ -201,6 +229,7 @@ def _read_csv_as_table(text: str, sep: str) -> pd.DataFrame:
     except Exception:
         pass
 
+    # “Arreglo” mínimo (igual que vos): balancear comillas
     fixed_lines: List[str] = []
     for line in text.splitlines():
         if line.count('"') % 2 == 1:
@@ -209,22 +238,25 @@ def _read_csv_as_table(text: str, sep: str) -> pd.DataFrame:
 
     reader = csv.reader(StringIO("\n".join(fixed_lines)), delimiter=sep, quotechar='"')
     data = list(reader)
-
     max_len = max((len(r) for r in data), default=0)
     padded = [r + [""] * (max_len - len(r)) for r in data]
-
     return pd.DataFrame(padded, dtype=str)
 
 
-def _find_header_row(df0: pd.DataFrame, max_rows: int = 20) -> int:
+def _find_header_row_js_like(df0: pd.DataFrame, max_rows: int = 20) -> int:
+    """
+    IGUAL al HTML ORIGINAL (tu “perfecto”):
+    elige la fila con más columnas (len(row)), NO por no-vacíos.
+    Ojo: esto puede cambiar resultados y es el motivo por el que antes te daba distinto.
+    """
     lim = min(max_rows, len(df0))
     best = 0
-    best_w = -1
+    best_len = 0
     for r in range(lim):
         row = df0.iloc[r].tolist()
-        w = sum(1 for x in row if _clean_str(x) != "")
-        if w > best_w:
-            best_w = w
+        ln = len(row)
+        if ln > best_len:
+            best_len = ln
             best = r
     return best
 
@@ -235,10 +267,10 @@ def _map_exact_indexes(header_row: List[Any], wanted: List[str]) -> List[int]:
 
 
 # =========================================================
-# Core logic (idéntica al JS)
+# Core logic (idéntica al HTML)
 # =========================================================
 def _build_nasdaq_detalle_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[int, int]]:
-    hdr_idx = _find_header_row(df0)
+    hdr_idx = _find_header_row_js_like(df0)
     header = df0.iloc[hdr_idx].tolist()
 
     want = [
@@ -261,7 +293,7 @@ def _build_nasdaq_detalle_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, D
 
     for r in range(hdr_idx + 1, len(df0)):
         row = df0.iloc[r].tolist()
-        if all(_clean_str(x) == "" for x in row):
+        if len(row) == 0 or all(_clean_str(x) == "" for x in row):
             continue
 
         ref = _clean_str(row[idx[1]]).upper()
@@ -307,7 +339,7 @@ def _build_nasdaq_detalle_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, D
 
 
 def _build_sliq_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[int, Dict[str, Any]]]:
-    hdr_idx = _find_header_row(df0)
+    hdr_idx = _find_header_row_js_like(df0)
 
     if df0.shape[1] < 4:
         raise ValueError("SLIQ: el CSV debe tener al menos 4 columnas.")
@@ -317,13 +349,13 @@ def _build_sliq_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[int, D
 
     for r in range(hdr_idx + 1, len(df0)):
         row = df0.iloc[r].tolist()
-        if all(_clean_str(x) == "" for x in row):
+        if len(row) == 0 or all(_clean_str(x) == "" for x in row):
             continue
 
-        cod = _to_num_es(row[0])
-        especie = _clean_str(row[1])
-        denom = _clean_str(row[2])
-        neto = _to_num_es(row[3])
+        cod = _to_num_es(row[0] if len(row) > 0 else "")
+        especie = _clean_str(row[1] if len(row) > 1 else "")
+        denom = _clean_str(row[2] if len(row) > 2 else "")
+        neto = _to_num_es(row[3] if len(row) > 3 else "")
 
         cod_int = int(round(cod)) if cod is not None else None
         neto_val = float(neto) if neto is not None else None
@@ -348,6 +380,7 @@ def _build_sliq_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[int, D
 
 
 def _build_control(sum_by_inst: Dict[int, int], sliq_by_code: Dict[int, Dict[str, Any]]) -> pd.DataFrame:
+    # igual al HTML: excluye ceros antes de merge
     nz_inst = {k: v for k, v in sum_by_inst.items() if v != 0}
     nz_sliq = {k: v for k, v in sliq_by_code.items() if float(v.get("neto", 0.0)) != 0.0}
 
@@ -372,7 +405,9 @@ def _build_control(sum_by_inst: Dict[int, int], sliq_by_code: Dict[int, Dict[str
             "Observación": "",
         })
 
+    # igual al HTML: revisar primero, luego por k asc
     data.sort(key=lambda d: (not d["_revisar"], d["_k"]))
+
     for d in data:
         d.pop("_revisar", None)
         d.pop("_k", None)
@@ -392,6 +427,10 @@ def _build_control(sum_by_inst: Dict[int, int], sliq_by_code: Dict[int, Dict[str
 
 
 def _export_excel(df_nasdaq: pd.DataFrame, df_control: pd.DataFrame, df_sliq: pd.DataFrame) -> bytes:
+    """
+    Misma salida que tu versión: 3 hojas + formatos + fórmulas.
+    (HTML usa SheetJS; acá queda equivalente en Excel final.)
+    """
     output = io.BytesIO()
 
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
@@ -425,6 +464,7 @@ def _export_excel(df_nasdaq: pd.DataFrame, df_control: pd.DataFrame, df_sliq: pd
         ws_c.set_column("F:F", 12, fmt_2d)
         ws_c.set_column("G:G", 14)
 
+        # fórmulas iguales
         nrows = len(df_control)
         for i in range(nrows):
             excel_row = i + 2
@@ -499,6 +539,8 @@ def render(back_to_home=None):
         df_nas_out, sum_by_inst = _build_nasdaq_detalle_from_table(df_n0)
 
         sliq_txt = _read_text_with_fallback(f_sliq)
+
+        # warning opcional como antes
         bad_quotes = sum(1 for ln in sliq_txt.splitlines() if ln.count('"') % 2 == 1)
         if bad_quotes:
             st.warning(f"SLIQ: detecté {bad_quotes} línea(s) con comillas desbalanceadas. Se corrigieron automáticamente.")
@@ -536,4 +578,3 @@ def render(back_to_home=None):
     except Exception as e:
         st.error("Error generando el Control SLIQ.")
         st.exception(e)
-
