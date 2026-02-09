@@ -950,6 +950,8 @@ def render(back_to_home=None):
     flows = flows.round(0)
     h_flows = _height_for_rows(len(flows), row_h=34, header=42, pad=12, max_h=820)
 
+    st.markdown('<div class="flows-table">', unsafe_allow_html=True)
+    
     st.dataframe(
         flows,
         use_container_width=True,
