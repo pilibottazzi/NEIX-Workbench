@@ -1,10 +1,10 @@
-
 from __future__ import annotations
 
 import os
 import io
 import re
 from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -37,8 +37,12 @@ def _find_col(df: pd.DataFrame, must_contain: list[str]) -> str:
     - espacios múltiples
     - puntos
     - texto extra
+
+    IMPORTANTE: NO levanta KeyError (Streamlit lo redacted). Levanta ValueError.
     """
     cols = [str(c).strip() for c in df.columns]
+
+    # normalización suave
     cols_norm = {c: re.sub(r"\s+", " ", c.lower()) for c in cols}
 
     for c, cn in cols_norm.items():
@@ -51,7 +55,9 @@ def _find_col(df: pd.DataFrame, must_contain: list[str]) -> str:
         if ok:
             return c
 
-    raise KeyError(f"No encontré columna con tokens={must_contain}. Columnas: {cols}")
+    raise ValueError(
+        f"No encontré columna con tokens={must_contain}. Columnas detectadas: {cols}"
+    )
 
 
 def _split_cliente_nombre(df: pd.DataFrame, col_cliente_nombre: str) -> pd.DataFrame:
@@ -59,6 +65,7 @@ def _split_cliente_nombre(df: pd.DataFrame, col_cliente_nombre: str) -> pd.DataF
     Parte "Cliente Nombre del Cliente" -> Cliente + Nombre del Cliente
     """
     df = df.rename(columns={col_cliente_nombre: "ClienteNombreRaw"}).copy()
+
     split = (
         df["ClienteNombreRaw"]
         .astype(str)
@@ -113,9 +120,15 @@ def _read_txt_uploaded(uploaded_file) -> pd.DataFrame:
 
 
 def _read_excel_uploaded(uploaded_file) -> pd.DataFrame:
-    # si viene con hojas, toma la primera por defecto
+    # Algunas planillas tienen "Unnamed: 0" o filas vacías arriba.
     df = pd.read_excel(uploaded_file, dtype=str)
     df.columns = df.columns.astype(str).str.strip()
+
+    # eliminar columnas vacías tipo Unnamed
+    df = df.loc[:, ~df.columns.str.match(r"^Unnamed", na=False)].copy()
+
+    # dropear filas totalmente vacías
+    df = df.dropna(how="all").copy()
 
     col_cliente_nombre = _find_col(df, ["cliente", "nombre"])
     df = _split_cliente_nombre(df, col_cliente_nombre)
@@ -193,9 +206,7 @@ def _to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
 # =========================
 def render(back_to_home=None):
     st.markdown("## Tenencia (por Activo)")
-    st.caption(
-        "RUTA GALLO:  Consulta tenencias"    )
-
+    st.caption("RUTA GALLO: Consulta tenencias")
 
     # 1) managers obligatorio
     try:
@@ -206,7 +217,7 @@ def render(back_to_home=None):
         st.exception(e)
         st.stop()
 
-    # 2) uploader múltiples txt/xlsx
+    # 2) uploader
     archivos = st.file_uploader(
         "Subí uno o varios archivos (.txt / .xlsx / .xls)",
         type=["txt", "xlsx", "xls"],
@@ -239,6 +250,7 @@ def render(back_to_home=None):
             dfs_por_activo[activo] = df
 
         except Exception as e:
+            # mostramos error legible y sin "redacted"
             errores.append((activo, str(e)))
 
     if errores:
@@ -298,7 +310,7 @@ def render(back_to_home=None):
     if "Oficial" in df_f.columns and "Todos" not in oficiales_sel:
         df_f = df_f[df_f["Oficial"].astype(str).isin(oficiales_sel)]
 
-    # 6) tablas por activo
+    # 5) tablas por activo
     st.markdown("### Tablas por Activo")
     tabs = st.tabs(sorted(dfs_por_activo.keys()))
     for activo, tab in zip(sorted(dfs_por_activo.keys()), tabs):
@@ -313,4 +325,3 @@ def render(back_to_home=None):
 
     st.markdown("### Consolidado")
     st.dataframe(df_f, use_container_width=True, hide_index=True)
-
