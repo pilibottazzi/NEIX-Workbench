@@ -27,8 +27,6 @@ def _inject_ui_css() -> None:
             padding-top: 1.4rem;
             padding-bottom: 2.2rem;
           }}
-
-          /* Títulos */
           h2 {{
             margin-bottom: 0.2rem !important;
             color: {TEXT} !important;
@@ -38,7 +36,6 @@ def _inject_ui_css() -> None:
             color: {MUTED} !important;
           }}
 
-          /* Card */
           .neix-card {{
             border: 1px solid {BORDER};
             background: {CARD_BG};
@@ -48,14 +45,12 @@ def _inject_ui_css() -> None:
             margin-top: 14px;
           }}
 
-          /* Labels */
           label {{
             font-weight: 650 !important;
             color: {TEXT} !important;
             font-size: 0.92rem !important;
           }}
 
-          /* Botón NEIX rojo */
           div.stButton > button {{
             background: {NEIX_RED} !important;
             color: white !important;
@@ -72,26 +67,22 @@ def _inject_ui_css() -> None:
             box-shadow: 0 12px 26px rgba(255,59,48,0.22) !important;
           }}
 
-          /* File uploader */
           section[data-testid="stFileUploader"] {{
             border-radius: 16px !important;
             border: 1px dashed {BORDER} !important;
             padding: 10px !important;
           }}
 
-          /* Alerts (más prolijos) */
           div[data-testid="stAlert"] {{
             border-radius: 14px !important;
           }}
 
-          /* Dataframe */
           div[data-testid="stDataFrame"] {{
             border-radius: 14px !important;
             overflow: hidden;
             border: 1px solid {BORDER};
           }}
 
-          /* Footer */
           .neix-footer {{
             margin-top: 18px;
             display:flex;
@@ -114,14 +105,13 @@ def _norm_header(s: str) -> str:
         s = s.normalize("NFD")
     except Exception:
         pass
-    s = re.sub(r"[\u0300-\u036f]", "", s)  # saca acentos
+    s = re.sub(r"[\u0300-\u036f]", "", s)  # acentos
     s = s.replace("ï¿½", "o")
     s = re.sub(r"[^a-z0-9]", "", s)
     return s
 
 
 def _safe_str(v) -> str:
-    """String safe: NaN/None/float -> '' / str(value)."""
     if v is None:
         return ""
     try:
@@ -147,16 +137,14 @@ def find_col(headers, candidates) -> int:
                 continue
             if h.startswith(c) or c.startswith(h) or (c in h) or (h in c):
                 return i
-
     return -1
 
 
 def parse_qty_int(v) -> int | None:
     """
     Cantidad/nominal:
-    -12,500  -> -12500
-    12.500   -> 12500
-    Regla: para qty, coma y punto se tratan como separadores de miles.
+    -12,500 -> -12500
+    12.500  -> 12500
     """
     s = _safe_str(v).strip()
     if not s or s == "-":
@@ -205,10 +193,8 @@ def parse_monto_float(v) -> float | None:
 def read_csv_auto(uploaded_file) -> pd.DataFrame:
     raw = uploaded_file.getvalue()
     text = raw.decode("latin1", errors="replace")
-
     first = text.splitlines()[0] if text.splitlines() else ""
     sep = ";" if first.count(";") > first.count(",") else ","
-
     return pd.read_csv(io.StringIO(text), sep=sep, engine="python", dtype=str)
 
 
@@ -224,13 +210,10 @@ def render(back_to_home=None):
     st.markdown('<div class="neix-card">', unsafe_allow_html=True)
 
     c1, c2, c3 = st.columns([0.40, 0.40, 0.20])
-
     with c1:
         nasdaq_file = st.file_uploader("Cheques NASDAQ (CSV)", type=["csv"])
-
     with c2:
         cpd_file = st.file_uploader("CPD Instrumentos Listado (CSV)", type=["csv"])
-
     with c3:
         st.markdown("&nbsp;")
         do = st.button("Procesar", use_container_width=True)
@@ -296,25 +279,33 @@ def render(back_to_home=None):
 
         df_cheques = df_nasdaq.loc[kept_mask].copy()
 
-        # convertir qty/monto
+        # convertir qty y monto (fechas quedan string, no se tocan)
         df_cheques[qty_col] = df_cheques[qty_col].apply(parse_qty_int)
         df_cheques[monto_col] = df_cheques[monto_col].apply(parse_monto_float)
 
-        # IMPORTANTÍSIMO: fechas se dejan como STRING tal cual vienen (fecha + hora)
-        # (No se parsea nada acá para que salga idéntico al HTML.)
+        # ======================
+        # 2) PARA GALLO (con tildes / variantes)
+        # ======================
+        idx_instr = find_col(headers, ["Instrumento"])
+        idx_cta = find_col(headers, ["Cuenta de valores negociables", "Cuenta de valores", "Cuentadevaloresnegociables"])
 
-        # ======================
-        # 2) PARA GALLO (idéntico al HTML)
-        # ======================
-        baseCols = [
-            "Instrumento",
-            "Cuenta de valores negociables",
-            "Cantidad/nominal",
+        # MONTO: buscar con tilde/sin tilde
+        idx_monto = find_col(headers, [
+            "Monto de liquidación",
             "Monto de liquidacion",
-            "Moneda",
+            "Monto de liquidaci",
+            "montodeliquidac",
+        ])
+
+        idx_moneda = find_col(headers, ["Moneda"])
+
+        # FECHA EFECTIVA: buscar con tilde/sin tilde
+        idx_fecha_ef = find_col(headers, [
+            "Fecha efectiva de liquidación",
             "Fecha efectiva de liquidacion",
-        ]
-        baseIdxs = [find_col(headers, [c]) for c in baseCols]
+            "Fecha efectivade liquidacion",
+            "Fecha efectivadeliquidacion",
+        ])
 
         galloCols = [
             "Tipo Instrumento",
@@ -330,13 +321,16 @@ def render(back_to_home=None):
 
         gallo_rows = []
         for _, row in df_cheques.iterrows():
-            instrumento = _safe_str(row.iloc[baseIdxs[0]] if baseIdxs[0] != -1 else "").strip()
-            cuenta = _safe_str(row.iloc[baseIdxs[1]] if baseIdxs[1] != -1 else "").strip().replace("5992/", "")
-            cantidad_raw = row.iloc[baseIdxs[2]] if baseIdxs[2] != -1 else ""
-            monto_raw = row.iloc[baseIdxs[3]] if baseIdxs[3] != -1 else ""
-            moneda = _safe_str(row.iloc[baseIdxs[4]] if baseIdxs[4] != -1 else "").strip()
-            # FECHA: tal cual con hora (no parsear)
-            fecha_raw = _safe_str(row.iloc[baseIdxs[5]] if baseIdxs[5] != -1 else "").strip()
+            instrumento = _safe_str(row.iloc[idx_instr] if idx_instr != -1 else "").strip()
+            cuenta = _safe_str(row.iloc[idx_cta] if idx_cta != -1 else "").strip().replace("5992/", "")
+
+            monto_raw = _safe_str(row.iloc[idx_monto] if idx_monto != -1 else "").strip()
+            cantidad_raw = _safe_str(row.iloc[qty_idx]).strip()
+
+            moneda = _safe_str(row.iloc[idx_moneda] if idx_moneda != -1 else "").strip()
+
+            # FECHA: TAL CUAL (fecha + hora)
+            fecha_raw = _safe_str(row.iloc[idx_fecha_ef] if idx_fecha_ef != -1 else "").strip()
 
             ref = f"ACRED {instrumento}".strip()
             m = re.search(r"(\d{5})\D*$", ref)
@@ -356,7 +350,7 @@ def render(back_to_home=None):
 
         df_gallo = pd.DataFrame(gallo_rows, columns=galloCols)
 
-        # convertir qty/monto en GALLO (pero fecha queda string)
+        # convertir qty/monto en GALLO (fecha queda string)
         df_gallo["Cantidad/nominal"] = df_gallo["Cantidad/nominal"].apply(parse_qty_int)
         df_gallo["Monto de liquidacion"] = df_gallo["Monto de liquidacion"].apply(parse_monto_float)
 
@@ -365,7 +359,6 @@ def render(back_to_home=None):
         # ======================
         df_cpd = read_csv_auto(cpd_file)
         if len(df_cpd) > 0 and df_cpd.shape[1] >= 19:
-            # JS: codInstr = fila[1], nroCheque = fila[18]
             cpd_map = {}
             for _, fila in df_cpd.iterrows():
                 codInstr = _safe_str(fila.iloc[1] if df_cpd.shape[1] > 1 else "").strip()
@@ -373,26 +366,25 @@ def render(back_to_home=None):
                 if codInstr:
                     cpd_map[codInstr] = nroCheque
 
-            # rel_map: instrumento en cheques -> nroCheque
-            instr_idx_cheques = find_col(headers, ["Instrumento"])
             rel_map = {}
-            if instr_idx_cheques != -1:
+            if idx_instr != -1:
                 for _, rr in df_cheques.iterrows():
-                    instr = _safe_str(rr.iloc[instr_idx_cheques]).strip()
+                    instr = _safe_str(rr.iloc[idx_instr]).strip()
                     if instr and instr in cpd_map:
                         rel_map[instr] = cpd_map[instr]
 
-            # set COD.INSTRUMENTO según Referencia sin "ACRED "
-            if "COD.INSTRUMENTO" in df_gallo.columns and "Referencia" in df_gallo.columns:
-                for i in range(len(df_gallo)):
-                    ref_val = _safe_str(df_gallo.at[i, "Referencia"])
-                    ref_clean = re.sub(r"^ACRED\s+", "", ref_val, flags=re.IGNORECASE).strip()
-                    if ref_clean in rel_map:
-                        df_gallo.at[i, "COD.INSTRUMENTO"] = rel_map[ref_clean]
+            for i in range(len(df_gallo)):
+                ref_val = _safe_str(df_gallo.at[i, "Referencia"])
+                ref_clean = re.sub(r"^ACRED\s+", "", ref_val, flags=re.IGNORECASE).strip()
+                if ref_clean in rel_map:
+                    df_gallo.at[i, "COD.INSTRUMENTO"] = rel_map[ref_clean]
 
         # ======================
-        # 4) PARA TEAMS (idéntico + conserva hora)
+        # 4) PARA TEAMS (perfecto, conserva hora)
         # ======================
+        idx_fecha_teams = find_col(headers, ["Fecha efectiva de liquidación", "Fecha efectiva de liquidacion"])
+        idx_monto_teams = idx_monto  # mismo que arriba
+
         teamsCols = [
             "Instrumento",
             "Cuenta de valores negociables",
@@ -400,27 +392,20 @@ def render(back_to_home=None):
             "Moneda",
             "Fecha efectiva de liquidación",
         ]
-        teamsIdxs = [find_col(headers, [c]) for c in teamsCols]
 
-        if any(i == -1 for i in teamsIdxs):
-            faltan = [teamsCols[i] for i, idx in enumerate(teamsIdxs) if idx == -1]
-            st.warning(f"PARA TEAMS: no encontré columnas: {faltan}.")
+        if any(i == -1 for i in [idx_instr, idx_cta, idx_monto_teams, idx_moneda, idx_fecha_teams]):
             df_teams = pd.DataFrame(columns=teamsCols)
         else:
             rows = []
             for _, rr in df_cheques.iterrows():
-                monto_raw = rr.iloc[teamsIdxs[2]]
-                monto_num = parse_monto_float(monto_raw)
-
-                # HTML: solo monto != 0
+                monto_num = parse_monto_float(rr.iloc[idx_monto_teams])
                 if monto_num is None or monto_num == 0:
                     continue
 
-                instrumento = _safe_str(rr.iloc[teamsIdxs[0]]).strip()
-                cuenta = _safe_str(rr.iloc[teamsIdxs[1]]).strip().replace("5992/", "")
-                moneda = _safe_str(rr.iloc[teamsIdxs[3]]).strip()
-                # FECHA: tal cual con hora
-                fecha = _safe_str(rr.iloc[teamsIdxs[4]]).strip()
+                instrumento = _safe_str(rr.iloc[idx_instr]).strip()
+                cuenta = _safe_str(rr.iloc[idx_cta]).strip().replace("5992/", "")
+                moneda = _safe_str(rr.iloc[idx_moneda]).strip()
+                fecha = _safe_str(rr.iloc[idx_fecha_teams]).strip()  # conserva hora
 
                 rows.append([instrumento, cuenta, monto_num, moneda, fecha])
 
@@ -457,4 +442,3 @@ def render(back_to_home=None):
         '<div class="neix-footer"><span>NEIX · Back Office</span><span>Acreditación MAV</span></div>',
         unsafe_allow_html=True,
     )
-
