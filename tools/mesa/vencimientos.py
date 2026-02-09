@@ -289,8 +289,6 @@ def render(back_to_home=None):
     if "Manager" in df_f.columns and "Todos" not in managers_sel:
         df_f = df_f[df_f["Manager"].astype(str).isin(managers_sel)]
 
-    # 5) tablas por activo (más alto)
-    st.markdown("### Tablas por Activo")
     tabs = st.tabs(sorted(dfs_por_activo.keys()))
     for activo, tab in zip(sorted(dfs_por_activo.keys()), tabs):
         with tab:
@@ -305,25 +303,4 @@ def render(back_to_home=None):
                 hide_index=True,
                 height=_df_height(len(df_tab)),
             )
-
-    st.markdown("### Consolidado")
-    st.dataframe(
-        df_f,
-        use_container_width=True,
-        hide_index=True,
-        height=_df_height(len(df_f)),
-    )
-
-    # 6) export (opcional, si lo querés mantener)
-    st.markdown("### Exportar")
-    sheets = {"Consolidado": df_f}
-    for activo, df in dfs_por_activo.items():
-        sheets[activo] = df
-
-    st.download_button(
-        "📥 Descargar Excel",
-        data=_to_excel_bytes(sheets),
-        file_name="tenencia_por_activo.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
 
