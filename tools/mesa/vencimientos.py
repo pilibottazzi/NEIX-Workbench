@@ -41,8 +41,6 @@ def _find_col(df: pd.DataFrame, must_contain: list[str]) -> str:
     IMPORTANTE: NO levanta KeyError (Streamlit lo redacted). Levanta ValueError.
     """
     cols = [str(c).strip() for c in df.columns]
-
-    # normalización suave
     cols_norm = {c: re.sub(r"\s+", " ", c.lower()) for c in cols}
 
     for c, cn in cols_norm.items():
@@ -55,9 +53,7 @@ def _find_col(df: pd.DataFrame, must_contain: list[str]) -> str:
         if ok:
             return c
 
-    raise ValueError(
-        f"No encontré columna con tokens={must_contain}. Columnas detectadas: {cols}"
-    )
+    raise ValueError(f"No encontré columna con tokens={must_contain}. Columnas detectadas: {cols}")
 
 
 def _split_cliente_nombre(df: pd.DataFrame, col_cliente_nombre: str) -> pd.DataFrame:
@@ -77,7 +73,6 @@ def _split_cliente_nombre(df: pd.DataFrame, col_cliente_nombre: str) -> pd.DataF
     df = df.drop(columns=["ClienteNombreRaw"])
     df["Cliente"] = _norm_num(df["Cliente"])
 
-    # limpiar "Total"
     df = df[~df["Cliente"].astype(str).str.lower().str.contains("total", na=False)].copy()
     return df
 
@@ -90,6 +85,11 @@ def _to_numeric_series(s: pd.Series) -> pd.Series:
         .str.replace(r"[^\d\.\-]", "", regex=True)
     )
     return pd.to_numeric(s, errors="coerce")
+
+
+def _df_height(n: int, row_h: int = 28, header: int = 36, max_h: int = 900) -> int:
+    """Altura dinámica para mostrar más filas."""
+    return min(max_h, header + (n + 1) * row_h)
 
 
 def _read_txt_uploaded(uploaded_file) -> pd.DataFrame:
@@ -120,14 +120,10 @@ def _read_txt_uploaded(uploaded_file) -> pd.DataFrame:
 
 
 def _read_excel_uploaded(uploaded_file) -> pd.DataFrame:
-    # Algunas planillas tienen "Unnamed: 0" o filas vacías arriba.
     df = pd.read_excel(uploaded_file, dtype=str)
     df.columns = df.columns.astype(str).str.strip()
 
-    # eliminar columnas vacías tipo Unnamed
     df = df.loc[:, ~df.columns.str.match(r"^Unnamed", na=False)].copy()
-
-    # dropear filas totalmente vacías
     df = df.dropna(how="all").copy()
 
     col_cliente_nombre = _find_col(df, ["cliente", "nombre"])
@@ -177,7 +173,8 @@ def cargar_managers_excel() -> pd.DataFrame:
 
 def _merge_managers_strict(df_ten: pd.DataFrame, df_mgr: pd.DataFrame) -> pd.DataFrame:
     cols_keep = [
-        c for c in ["NumeroComitente", "Nombre Comitente", "NumeroManager", "Manager", "NumeroOficial", "Oficial"]
+        c
+        for c in ["NumeroComitente", "Nombre Comitente", "NumeroManager", "Manager"]
         if c in df_mgr.columns
     ]
 
@@ -236,13 +233,17 @@ def render(back_to_home=None):
         activo = _asset_from_filename(getattr(f, "name", "ACTIVO"))
         try:
             df = _read_any(f)
+
             df.insert(0, "Activo", activo)
             df = _merge_managers_strict(df, df_mgr)
 
-            # dejamos SOLO lo relevante (y managers si existen)
+            # asegurar que Oficial NO exista (por si alguna vez aparece)
+            df = df.drop(columns=[c for c in ["NumeroOficial", "Oficial"] if c in df.columns], errors="ignore")
+
+            # dejamos SOLO lo relevante (sin Oficial)
             prefer = [
                 "Activo", "Cliente", "Nombre del Cliente", "Nominales",
-                "NumeroManager", "Manager", "NumeroOficial", "Oficial", "Nombre Comitente",
+                "NumeroManager", "Manager", "Nombre Comitente",
             ]
             cols_keep = [c for c in prefer if c in df.columns]
             df = df[cols_keep].copy()
@@ -250,7 +251,6 @@ def render(back_to_home=None):
             dfs_por_activo[activo] = df
 
         except Exception as e:
-            # mostramos error legible y sin "redacted"
             errores.append((activo, str(e)))
 
     if errores:
@@ -264,24 +264,13 @@ def render(back_to_home=None):
     df_all = pd.concat(dfs_por_activo.values(), ignore_index=True)
 
     # 3) match del cruce
-    has_manager = "Manager" in df_all.columns
-    has_oficial = "Oficial" in df_all.columns
-    if has_manager or has_oficial:
-        match_mask = pd.Series(False, index=df_all.index)
-        if has_manager:
-            match_mask = match_mask | df_all["Manager"].notna()
-        if has_oficial:
-            match_mask = match_mask | df_all["Oficial"].notna()
-
-        matched = int(match_mask.sum())
+    if "Manager" in df_all.columns:
+        matched = int(df_all["Manager"].notna().sum())
         total = int(len(df_all))
-        st.info(
-            f"Cruce managers: **{matched} / {total}** filas matcheadas "
-            f"({(matched/total*100):.1f}%)."
-        )
+        st.info(f"Cruce managers: **{matched} / {total}** filas matcheadas ({(matched/total*100):.1f}%).")
 
-    # 4) filtros
-    c1, c2, c3 = st.columns([0.34, 0.33, 0.33])
+    # 4) filtros (solo Activo y Manager)
+    c1, c2 = st.columns([0.5, 0.5])
 
     with c1:
         activos = sorted(df_all["Activo"].dropna().astype(str).unique().tolist())
@@ -294,32 +283,47 @@ def render(back_to_home=None):
         else:
             managers_sel = ["Todos"]
 
-    with c3:
-        if "Oficial" in df_all.columns:
-            oficiales = sorted([x for x in df_all["Oficial"].dropna().astype(str).unique().tolist() if x.strip() and x.strip() != "None"])
-            oficiales_sel = st.multiselect("Oficial", options=["Todos"] + oficiales, default=["Todos"])
-        else:
-            oficiales_sel = ["Todos"]
-
     df_f = df_all.copy()
     if "Todos" not in activos_sel:
         df_f = df_f[df_f["Activo"].astype(str).isin(activos_sel)]
     if "Manager" in df_f.columns and "Todos" not in managers_sel:
         df_f = df_f[df_f["Manager"].astype(str).isin(managers_sel)]
-    if "Oficial" in df_f.columns and "Todos" not in oficiales_sel:
-        df_f = df_f[df_f["Oficial"].astype(str).isin(oficiales_sel)]
 
-    # 5) tablas por activo
-
+    # 5) tablas por activo (más alto)
+    st.markdown("### Tablas por Activo")
     tabs = st.tabs(sorted(dfs_por_activo.keys()))
     for activo, tab in zip(sorted(dfs_por_activo.keys()), tabs):
         with tab:
             df_tab = dfs_por_activo[activo].copy()
+
             if "Todos" not in managers_sel and "Manager" in df_tab.columns:
                 df_tab = df_tab[df_tab["Manager"].astype(str).isin(managers_sel)]
-            if "Todos" not in oficiales_sel and "Oficial" in df_tab.columns:
-                df_tab = df_tab[df_tab["Oficial"].astype(str).isin(oficiales_sel)]
 
-            st.dataframe(df_tab, use_container_width=True, hide_index=True)
+            st.dataframe(
+                df_tab,
+                use_container_width=True,
+                hide_index=True,
+                height=_df_height(len(df_tab)),
+            )
 
+    st.markdown("### Consolidado")
+    st.dataframe(
+        df_f,
+        use_container_width=True,
+        hide_index=True,
+        height=_df_height(len(df_f)),
+    )
+
+    # 6) export (opcional, si lo querés mantener)
+    st.markdown("### Exportar")
+    sheets = {"Consolidado": df_f}
+    for activo, df in dfs_por_activo.items():
+        sheets[activo] = df
+
+    st.download_button(
+        "📥 Descargar Excel",
+        data=_to_excel_bytes(sheets),
+        file_name="tenencia_por_activo.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
