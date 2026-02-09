@@ -616,11 +616,6 @@ def render(back_to_home=None):
         )
 
         st.markdown("<hr/>", unsafe_allow_html=True)
-        st.subheader("Preview — Control SLIQ tarde")
-        st.dataframe(df_control.head(80), use_container_width=True, hide_index=True)
-
-        with st.expander("Ver logs", expanded=False):
-            st.write("\n".join(f"• {m}" for m in logs))
 
     except Exception as e:
         st.error("Error generando el Control SLIQ.")
