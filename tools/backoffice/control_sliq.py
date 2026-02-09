@@ -544,14 +544,12 @@ def render(back_to_home=None):
     c1, c2 = st.columns(2, gap="large")
 
     with c1:
-        st.markdown('<div class="u-card">', unsafe_allow_html=True)
         st.markdown('<div class="u-title">Instr. de Liquidación NASDAQ</div>', unsafe_allow_html=True)
         st.markdown('<div class="u-hint">CSV separado por coma (<b>,</b>)</div>', unsafe_allow_html=True)
         f_nasdaq = st.file_uploader("", type=["csv"], key="sliq_nasdaq", label_visibility="collapsed")
         st.markdown("</div>", unsafe_allow_html=True)
 
     with c2:
-        st.markdown('<div class="u-card">', unsafe_allow_html=True)
         st.markdown('<div class="u-title">Especies para un Participante</div>', unsafe_allow_html=True)
         st.markdown('<div class="u-hint">CSV separado por punto y coma (<b>;</b>)</div>', unsafe_allow_html=True)
         f_sliq = st.file_uploader("", type=["csv"], key="sliq_sliq", label_visibility="collapsed")
