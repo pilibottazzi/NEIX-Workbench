@@ -9,7 +9,104 @@ import streamlit as st
 
 
 # =========================
-# Normalizadores
+# UI (NEIX minimal)
+# =========================
+NEIX_RED = "#ff3b30"
+TEXT = "#111827"
+MUTED = "#6b7280"
+BORDER = "rgba(17,24,39,0.10)"
+CARD_BG = "rgba(255,255,255,0.92)"
+
+
+def _inject_ui_css() -> None:
+    st.markdown(
+        f"""
+        <style>
+          .block-container {{
+            max-width: 1180px;
+            padding-top: 1.4rem;
+            padding-bottom: 2.2rem;
+          }}
+
+          /* Títulos */
+          h2 {{
+            margin-bottom: 0.2rem !important;
+            color: {TEXT} !important;
+            letter-spacing: -0.02em;
+          }}
+          .stCaption {{
+            color: {MUTED} !important;
+          }}
+
+          /* Card */
+          .neix-card {{
+            border: 1px solid {BORDER};
+            background: {CARD_BG};
+            border-radius: 18px;
+            padding: 18px 18px 14px 18px;
+            box-shadow: 0 10px 30px rgba(17,24,39,0.06);
+            margin-top: 14px;
+          }}
+
+          /* Labels */
+          label {{
+            font-weight: 650 !important;
+            color: {TEXT} !important;
+            font-size: 0.92rem !important;
+          }}
+
+          /* Botón NEIX rojo */
+          div.stButton > button {{
+            background: {NEIX_RED} !important;
+            color: white !important;
+            border: 1px solid rgba(0,0,0,0.04) !important;
+            border-radius: 14px !important;
+            padding: 0.7rem 1.0rem !important;
+            font-weight: 750 !important;
+            width: 100% !important;
+            box-shadow: 0 8px 20px rgba(255,59,48,0.18) !important;
+            transition: transform .08s ease, box-shadow .08s ease;
+          }}
+          div.stButton > button:hover {{
+            transform: translateY(-1px);
+            box-shadow: 0 12px 26px rgba(255,59,48,0.22) !important;
+          }}
+
+          /* File uploader */
+          section[data-testid="stFileUploader"] {{
+            border-radius: 16px !important;
+            border: 1px dashed {BORDER} !important;
+            padding: 10px !important;
+          }}
+
+          /* Alerts (más prolijos) */
+          div[data-testid="stAlert"] {{
+            border-radius: 14px !important;
+          }}
+
+          /* Dataframe */
+          div[data-testid="stDataFrame"] {{
+            border-radius: 14px !important;
+            overflow: hidden;
+            border: 1px solid {BORDER};
+          }}
+
+          /* Footer */
+          .neix-footer {{
+            margin-top: 18px;
+            display:flex;
+            justify-content:space-between;
+            color: {MUTED};
+            font-size: 0.88rem;
+          }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# =========================
+# Helpers
 # =========================
 def _norm_header(s: str) -> str:
     s = str(s or "").strip().lower()
@@ -18,8 +115,8 @@ def _norm_header(s: str) -> str:
     except Exception:
         pass
     s = re.sub(r"[\u0300-\u036f]", "", s)  # saca acentos
-    s = s.replace("ï¿½", "o")              # encoding raro
-    s = re.sub(r"[^a-z0-9]", "", s)        # deja alfanum
+    s = s.replace("ï¿½", "o")
+    s = re.sub(r"[^a-z0-9]", "", s)
     return s
 
 
@@ -27,23 +124,22 @@ def _safe_str(v) -> str:
     """String safe: NaN/None/float -> '' / str(value)."""
     if v is None:
         return ""
-    if isinstance(v, float) and pd.isna(v):
-        return ""
-    if pd.isna(v):
-        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except Exception:
+        pass
     return str(v)
 
 
 def find_col(headers, candidates) -> int:
     H = [_norm_header(h) for h in headers]
 
-    # match exacto normalizado
     for cand in candidates:
         c = _norm_header(cand)
         if c in H:
             return H.index(c)
 
-    # match “parecido”
     for i, h in enumerate(H):
         for cand in candidates:
             c = _norm_header(cand)
@@ -55,27 +151,23 @@ def find_col(headers, candidates) -> int:
     return -1
 
 
-# =========================
-# Parsers NUM (clave)
-# =========================
 def parse_qty_int(v) -> int | None:
     """
-    Cantidad/nominal (CHEQUES):
-    En tu CSV viene como miles con coma: -12,500 => -12500
-    Regla: para qty, coma y punto son separadores -> se eliminan.
+    Cantidad/nominal:
+    -12,500  -> -12500
+    12.500   -> 12500
+    Regla: para qty, coma y punto se tratan como separadores de miles.
     """
     s = _safe_str(v).strip()
     if not s or s == "-":
         return None
 
     sign = -1 if s.startswith("-") else 1
-
     s = re.sub(r"[^\d\.,\-]", "", s)
     s = s.replace("-", "")
     s = s.replace(".", "").replace(",", "").strip()
     if not s:
         return None
-
     try:
         return sign * int(s)
     except Exception:
@@ -84,14 +176,12 @@ def parse_qty_int(v) -> int | None:
 
 def parse_monto_float(v) -> float | None:
     """
-    Monto de liquidación:
-    Puede venir 1.807.030,50 o 1807030.50 o 1,807,030.50.
-    Regla: detecta decimal por el separador final.
+    Monto:
+    1.807.030,50 / 1807030.50 / 1,807,030.50
     """
     s = _safe_str(v).strip()
     if not s or s == "-":
         return None
-
     s = s.replace(" ", "")
 
     if "," in s and "." in s:
@@ -106,52 +196,12 @@ def parse_monto_float(v) -> float | None:
             s = s.replace(".", "")
 
     s = re.sub(r"[^\d\.\-]", "", s)
-
     try:
         return float(s)
     except Exception:
         return None
 
 
-def parse_date_cell(v):
-    """
-    Soporta:
-    - dd/mm/yyyy
-    - dd-mm-yyyy
-    - yyyy-mm-dd
-    - con hora al final
-    Devuelve datetime.date o None
-    """
-    s = _safe_str(v).strip()
-    if not s:
-        return None
-
-    s = s.split(" ")[0]
-
-    m1 = re.match(r"^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$", s)
-    m2 = re.match(r"^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$", s)
-
-    try:
-        if m1:
-            d = int(m1.group(1))
-            m = int(m1.group(2))
-            y = m1.group(3)
-            y = int(("20" + y) if len(y) == 2 else y)
-            return dt.date(y, m, d)
-        if m2:
-            y = int(m2.group(1))
-            m = int(m2.group(2))
-            d = int(m2.group(3))
-            return dt.date(y, m, d)
-    except Exception:
-        return None
-
-    return None
-
-
-# =========================
-# CSV reader (latin1 + sep auto)
-# =========================
 def read_csv_auto(uploaded_file) -> pd.DataFrame:
     raw = uploaded_file.getvalue()
     text = raw.decode("latin1", errors="replace")
@@ -163,29 +213,42 @@ def read_csv_auto(uploaded_file) -> pd.DataFrame:
 
 
 # =========================
-# UI
+# Tool
 # =========================
 def render(back_to_home=None):
+    _inject_ui_css()
+
     st.markdown("## Acreditación MAV")
     st.caption("CPD / PAGARES / FCE MAV")
 
-    c1, c2, c3 = st.columns([0.38, 0.38, 0.24])
+    st.markdown('<div class="neix-card">', unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns([0.40, 0.40, 0.20])
+
     with c1:
         nasdaq_file = st.file_uploader("Cheques NASDAQ (CSV)", type=["csv"])
+
     with c2:
         cpd_file = st.file_uploader("CPD Instrumentos Listado (CSV)", type=["csv"])
+
     with c3:
         st.markdown("&nbsp;")
         do = st.button("Procesar", use_container_width=True)
 
+    st.markdown("</div>", unsafe_allow_html=True)
+
     if not do:
+        st.markdown(
+            '<div class="neix-footer"><span>NEIX · Back Office</span><span>Acreditación MAV</span></div>',
+            unsafe_allow_html=True,
+        )
         return
 
     if not nasdaq_file:
-        st.error("Por favor seleccioná Cheques NASDAQ (CSV)")
+        st.error("Por favor seleccioná Cheques NASDAQ (CSV).")
         return
     if not cpd_file:
-        st.error("Por favor seleccioná CPD Instrumentos Listado (CSV)")
+        st.error("Por favor seleccioná CPD Instrumentos Listado (CSV).")
         return
 
     with st.spinner("Procesando archivos..."):
@@ -233,16 +296,15 @@ def render(back_to_home=None):
 
         df_cheques = df_nasdaq.loc[kept_mask].copy()
 
+        # convertir qty/monto
         df_cheques[qty_col] = df_cheques[qty_col].apply(parse_qty_int)
         df_cheques[monto_col] = df_cheques[monto_col].apply(parse_monto_float)
 
-        # formateo fechas si existen (por nombre)
-        for col in df_cheques.columns:
-            if "fecha" in _norm_header(col):
-                df_cheques[col] = df_cheques[col].apply(parse_date_cell)
+        # IMPORTANTÍSIMO: fechas se dejan como STRING tal cual vienen (fecha + hora)
+        # (No se parsea nada acá para que salga idéntico al HTML.)
 
         # ======================
-        # 2) PARA GALLO (idéntico)
+        # 2) PARA GALLO (idéntico al HTML)
         # ======================
         baseCols = [
             "Instrumento",
@@ -258,6 +320,7 @@ def render(back_to_home=None):
             "Tipo Instrumento",
             "COD.INSTRUMENTO",
             "Referencia",
+            "Cheque Nro",
             "Cuenta de valores negociables",
             "Monto de liquidacion",
             "Cantidad/nominal",
@@ -269,44 +332,36 @@ def render(back_to_home=None):
         for _, row in df_cheques.iterrows():
             instrumento = _safe_str(row.iloc[baseIdxs[0]] if baseIdxs[0] != -1 else "").strip()
             cuenta = _safe_str(row.iloc[baseIdxs[1]] if baseIdxs[1] != -1 else "").strip().replace("5992/", "")
-            cantidad = row.iloc[baseIdxs[2]] if baseIdxs[2] != -1 else ""
-            monto = row.iloc[baseIdxs[3]] if baseIdxs[3] != -1 else ""
+            cantidad_raw = row.iloc[baseIdxs[2]] if baseIdxs[2] != -1 else ""
+            monto_raw = row.iloc[baseIdxs[3]] if baseIdxs[3] != -1 else ""
             moneda = _safe_str(row.iloc[baseIdxs[4]] if baseIdxs[4] != -1 else "").strip()
-            fecha = row.iloc[baseIdxs[5]] if baseIdxs[5] != -1 else ""
+            # FECHA: tal cual con hora (no parsear)
+            fecha_raw = _safe_str(row.iloc[baseIdxs[5]] if baseIdxs[5] != -1 else "").strip()
+
+            ref = f"ACRED {instrumento}".strip()
+            m = re.search(r"(\d{5})\D*$", ref)
+            cheque_nro = m.group(1) if m else ""
 
             gallo_rows.append([
                 "",
                 "",
-                f"ACRED {instrumento}",
+                ref,
+                cheque_nro,
                 cuenta,
-                monto,
-                cantidad,
+                monto_raw,
+                cantidad_raw,
                 moneda,
-                fecha,
+                fecha_raw,
             ])
 
         df_gallo = pd.DataFrame(gallo_rows, columns=galloCols)
 
-        if "Cantidad/nominal" in df_gallo.columns:
-            df_gallo["Cantidad/nominal"] = df_gallo["Cantidad/nominal"].apply(parse_qty_int)
-        if "Monto de liquidacion" in df_gallo.columns:
-            df_gallo["Monto de liquidacion"] = df_gallo["Monto de liquidacion"].apply(parse_monto_float)
-        if "Fecha efectiva de liquidacion" in df_gallo.columns:
-            df_gallo["Fecha efectiva de liquidacion"] = df_gallo["Fecha efectiva de liquidacion"].apply(parse_date_cell)
-
-        # Agregar "Cheque Nro" después de Referencia
-        if "Referencia" in df_gallo.columns:
-            idx_ref = df_gallo.columns.get_loc("Referencia")
-            cheque_num = (
-                df_gallo["Referencia"]
-                .astype(str)
-                .str.extract(r"(\d{5})\D*$", expand=False)
-                .fillna("")
-            )
-            df_gallo.insert(idx_ref + 1, "Cheque Nro", cheque_num)
+        # convertir qty/monto en GALLO (pero fecha queda string)
+        df_gallo["Cantidad/nominal"] = df_gallo["Cantidad/nominal"].apply(parse_qty_int)
+        df_gallo["Monto de liquidacion"] = df_gallo["Monto de liquidacion"].apply(parse_monto_float)
 
         # ======================
-        # 3) Merge con CPD (FIX NaN/float)
+        # 3) Merge con CPD (robusto NaN/float)
         # ======================
         df_cpd = read_csv_auto(cpd_file)
         if len(df_cpd) > 0 and df_cpd.shape[1] >= 19:
@@ -336,39 +391,40 @@ def render(back_to_home=None):
                         df_gallo.at[i, "COD.INSTRUMENTO"] = rel_map[ref_clean]
 
         # ======================
-        # 4) PARA TEAMS (FIX)
+        # 4) PARA TEAMS (idéntico + conserva hora)
         # ======================
-        teamsColsNames = [
+        teamsCols = [
             "Instrumento",
             "Cuenta de valores negociables",
             "Monto de liquidación",
             "Moneda",
             "Fecha efectiva de liquidación",
         ]
-        teamsIdxs = [find_col(headers, [c]) for c in teamsColsNames]
+        teamsIdxs = [find_col(headers, [c]) for c in teamsCols]
 
         if any(i == -1 for i in teamsIdxs):
-            faltan = [teamsColsNames[i] for i, idx in enumerate(teamsIdxs) if idx == -1]
-            st.warning(f"PARA TEAMS: no encontré columnas: {faltan}. Reviso headers del CSV.")
-            df_teams = pd.DataFrame(columns=teamsColsNames)
+            faltan = [teamsCols[i] for i, idx in enumerate(teamsIdxs) if idx == -1]
+            st.warning(f"PARA TEAMS: no encontré columnas: {faltan}.")
+            df_teams = pd.DataFrame(columns=teamsCols)
         else:
-            teams_rows = []
+            rows = []
             for _, rr in df_cheques.iterrows():
                 monto_raw = rr.iloc[teamsIdxs[2]]
                 monto_num = parse_monto_float(monto_raw)
 
-                # JS: incluir si monto != 0
+                # HTML: solo monto != 0
                 if monto_num is None or monto_num == 0:
                     continue
 
                 instrumento = _safe_str(rr.iloc[teamsIdxs[0]]).strip()
                 cuenta = _safe_str(rr.iloc[teamsIdxs[1]]).strip().replace("5992/", "")
                 moneda = _safe_str(rr.iloc[teamsIdxs[3]]).strip()
-                fecha = parse_date_cell(rr.iloc[teamsIdxs[4]])
+                # FECHA: tal cual con hora
+                fecha = _safe_str(rr.iloc[teamsIdxs[4]]).strip()
 
-                teams_rows.append([instrumento, cuenta, monto_num, moneda, fecha])
+                rows.append([instrumento, cuenta, monto_num, moneda, fecha])
 
-            df_teams = pd.DataFrame(teams_rows, columns=teamsColsNames)
+            df_teams = pd.DataFrame(rows, columns=teamsCols)
             if len(df_teams) > 0:
                 df_teams = df_teams.sort_values("Cuenta de valores negociables", kind="stable")
 
@@ -383,7 +439,6 @@ def render(back_to_home=None):
         out.seek(0)
 
     today = dt.date.today().strftime("%d-%m-%Y")
-
     st.success("✓ Procesamiento completado exitosamente")
     st.info(
         f"Filas NASDAQ luego de filtro (qty<=0): **{len(df_cheques)}** · "
@@ -397,3 +452,9 @@ def render(back_to_home=None):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
+
+    st.markdown(
+        '<div class="neix-footer"><span>NEIX · Back Office</span><span>Acreditación MAV</span></div>',
+        unsafe_allow_html=True,
+    )
+
