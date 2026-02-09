@@ -4,7 +4,7 @@ import streamlit as st
 # IMPORTS
 # =========================
 from tools.mesa import cartera, ons, vencimientos, bonos
-from tools.comerciales import cheques, cauciones_mae, cauciones_byma, alquileres
+from tools.comerciales import cheques, cauciones_mae, cauciones_byma, alquileres, CN
 from tools.backoffice import cauciones, control_sliq, moc_tarde, ppt_manana, acreditacion_mav
 
 
@@ -156,6 +156,8 @@ if tool:
             cauciones_byma.render(None)
         elif tool == "alquileres":
             alquileres.render(None)
+        elif tool == "CN":
+            CN.render(None)
 
         # Operaciones
         elif tool == "ppt_manana":
@@ -223,6 +225,7 @@ with tabs[1]:
           <a class="tool-btn" href="?tool=cheques">Cheques</a>
           <a class="tool-btn" href="?tool=alquileres">Alquileres</a>
           <a class="tool-btn" href="?tool=tenencia">Tenencia</a>
+          <a class="tool-btn" href="?tool=tenencia">CN</a>
         </div>
         """,
         unsafe_allow_html=True
