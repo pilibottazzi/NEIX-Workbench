@@ -489,13 +489,6 @@ def render(back_to_home=None):
 
     st.markdown(
         """
-        <div>
-          <h1 class="nw-title">N E I X&nbsp;&nbsp;Workbench</h1>
-          <p class="nw-sub">Navegación por áreas y proyectos</p>
-        </div>
-        <hr/>
-        <div class="tool-head">
-          <div class="tool-badge">N</div>
           <div>
             <h2 class="tool-title">Control SLIQ</h2>
             <p class="tool-desc">Cargá NASDAQ (,) y SLIQ (;). Genera <b>Control SLIQ tarde.xlsx</b>.</p>
