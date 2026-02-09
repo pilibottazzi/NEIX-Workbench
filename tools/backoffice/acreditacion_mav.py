@@ -32,9 +32,7 @@ def _inject_ui_css() -> None:
             color: {TEXT} !important;
             letter-spacing: -0.02em;
           }}
-          .stCaption {{
-            color: {MUTED} !important;
-          }}
+          .stCaption {{ color: {MUTED} !important; }}
 
           .neix-card {{
             border: 1px solid {BORDER};
@@ -73,9 +71,7 @@ def _inject_ui_css() -> None:
             padding: 10px !important;
           }}
 
-          div[data-testid="stAlert"] {{
-            border-radius: 14px !important;
-          }}
+          div[data-testid="stAlert"] {{ border-radius: 14px !important; }}
 
           div[data-testid="stDataFrame"] {{
             border-radius: 14px !important;
@@ -141,18 +137,12 @@ def find_col(headers, candidates) -> int:
 
 
 def parse_qty_int(v) -> int | None:
-    """
-    Cantidad/nominal:
-    -12,500 -> -12500
-    12.500  -> 12500
-    """
+    # qty: coma/punto como miles
     s = _safe_str(v).strip()
     if not s or s == "-":
         return None
-
     sign = -1 if s.startswith("-") else 1
-    s = re.sub(r"[^\d\.,\-]", "", s)
-    s = s.replace("-", "")
+    s = re.sub(r"[^\d\.,\-]", "", s).replace("-", "")
     s = s.replace(".", "").replace(",", "").strip()
     if not s:
         return None
@@ -163,10 +153,6 @@ def parse_qty_int(v) -> int | None:
 
 
 def parse_monto_float(v) -> float | None:
-    """
-    Monto:
-    1.807.030,50 / 1807030.50 / 1,807,030.50
-    """
     s = _safe_str(v).strip()
     if not s or s == "-":
         return None
@@ -188,6 +174,19 @@ def parse_monto_float(v) -> float | None:
         return float(s)
     except Exception:
         return None
+
+
+def _date_only_keep_ddmmyyyy(raw: str) -> str:
+    """
+    Para la hoja CHEQUES: queremos SOLO fecha (sin hora).
+    Si viene "09/02/2026 09:10 a. m." => "09/02/2026"
+    Si viene "2026-02-09 09:10" => "2026-02-09"
+    Si ya viene solo fecha, se deja.
+    """
+    s = _safe_str(raw).strip()
+    if not s:
+        return ""
+    return s.split(" ")[0].strip()
 
 
 def read_csv_auto(uploaded_file) -> pd.DataFrame:
@@ -235,9 +234,6 @@ def render(back_to_home=None):
         return
 
     with st.spinner("Procesando archivos..."):
-        # ======================
-        # 1) NASDAQ
-        # ======================
         df_nasdaq = read_csv_auto(nasdaq_file)
         headers = list(df_nasdaq.columns)
 
@@ -255,7 +251,7 @@ def render(back_to_home=None):
             st.error("✗ No encontré la columna Cantidad/nominal en Cheques NASDAQ.")
             return
         if monto_idx == -1:
-            st.error("✗ No pude identificar la columna 'Monto de liquidación' (encoding raro).")
+            st.error("✗ No pude identificar la columna 'Monto de liquidación'.")
             return
 
         qty_col = headers[qty_idx]
@@ -264,7 +260,6 @@ def render(back_to_home=None):
         kept_mask = []
         invalid = 0
         dropped = 0
-
         for v in df_nasdaq[qty_col].tolist():
             n = parse_qty_int(v)
             if n is None:
@@ -279,33 +274,30 @@ def render(back_to_home=None):
 
         df_cheques = df_nasdaq.loc[kept_mask].copy()
 
-        # convertir qty y monto (fechas quedan string, no se tocan)
+        # ==== Cheques: qty/monto numéricos
         df_cheques[qty_col] = df_cheques[qty_col].apply(parse_qty_int)
         df_cheques[monto_col] = df_cheques[monto_col].apply(parse_monto_float)
 
+        # ==== Cheques: FECHAS SIN HORA (solo en esta hoja)
+        idx_fecha_prev = find_col(headers, ["Fecha de liquidación prevista", "Fecha de liquidacion prevista"])
+        idx_fecha_ef = find_col(headers, ["Fecha efectiva de liquidación", "Fecha efectiva de liquidacion"])
+
+        if idx_fecha_prev != -1:
+            col_prev = headers[idx_fecha_prev]
+            df_cheques[col_prev] = df_cheques[col_prev].apply(_date_only_keep_ddmmyyyy)
+
+        if idx_fecha_ef != -1:
+            col_ef = headers[idx_fecha_ef]
+            df_cheques[col_ef] = df_cheques[col_ef].apply(_date_only_keep_ddmmyyyy)
+
         # ======================
-        # 2) PARA GALLO (con tildes / variantes)
+        # PARA GALLO (con hora)
         # ======================
         idx_instr = find_col(headers, ["Instrumento"])
-        idx_cta = find_col(headers, ["Cuenta de valores negociables", "Cuenta de valores", "Cuentadevaloresnegociables"])
-
-        # MONTO: buscar con tilde/sin tilde
-        idx_monto = find_col(headers, [
-            "Monto de liquidación",
-            "Monto de liquidacion",
-            "Monto de liquidaci",
-            "montodeliquidac",
-        ])
-
+        idx_cta = find_col(headers, ["Cuenta de valores negociables", "Cuenta de valores"])
+        idx_monto = find_col(headers, ["Monto de liquidación", "Monto de liquidacion", "Monto de liquidaci", "montodeliquidac"])
         idx_moneda = find_col(headers, ["Moneda"])
-
-        # FECHA EFECTIVA: buscar con tilde/sin tilde
-        idx_fecha_ef = find_col(headers, [
-            "Fecha efectiva de liquidación",
-            "Fecha efectiva de liquidacion",
-            "Fecha efectivade liquidacion",
-            "Fecha efectivadeliquidacion",
-        ])
+        idx_fecha_gallo = find_col(headers, ["Fecha efectiva de liquidación", "Fecha efectiva de liquidacion"])
 
         galloCols = [
             "Tipo Instrumento",
@@ -320,17 +312,15 @@ def render(back_to_home=None):
         ]
 
         gallo_rows = []
-        for _, row in df_cheques.iterrows():
+        for _, row in df_nasdaq.loc[kept_mask].iterrows():
             instrumento = _safe_str(row.iloc[idx_instr] if idx_instr != -1 else "").strip()
             cuenta = _safe_str(row.iloc[idx_cta] if idx_cta != -1 else "").strip().replace("5992/", "")
-
             monto_raw = _safe_str(row.iloc[idx_monto] if idx_monto != -1 else "").strip()
             cantidad_raw = _safe_str(row.iloc[qty_idx]).strip()
-
             moneda = _safe_str(row.iloc[idx_moneda] if idx_moneda != -1 else "").strip()
 
-            # FECHA: TAL CUAL (fecha + hora)
-            fecha_raw = _safe_str(row.iloc[idx_fecha_ef] if idx_fecha_ef != -1 else "").strip()
+            # GALLO: con hora tal cual
+            fecha_raw = _safe_str(row.iloc[idx_fecha_gallo] if idx_fecha_gallo != -1 else "").strip()
 
             ref = f"ACRED {instrumento}".strip()
             m = re.search(r"(\d{5})\D*$", ref)
@@ -349,13 +339,11 @@ def render(back_to_home=None):
             ])
 
         df_gallo = pd.DataFrame(gallo_rows, columns=galloCols)
-
-        # convertir qty/monto en GALLO (fecha queda string)
         df_gallo["Cantidad/nominal"] = df_gallo["Cantidad/nominal"].apply(parse_qty_int)
         df_gallo["Monto de liquidacion"] = df_gallo["Monto de liquidacion"].apply(parse_monto_float)
 
         # ======================
-        # 3) Merge con CPD (robusto NaN/float)
+        # Merge CPD (robusto)
         # ======================
         df_cpd = read_csv_auto(cpd_file)
         if len(df_cpd) > 0 and df_cpd.shape[1] >= 19:
@@ -368,7 +356,7 @@ def render(back_to_home=None):
 
             rel_map = {}
             if idx_instr != -1:
-                for _, rr in df_cheques.iterrows():
+                for _, rr in df_nasdaq.loc[kept_mask].iterrows():
                     instr = _safe_str(rr.iloc[idx_instr]).strip()
                     if instr and instr in cpd_map:
                         rel_map[instr] = cpd_map[instr]
@@ -380,10 +368,9 @@ def render(back_to_home=None):
                     df_gallo.at[i, "COD.INSTRUMENTO"] = rel_map[ref_clean]
 
         # ======================
-        # 4) PARA TEAMS (perfecto, conserva hora)
+        # PARA TEAMS (con hora)
         # ======================
         idx_fecha_teams = find_col(headers, ["Fecha efectiva de liquidación", "Fecha efectiva de liquidacion"])
-        idx_monto_teams = idx_monto  # mismo que arriba
 
         teamsCols = [
             "Instrumento",
@@ -393,19 +380,19 @@ def render(back_to_home=None):
             "Fecha efectiva de liquidación",
         ]
 
-        if any(i == -1 for i in [idx_instr, idx_cta, idx_monto_teams, idx_moneda, idx_fecha_teams]):
+        if any(i == -1 for i in [idx_instr, idx_cta, idx_monto, idx_moneda, idx_fecha_teams]):
             df_teams = pd.DataFrame(columns=teamsCols)
         else:
             rows = []
-            for _, rr in df_cheques.iterrows():
-                monto_num = parse_monto_float(rr.iloc[idx_monto_teams])
+            for _, rr in df_nasdaq.loc[kept_mask].iterrows():
+                monto_num = parse_monto_float(rr.iloc[idx_monto])
                 if monto_num is None or monto_num == 0:
                     continue
 
                 instrumento = _safe_str(rr.iloc[idx_instr]).strip()
                 cuenta = _safe_str(rr.iloc[idx_cta]).strip().replace("5992/", "")
                 moneda = _safe_str(rr.iloc[idx_moneda]).strip()
-                fecha = _safe_str(rr.iloc[idx_fecha_teams]).strip()  # conserva hora
+                fecha = _safe_str(rr.iloc[idx_fecha_teams]).strip()  # con hora
 
                 rows.append([instrumento, cuenta, monto_num, moneda, fecha])
 
@@ -414,7 +401,7 @@ def render(back_to_home=None):
                 df_teams = df_teams.sort_values("Cuenta de valores negociables", kind="stable")
 
         # ======================
-        # 5) Export XLSX
+        # Export XLSX
         # ======================
         out = io.BytesIO()
         with pd.ExcelWriter(out, engine="openpyxl") as writer:
