@@ -192,16 +192,10 @@ def _to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
 # UI
 # =========================
 def render(back_to_home=None):
-    st.markdown("## Vencimientos / Tenencia (por Activo)")
+    st.markdown("## Tenencia (por Activo)")
     st.caption(
-        "Subís 1 o varios archivos **TXT o Excel**. "
-        "Se usa obligatoriamente **Cliente Nombre del Cliente** y **Saldo Caja Val.** "
-        "(Saldo Caja Val. se renombra a **Nominales**). "
-        "Cruce por **NumeroComitente** con `data/managers_neix.xlsx`."
-    )
+        "RUTA GALLO:  Consulta tenencias"    )
 
-    if back_to_home is not None:
-        st.button("← Volver", on_click=back_to_home)
 
     # 1) managers obligatorio
     try:
@@ -275,7 +269,7 @@ def render(back_to_home=None):
         )
 
     # 4) filtros
-    st.markdown("### Filtros (globales)")
+    st.markdown("### Filtros")
     c1, c2, c3 = st.columns([0.34, 0.33, 0.33])
 
     with c1:
@@ -304,28 +298,6 @@ def render(back_to_home=None):
     if "Oficial" in df_f.columns and "Todos" not in oficiales_sel:
         df_f = df_f[df_f["Oficial"].astype(str).isin(oficiales_sel)]
 
-    # 5) resumen
-    st.markdown("### Resumen")
-    if "Nominales" in df_f.columns:
-        st.markdown("**Por Activo**")
-        st.dataframe(
-            df_f.groupby("Activo", as_index=False)[["Nominales"]].sum(numeric_only=True),
-            use_container_width=True,
-            hide_index=True
-        )
-
-        if "Manager" in df_f.columns:
-            st.markdown("**Por Manager**")
-            st.dataframe(
-                df_f.groupby("Manager", as_index=False)[["Nominales"]]
-                .sum(numeric_only=True)
-                .sort_values("Nominales", ascending=False),
-                use_container_width=True,
-                hide_index=True
-            )
-    else:
-        st.warning("No encontré la columna 'Nominales' para resumir.")
-
     # 6) tablas por activo
     st.markdown("### Tablas por Activo")
     tabs = st.tabs(sorted(dfs_por_activo.keys()))
@@ -339,18 +311,6 @@ def render(back_to_home=None):
 
             st.dataframe(df_tab, use_container_width=True, hide_index=True)
 
-    st.markdown("### Consolidado (todo junto)")
+    st.markdown("### Consolidado")
     st.dataframe(df_f, use_container_width=True, hide_index=True)
 
-    # 7) export
-    st.markdown("### Exportar")
-    sheets = {"Consolidado": df_f}
-    for activo, df in dfs_por_activo.items():
-        sheets[activo] = df
-
-    st.download_button(
-        "📥 Descargar Excel",
-        data=_to_excel_bytes(sheets),
-        file_name="vencimientos_por_activo.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
