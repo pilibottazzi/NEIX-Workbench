@@ -12,134 +12,162 @@ import streamlit as st
 
 
 # =========================================================
-# UI (NEIX — minimal, elegante)
+# UI (NEIX — minimal, ejecutivo, ordenado)
 # =========================================================
 NEIX_RED = "#ff3b30"
-TEXT = "#0f172a"
-MUTED = "rgba(15,23,42,.62)"
-BORDER = "rgba(15,23,42,.12)"
-CARD_BG = "rgba(255,255,255,.92)"
+TEXT = "#111827"
+MUTED = "#6b7280"
+BORDER = "rgba(17,24,39,0.10)"
+CARD_BG = "#ffffff"
 
 
 def _inject_ui_css() -> None:
     st.markdown(
         f"""
         <style>
-          /* Layout */
+          :root {{
+            --text: {TEXT};
+            --muted: {MUTED};
+            --border: {BORDER};
+            --border2: rgba(17,24,39,0.08);
+            --bg: {CARD_BG};
+            --soft: #f9fafb;
+            --red: {NEIX_RED};
+            --radius: 18px;
+            --radius2: 14px;
+          }}
+
+          /* Página */
           .block-container {{
-            max-width: 1120px;
-            padding-top: 1.2rem;
+            max-width: 1080px;
+            padding-top: 1.4rem;
             padding-bottom: 2.2rem;
           }}
 
-          /* Header */
-          .sliq-head {{ margin: 0 0 10px 0; }}
-          .sliq-kicker {{
-            display:flex; align-items:center; gap:10px;
-            margin-bottom: 6px;
+          /* Separadores finos */
+          hr {{
+            border: 0;
+            border-top: 1px solid var(--border2);
+            margin: 22px 0;
           }}
-          .sliq-badge {{
-            width:38px; height:38px;
-            border-radius: 14px;
-            border: 1px solid {BORDER};
-            display:flex; align-items:center; justify-content:center;
-            font-weight: 900;
-            letter-spacing: .06em;
-            background: rgba(255,255,255,.95);
-            box-shadow: 0 6px 16px rgba(2,6,23,.08);
+
+          /* Header workbench */
+          .nw-title {{
+            text-align:center;
+            margin: 0;
+            letter-spacing: .35em;
+            font-weight: 700;
+            color: var(--text);
+            font-size: 1.25rem;
           }}
-          .sliq-title {{
-            margin:0;
-            font-size: 1.70rem;
-            font-weight: 900;
-            line-height: 1.1;
-            color:{TEXT};
-          }}
-          .sliq-sub {{
-            margin: 0 0 0 48px;
-            color:{MUTED};
+          .nw-sub {{
+            text-align:center;
+            margin: 8px 0 0 0;
+            color: var(--muted);
             font-size: .95rem;
           }}
 
-          /* Cards */
-          .sliq-card {{
-            border:1px solid {BORDER};
-            border-radius: 18px;
-            padding: 14px 14px 12px 14px;
-            background:{CARD_BG};
-            box-shadow: 0 10px 30px rgba(2,6,23,.10);
+          /* Header tool */
+          .tool-head {{
+            display:flex;
+            align-items:center;
+            gap: 14px;
+            margin-top: 26px;
+            margin-bottom: 8px;
           }}
-          .sliq-card-title {{
-            margin:0 0 2px 0;
+          .tool-badge {{
+            width: 44px;
+            height: 44px;
+            border-radius: 14px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
             font-weight: 800;
-            font-size: 1.02rem;
-            color:{TEXT};
+            color: var(--text);
+            background: #fff;
+            border: 1px solid var(--border);
           }}
-          .sliq-card-hint {{
-            margin:0 0 10px 0;
-            color:{MUTED};
-            font-size: .88rem;
+          .tool-title {{
+            margin: 0;
+            font-size: 1.55rem;
+            font-weight: 800;
+            color: var(--text);
+            line-height: 1.1;
+          }}
+          .tool-desc {{
+            margin: 6px 0 0 0;
+            color: var(--muted);
+            font-size: .95rem;
+          }}
+
+          /* Cards upload (planas, sin sombra) */
+          .u-card {{
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 16px 16px 14px 16px;
+            background: var(--bg);
+          }}
+          .u-title {{
+            margin: 0 0 6px 0;
+            font-weight: 800;
+            color: var(--text);
+            font-size: 1.02rem;
+          }}
+          .u-hint {{
+            margin: 0 0 12px 0;
+            color: var(--muted);
+            font-size: .90rem;
           }}
 
           /* Uploader */
           [data-testid="stFileUploaderDropzone"] {{
-            border-radius: 16px !important;
-            border: 1px dashed rgba(15,23,42,.22) !important;
-            background: rgba(248,250,252,.78) !important;
+            border-radius: 14px !important;
+            border: 1px dashed rgba(17,24,39,0.20) !important;
+            background: var(--soft) !important;
           }}
           [data-testid="stFileUploaderDropzone"] > div {{
-            padding: .65rem .85rem !important;
+            padding: .75rem .85rem !important;
           }}
 
-          /* Primary button */
+          /* Botón principal */
           div.stButton > button[kind="primary"] {{
             width: 100%;
-            background: {NEIX_RED};
-            border: 1px solid rgba(0,0,0,0.06);
+            background: var(--red);
             color: #fff;
-            border-radius: 16px;
-            padding: 10px 14px;
-            font-weight: 900;
-            box-shadow: 0 16px 30px rgba(255,59,48,.18);
-            transition: transform .06s ease, box-shadow .12s ease, filter .12s ease;
+            border-radius: 18px;
+            padding: 12px 16px;
+            font-weight: 800;
+            border: 1px solid rgba(0,0,0,0.08);
+            box-shadow: none !important;
           }}
           div.stButton > button[kind="primary"]:hover {{
-            transform: translateY(-1px);
             filter: brightness(0.98);
-            box-shadow: 0 22px 40px rgba(255,59,48,.22);
+            transform: translateY(-1px);
           }}
 
-          /* Dataframe look */
+          /* Dataframe */
           [data-testid="stDataFrame"] {{
-            border-radius: 16px;
+            border: 1px solid var(--border);
+            border-radius: 14px;
             overflow: hidden;
-            border: 1px solid {BORDER};
           }}
 
-          hr {{ margin: 1.1rem 0; }}
+          /* Ajustes de márgenes */
+          label, .stMarkdown p {{ margin-bottom: .35rem; }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def _card_open() -> None:
-    st.markdown('<div class="sliq-card">', unsafe_allow_html=True)
-
-
-def _card_close() -> None:
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
 # =========================================================
-# Helpers de parsing / normalización (IGUAL al HTML)
+# Helpers de parsing / normalización (replica HTML “perfecto”)
 # =========================================================
 def _clean_str(x) -> str:
     return "" if x is None else str(x).strip()
 
 
 def _strip_accents(s: str) -> str:
-    # igual a JS: normalize NFD y quitar diacríticos
     return "".join(ch for ch in s.normalize("NFD") if not ("\u0300" <= ch <= "\u036f"))
 
 
@@ -154,13 +182,6 @@ def _norm_header(s: Any) -> str:
 
 
 def _to_num_es(v) -> Optional[float]:
-    """
-    IGUAL al HTML corregido:
-    - Trim
-    - Limpia todo excepto dígitos , . -
-    - Si hay ',' y '.', asume miles '.' y decimal ','
-    - Si solo ',', decimal ','
-    """
     s = _clean_str(v)
     if not s:
         return None
@@ -194,11 +215,6 @@ def _read_text_with_fallback(file) -> str:
 
 
 def _read_csv_as_table(text: str, sep: str) -> pd.DataFrame:
-    """
-    Mantengo tu robustez, pero sin "inventar" nada:
-    - lee header=None (igual)
-    - si hay problemas de comillas, intenta fallback
-    """
     if text.startswith("\ufeff"):
         text = text.lstrip("\ufeff")
 
@@ -229,7 +245,6 @@ def _read_csv_as_table(text: str, sep: str) -> pd.DataFrame:
     except Exception:
         pass
 
-    # “Arreglo” mínimo (igual que vos): balancear comillas
     fixed_lines: List[str] = []
     for line in text.splitlines():
         if line.count('"') % 2 == 1:
@@ -240,14 +255,14 @@ def _read_csv_as_table(text: str, sep: str) -> pd.DataFrame:
     data = list(reader)
     max_len = max((len(r) for r in data), default=0)
     padded = [r + [""] * (max_len - len(r)) for r in data]
+
     return pd.DataFrame(padded, dtype=str)
 
 
 def _find_header_row_js_like(df0: pd.DataFrame, max_rows: int = 20) -> int:
     """
-    IGUAL al HTML ORIGINAL (tu “perfecto”):
-    elige la fila con más columnas (len(row)), NO por no-vacíos.
-    Ojo: esto puede cambiar resultados y es el motivo por el que antes te daba distinto.
+    Igual al HTML: elige la fila con mayor "length" (cantidad de columnas),
+    no por cantidad de celdas no vacías.
     """
     lim = min(max_rows, len(df0))
     best = 0
@@ -380,7 +395,6 @@ def _build_sliq_from_table(df0: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[int, D
 
 
 def _build_control(sum_by_inst: Dict[int, int], sliq_by_code: Dict[int, Dict[str, Any]]) -> pd.DataFrame:
-    # igual al HTML: excluye ceros antes de merge
     nz_inst = {k: v for k, v in sum_by_inst.items() if v != 0}
     nz_sliq = {k: v for k, v in sliq_by_code.items() if float(v.get("neto", 0.0)) != 0.0}
 
@@ -405,9 +419,7 @@ def _build_control(sum_by_inst: Dict[int, int], sliq_by_code: Dict[int, Dict[str
             "Observación": "",
         })
 
-    # igual al HTML: revisar primero, luego por k asc
     data.sort(key=lambda d: (not d["_revisar"], d["_k"]))
-
     for d in data:
         d.pop("_revisar", None)
         d.pop("_k", None)
@@ -427,10 +439,6 @@ def _build_control(sum_by_inst: Dict[int, int], sliq_by_code: Dict[int, Dict[str
 
 
 def _export_excel(df_nasdaq: pd.DataFrame, df_control: pd.DataFrame, df_sliq: pd.DataFrame) -> bytes:
-    """
-    Misma salida que tu versión: 3 hojas + formatos + fórmulas.
-    (HTML usa SheetJS; acá queda equivalente en Excel final.)
-    """
     output = io.BytesIO()
 
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
@@ -464,7 +472,6 @@ def _export_excel(df_nasdaq: pd.DataFrame, df_control: pd.DataFrame, df_sliq: pd
         ws_c.set_column("F:F", 12, fmt_2d)
         ws_c.set_column("G:G", 14)
 
-        # fórmulas iguales
         nrows = len(df_control)
         for i in range(nrows):
             excel_row = i + 2
@@ -482,34 +489,38 @@ def render(back_to_home=None):
 
     st.markdown(
         """
-        <div class="sliq-head">
-          <div class="sliq-kicker">
-            <div class="sliq-badge">N</div>
-            <div class="sliq-title">Control SLIQ</div>
+        <div>
+          <h1 class="nw-title">N E I X&nbsp;&nbsp;Workbench</h1>
+          <p class="nw-sub">Navegación por áreas y proyectos</p>
+        </div>
+        <hr/>
+        <div class="tool-head">
+          <div class="tool-badge">N</div>
+          <div>
+            <h2 class="tool-title">Control SLIQ</h2>
+            <p class="tool-desc">Cargá NASDAQ (,) y SLIQ (;). Genera <b>Control SLIQ tarde.xlsx</b>.</p>
           </div>
-          <div class="sliq-sub">Cargá NASDAQ (,) y SLIQ (;). Genera <b>Control SLIQ tarde.xlsx</b>.</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-
-    st.divider()
+    st.markdown("<hr/>", unsafe_allow_html=True)
 
     c1, c2 = st.columns(2, gap="large")
 
     with c1:
-        _card_open()
-        st.markdown('<div class="sliq-card-title">Instr. de Liquidación NASDAQ</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sliq-card-hint">CSV separado por coma (<b>,</b>)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="u-card">', unsafe_allow_html=True)
+        st.markdown('<div class="u-title">Instr. de Liquidación NASDAQ</div>', unsafe_allow_html=True)
+        st.markdown('<div class="u-hint">CSV separado por coma (<b>,</b>)</div>', unsafe_allow_html=True)
         f_nasdaq = st.file_uploader("", type=["csv"], key="sliq_nasdaq", label_visibility="collapsed")
-        _card_close()
+        st.markdown("</div>", unsafe_allow_html=True)
 
     with c2:
-        _card_open()
-        st.markdown('<div class="sliq-card-title">Especies para un Participante</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sliq-card-hint">CSV separado por punto y coma (<b>;</b>)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="u-card">', unsafe_allow_html=True)
+        st.markdown('<div class="u-title">Especies para un Participante</div>', unsafe_allow_html=True)
+        st.markdown('<div class="u-hint">CSV separado por punto y coma (<b>;</b>)</div>', unsafe_allow_html=True)
         f_sliq = st.file_uploader("", type=["csv"], key="sliq_sliq", label_visibility="collapsed")
-        _card_close()
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.write("")
     run = st.button('Generar "Control SLIQ"', type="primary", key="sliq_run")
@@ -539,8 +550,6 @@ def render(back_to_home=None):
         df_nas_out, sum_by_inst = _build_nasdaq_detalle_from_table(df_n0)
 
         sliq_txt = _read_text_with_fallback(f_sliq)
-
-        # warning opcional como antes
         bad_quotes = sum(1 for ln in sliq_txt.splitlines() if ln.count('"') % 2 == 1)
         if bad_quotes:
             st.warning(f"SLIQ: detecté {bad_quotes} línea(s) con comillas desbalanceadas. Se corrigieron automáticamente.")
@@ -568,7 +577,7 @@ def render(back_to_home=None):
             key="sliq_download",
         )
 
-        st.divider()
+        st.markdown("<hr/>", unsafe_allow_html=True)
         st.subheader("Preview — Control SLIQ tarde")
         st.dataframe(df_control.head(80), use_container_width=True, hide_index=True)
 
