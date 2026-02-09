@@ -202,7 +202,7 @@ def _to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
 # UI
 # =========================
 def render(back_to_home=None):
-    st.markdown("## Tenencia (por Activo)")
+    st.markdown("## Tenencia")
     st.caption("RUTA GALLO: Consulta tenencias")
 
     # 1) managers obligatorio
