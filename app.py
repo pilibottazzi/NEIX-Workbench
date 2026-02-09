@@ -4,8 +4,8 @@ import streamlit as st
 # IMPORTS
 # =========================
 from tools.mesa import cartera, ons, vencimientos, bonos
-from tools.comerciales import cheques, cauciones_mae, cauciones_byma, alquileres, CN
-from tools.backoffice import cauciones, control_sliq, moc_tarde, ppt_manana, acreditacion_mav
+from tools.comerciales import cauciones_mae, cauciones_byma, alquileres
+from tools.backoffice import control_sliq, moc_tarde, ppt_manana, acreditacion_mav
 
 
 # =========================================================
@@ -148,16 +148,12 @@ if tool:
             vencimientos.render(None)
 
         # Comercial
-        elif tool == "cheques":
-            cheques.render(None)
         elif tool == "cauciones_mae":
             cauciones_mae.render(None)
         elif tool == "cauciones_byma":
             cauciones_byma.render(None)
         elif tool == "alquileres":
             alquileres.render(None)
-        elif tool == "CN":
-            CN.render(None)
 
         # Operaciones
         elif tool == "ppt_manana":
@@ -168,8 +164,6 @@ if tool:
             control_sliq.render(None)
         elif tool == "acreditacion_mav":
             acreditacion_mav.render(None)
-        elif tool == "cauciones":
-            cauciones.render(None)
 
         else:
             st.error("Herramienta no encontrada")
@@ -222,10 +216,8 @@ with tabs[1]:
           <a class="tool-btn" href="?tool=cartera">Carteras</a>
           <a class="tool-btn" href="?tool=cauciones_mae">Cauciones MAE</a>
           <a class="tool-btn" href="?tool=cauciones_byma">Cauciones BYMA</a>
-          <a class="tool-btn" href="?tool=cheques">Cheques</a>
           <a class="tool-btn" href="?tool=alquileres">Alquileres</a>
           <a class="tool-btn" href="?tool=tenencia">Tenencia</a>
-          <a class="tool-btn" href="?tool=tenencia">CN</a>
         </div>
         """,
         unsafe_allow_html=True
@@ -246,7 +238,6 @@ with tabs[2]:
           <a class="tool-btn" href="?tool=moc_tarde">MOC Tarde</a>
           <a class="tool-btn" href="?tool=control_sliq">Control SLIQ</a>
           <a class="tool-btn" href="?tool=acreditacion_mav">Acreditación MAV</a>
-          <a class="tool-btn" href="?tool=cauciones">Cauciones</a>
         </div>
         """,
         unsafe_allow_html=True
