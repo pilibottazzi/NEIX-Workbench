@@ -26,67 +26,75 @@ def _inject_ui_css() -> None:
         f"""
         <style>
           :root {{
-            --text: {TEXT};
-            --muted: {MUTED};
-            --border: {BORDER};
+            --text: #111827;
+            --muted: #6b7280;
+            --border: rgba(17,24,39,0.10);
             --border2: rgba(17,24,39,0.08);
-            --bg: {CARD_BG};
+            --bg: #ffffff;
             --soft: #f9fafb;
             --red: {NEIX_RED};
             --radius: 18px;
             --radius2: 14px;
           }}
 
-          /* Página */
+          /* =============================
+             PAGE LAYOUT
+             ============================= */
           .block-container {{
             max-width: 1080px;
             padding-top: 1.4rem;
             padding-bottom: 2.2rem;
           }}
 
-          /* Separadores finos */
           hr {{
             border: 0;
             border-top: 1px solid var(--border2);
             margin: 22px 0;
           }}
 
-          /* Header workbench */
+          /* =============================
+             WORKBENCH HEADER
+             ============================= */
           .nw-title {{
-            text-align:center;
+            text-align: center;
             margin: 0;
             letter-spacing: .35em;
             font-weight: 700;
             color: var(--text);
             font-size: 1.25rem;
           }}
+
           .nw-sub {{
-            text-align:center;
+            text-align: center;
             margin: 8px 0 0 0;
             color: var(--muted);
             font-size: .95rem;
           }}
 
-          /* Header tool */
+          /* =============================
+             TOOL HEADER
+             ============================= */
           .tool-head {{
-            display:flex;
-            align-items:center;
+            display: flex;
+            align-items: center;
             gap: 14px;
             margin-top: 26px;
             margin-bottom: 8px;
           }}
+
           .tool-badge {{
             width: 44px;
             height: 44px;
             border-radius: 14px;
-            display:flex;
-            align-items:center;
-            justify-content:center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             font-weight: 800;
             color: var(--text);
             background: #fff;
             border: 1px solid var(--border);
           }}
+
           .tool-title {{
             margin: 0;
             font-size: 1.55rem;
@@ -94,42 +102,68 @@ def _inject_ui_css() -> None:
             color: var(--text);
             line-height: 1.1;
           }}
+
           .tool-desc {{
             margin: 6px 0 0 0;
             color: var(--muted);
             font-size: .95rem;
           }}
 
-          /* Cards upload (planas, sin sombra) */
+          /* =============================
+             UPLOAD CARDS
+             ============================= */
           .u-card {{
             border: 1px solid var(--border);
             border-radius: var(--radius);
             padding: 16px 16px 14px 16px;
             background: var(--bg);
           }}
+
           .u-title {{
             margin: 0 0 6px 0;
             font-weight: 800;
             color: var(--text);
             font-size: 1.02rem;
           }}
+
           .u-hint {{
             margin: 0 0 12px 0;
             color: var(--muted);
             font-size: .90rem;
           }}
 
-          /* Uploader */
+          /* =============================
+             FILE UPLOADER (CLEAN)
+             ============================= */
+          [data-testid="stFileUploader"] {{
+            margin-top: 0 !important;
+            padding-top: 0 !important;
+          }}
+
+          [data-testid="stFileUploader"] label {{
+            display: none !important;
+            height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }}
+
+          [data-testid="stFileUploader"] > div {{
+            margin-top: 0 !important;
+          }}
+
           [data-testid="stFileUploaderDropzone"] {{
             border-radius: 14px !important;
             border: 1px dashed rgba(17,24,39,0.20) !important;
             background: var(--soft) !important;
           }}
+
           [data-testid="stFileUploaderDropzone"] > div {{
             padding: .75rem .85rem !important;
           }}
 
-          /* Botón principal */
+          /* =============================
+             PRIMARY BUTTON
+             ============================= */
           div.stButton > button[kind="primary"] {{
             width: 100%;
             background: var(--red);
@@ -140,20 +174,28 @@ def _inject_ui_css() -> None:
             border: 1px solid rgba(0,0,0,0.08);
             box-shadow: none !important;
           }}
+
           div.stButton > button[kind="primary"]:hover {{
             filter: brightness(0.98);
             transform: translateY(-1px);
           }}
 
-          /* Dataframe */
+          /* =============================
+             DATAFRAME
+             ============================= */
           [data-testid="stDataFrame"] {{
             border: 1px solid var(--border);
             border-radius: 14px;
             overflow: hidden;
           }}
 
-          /* Ajustes de márgenes */
-          label, .stMarkdown p {{ margin-bottom: .35rem; }}
+          /* =============================
+             MISC FIXES
+             ============================= */
+          label,
+          .stMarkdown p {{
+            margin-bottom: .35rem;
+          }}
         </style>
         """,
         unsafe_allow_html=True,
