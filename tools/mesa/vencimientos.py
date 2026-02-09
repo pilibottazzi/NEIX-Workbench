@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import io
 import re
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -40,6 +42,59 @@ def _detect_header_line(text: str) -> int:
     return 0
 
 
+def _find_col(df: pd.DataFrame, includes: list[str]) -> str | None:
+    """
+    Busca una columna por 'includes' (case-insensitive), tolerando variaciones:
+    - puntos, dobles espacios, texto extra
+    """
+    cols = list(df.columns.astype(str))
+    norm = {c: re.sub(r"\s+", " ", c.strip().lower()) for c in cols}
+
+    for c, c_norm in norm.items():
+        ok = True
+        for token in includes:
+            token_norm = re.sub(r"\s+", " ", token.strip().lower())
+            if token_norm not in c_norm:
+                ok = False
+                break
+        if ok:
+            return c
+    return None
+
+
+def _split_cliente_nombre(df: pd.DataFrame, col_raw: str) -> pd.DataFrame:
+    """
+    Recibe df con una columna tipo "1154 NOMBRE..." y genera:
+    - Cliente
+    - Nombre del Cliente
+    """
+    df = df.rename(columns={col_raw: "ClienteNombreRaw"}).copy()
+    split = (
+        df["ClienteNombreRaw"]
+        .astype(str)
+        .str.strip()
+        .str.split(r"\s+", n=1, expand=True)
+    )
+    df["Cliente"] = split[0]
+    df["Nombre del Cliente"] = split[1].fillna("")
+    df = df.drop(columns=["ClienteNombreRaw"])
+    df["Cliente"] = _norm_num(df["Cliente"])
+
+    # limpiar "Total" si aparece
+    df = df[~df["Cliente"].astype(str).str.lower().str.contains("total", na=False)].copy()
+    return df
+
+
+def _coerce_numeric(df: pd.DataFrame, col: str) -> None:
+    df[col] = (
+        df[col].astype(str)
+        .str.replace(".", "", regex=False)
+        .str.replace(",", ".", regex=False)
+        .str.replace(r"[^\d\.\-]", "", regex=True)
+    )
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+
 def _read_txt_uploaded(uploaded_file) -> pd.DataFrame:
     raw = uploaded_file.getvalue()
     try:
@@ -58,40 +113,60 @@ def _read_txt_uploaded(uploaded_file) -> pd.DataFrame:
         io.StringIO(data_text),
         sep=";",
         engine="python",
-        dtype=str
+        dtype=str,
     )
     df.columns = df.columns.astype(str).str.strip()
 
-    # Caso típico: primera columna es "Cliente Nombre del Cliente" y viene "1154 NOMBRE..."
-    first_col = df.columns[0]
-    if ("Cliente" in first_col) and ("Nombre" in first_col):
-        df = df.rename(columns={first_col: "ClienteNombreRaw"})
-        split = df["ClienteNombreRaw"].astype(str).str.strip().str.split(r"\s+", n=1, expand=True)
-        df["Cliente"] = split[0]
-        df["Nombre del Cliente"] = split[1].fillna("")
-        df = df.drop(columns=["ClienteNombreRaw"])
-    else:
-        # tolerancia si alguna vez viniera separado
-        if "Cliente" not in df.columns:
-            raise ValueError(f"No encontré columna Cliente. Columnas: {list(df.columns)}")
+    # Columna combinada: "Cliente Nombre del Cliente"
+    col_cliente_nombre = _find_col(df, ["cliente", "nombre"])
+    if not col_cliente_nombre:
+        raise ValueError(f"No encontré columna tipo 'Cliente Nombre del Cliente'. Columnas: {list(df.columns)}")
 
-    df["Cliente"] = _norm_num(df["Cliente"])
+    df = _split_cliente_nombre(df, col_cliente_nombre)
 
-    # limpiar "Total" si aparece
-    df = df[~df["Cliente"].astype(str).str.lower().str.contains("total", na=False)].copy()
+    # Nominales = Saldo Caja Val.
+    col_saldo_caja = _find_col(df, ["saldo", "caja"])
+    if not col_saldo_caja:
+        raise ValueError(f"No encontré columna tipo 'Saldo Caja Val.'. Columnas: {list(df.columns)}")
 
-    # convertir numéricas si existen
-    for col in ["Saldo Tesoro", "Saldo Caja Val.", "Ob"]:
-        if col in df.columns:
-            df[col] = (
-                df[col].astype(str)
-                .str.replace(".", "", regex=False)
-                .str.replace(",", ".", regex=False)
-                .str.replace(r"[^\d\.\-]", "", regex=True)
-            )
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+    # aseguramos numérico
+    _coerce_numeric(df, col_saldo_caja)
+    df = df.rename(columns={col_saldo_caja: "Nominales"})
 
     return df
+
+
+def _read_excel_uploaded(uploaded_file) -> pd.DataFrame:
+    # Streamlit UploadedFile funciona directo con read_excel
+    df = pd.read_excel(uploaded_file, dtype=str)
+    df.columns = df.columns.astype(str).str.strip()
+
+    # Columna combinada: "Cliente Nombre del Cliente"
+    col_cliente_nombre = _find_col(df, ["cliente", "nombre"])
+    if not col_cliente_nombre:
+        raise ValueError(f"No encontré columna tipo 'Cliente Nombre del Cliente' en Excel. Columnas: {list(df.columns)}")
+
+    df = _split_cliente_nombre(df, col_cliente_nombre)
+
+    # Nominales = Saldo Caja Val.
+    col_saldo_caja = _find_col(df, ["saldo", "caja"])
+    if not col_saldo_caja:
+        raise ValueError(f"No encontré columna tipo 'Saldo Caja Val.' en Excel. Columnas: {list(df.columns)}")
+
+    _coerce_numeric(df, col_saldo_caja)
+    df = df.rename(columns={col_saldo_caja: "Nominales"})
+
+    return df
+
+
+def _read_uploaded_any(uploaded_file) -> pd.DataFrame:
+    name = getattr(uploaded_file, "name", "")
+    ext = Path(name).suffix.lower()
+    if ext == ".txt":
+        return _read_txt_uploaded(uploaded_file)
+    if ext in (".xlsx", ".xls"):
+        return _read_excel_uploaded(uploaded_file)
+    raise ValueError(f"Formato no soportado: {ext}. Subí .txt o .xlsx/.xls")
 
 
 @st.cache_data(ttl=60 * 30, show_spinner=False)
@@ -104,7 +179,6 @@ def cargar_managers_excel() -> pd.DataFrame:
     df = pd.read_excel(MANAGERS_PATH)
     df.columns = df.columns.astype(str).str.strip()
 
-    # Requisito: NumeroComitente sí o sí
     if "NumeroComitente" not in df.columns:
         raise ValueError(
             f"managers_neix.xlsx debe tener 'NumeroComitente'. Columnas: {list(df.columns)}"
@@ -112,22 +186,19 @@ def cargar_managers_excel() -> pd.DataFrame:
 
     df["NumeroComitente"] = _norm_num(df["NumeroComitente"])
 
-    # dejamos SOLO columnas reales del archivo (no agregamos inventadas)
-    # normalizamos nombre para evitar confusión con "Comitente" vs cliente
     if "Comitente" in df.columns:
         df = df.rename(columns={"Comitente": "Nombre Comitente"})
 
     return df
 
 
-def _merge_managers_strict(df_txt: pd.DataFrame, df_mgr: pd.DataFrame) -> pd.DataFrame:
-    """
-    Cruce obligatorio por Cliente (TXT) = NumeroComitente (Excel).
-    """
-    cols_keep = [c for c in ["NumeroComitente", "Nombre Comitente", "NumeroManager", "Manager", "NumeroOficial", "Oficial"]
-                 if c in df_mgr.columns]
+def _merge_managers_strict(df_tenencia: pd.DataFrame, df_mgr: pd.DataFrame) -> pd.DataFrame:
+    cols_keep = [
+        c for c in ["NumeroComitente", "Nombre Comitente", "NumeroManager", "Manager", "NumeroOficial", "Oficial"]
+        if c in df_mgr.columns
+    ]
 
-    out = df_txt.merge(
+    out = df_tenencia.merge(
         df_mgr[cols_keep],
         left_on="Cliente",
         right_on="NumeroComitente",
@@ -151,11 +222,12 @@ def _to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
 # UI
 # =========================
 def render(back_to_home=None):
-    st.markdown("## Vencimientos / TXT (por Activo)")
+    st.markdown("## Vencimientos / Tenencia (por Activo)")
     st.caption(
-        "Subís 1 o varios .txt (separados por `;`). "
+        "Subís 1 o varios archivos **TXT o Excel**. "
         "El Activo se toma del nombre del archivo. "
-        "Cruce por **NumeroComitente** con `data/managers_neix.xlsx`."
+        "Cruce por **NumeroComitente** con `data/managers_neix.xlsx`. "
+        "Se usa: **Cliente Nombre del Cliente** + **Saldo Caja Val.**"
     )
 
     if back_to_home is not None:
@@ -170,38 +242,40 @@ def render(back_to_home=None):
         st.exception(e)
         st.stop()
 
-    # 2) uploader múltiples txt
+    # 2) uploader múltiples txt/xlsx
     archivos = st.file_uploader(
-        "Subí uno o varios archivos .txt",
-        type=["txt"],
+        "Subí uno o varios archivos (.txt / .xlsx / .xls)",
+        type=["txt", "xlsx", "xls"],
         accept_multiple_files=True,
-        key="vencimientos_txt_uploader",
+        key="vencimientos_any_uploader",
     )
 
     if not archivos:
-        st.info("Esperando archivos .txt…")
+        st.info("Esperando archivos…")
         return
 
     dfs_por_activo: dict[str, pd.DataFrame] = {}
-    errores = []
+    errores: list[tuple[str, str]] = []
 
     for f in archivos:
         activo = _asset_from_filename(getattr(f, "name", "ACTIVO"))
         try:
-            df = _read_txt_uploaded(f)
+            df = _read_uploaded_any(f)
+
+            # Activo + cruce
             df.insert(0, "Activo", activo)
             df = _merge_managers_strict(df, df_mgr)
 
-            # =========================
-            # Ajustes solicitados:
-            # - "Saldo Caja Val." => "Nominales"
-            # - sacar Fecha, Saldo Tesoro, Ob
-            # =========================
-            if "Saldo Caja Val." in df.columns:
-                df = df.rename(columns={"Saldo Caja Val.": "Nominales"})
-
-            drop_cols = ["Fecha", "Saldo Tesoro", "Ob"]
-            df = df.drop(columns=[c for c in drop_cols if c in df.columns])
+            # Nos quedamos SOLO con lo que pediste (más lo de managers)
+            # Base: Activo, Cliente, Nombre del Cliente, Nominales + columnas managers si existen
+            prefer = [
+                "Activo", "Cliente", "Nombre del Cliente", "Nominales",
+                "NumeroManager", "Manager", "NumeroOficial", "Oficial", "Nombre Comitente"
+            ]
+            cols_keep = [c for c in prefer if c in df.columns]
+            # por si alguna vez querés ver extras, dejalo comentado:
+            # df = df[cols_keep + [c for c in df.columns if c not in cols_keep]]
+            df = df[cols_keep].copy()
 
             dfs_por_activo[activo] = df
 
@@ -259,7 +333,6 @@ def render(back_to_home=None):
             oficiales_sel = ["Todos"]
 
     df_f = df_all.copy()
-
     if "Todos" not in activos_sel:
         df_f = df_f[df_f["Activo"].astype(str).isin(activos_sel)]
     if "Manager" in df_f.columns and "Todos" not in managers_sel:
@@ -269,11 +342,10 @@ def render(back_to_home=None):
 
     # 5) resumen
     st.markdown("### Resumen")
-    cols_sum = [c for c in ["Nominales"] if c in df_f.columns]
-    if cols_sum:
+    if "Nominales" in df_f.columns:
         st.markdown("**Por Activo**")
         st.dataframe(
-            df_f.groupby("Activo", as_index=False)[cols_sum].sum(numeric_only=True),
+            df_f.groupby("Activo", as_index=False)[["Nominales"]].sum(numeric_only=True),
             use_container_width=True,
             hide_index=True
         )
@@ -281,7 +353,7 @@ def render(back_to_home=None):
         if "Manager" in df_f.columns:
             st.markdown("**Por Manager**")
             st.dataframe(
-                df_f.groupby("Manager", as_index=False)[cols_sum].sum(numeric_only=True).sort_values(cols_sum[0], ascending=False),
+                df_f.groupby("Manager", as_index=False)[["Nominales"]].sum(numeric_only=True).sort_values("Nominales", ascending=False),
                 use_container_width=True,
                 hide_index=True
             )
@@ -295,32 +367,15 @@ def render(back_to_home=None):
         with tab:
             df_tab = dfs_por_activo[activo].copy()
 
-            # aplicar mismos filtros al tab
             if "Todos" not in managers_sel and "Manager" in df_tab.columns:
                 df_tab = df_tab[df_tab["Manager"].astype(str).isin(managers_sel)]
             if "Todos" not in oficiales_sel and "Oficial" in df_tab.columns:
                 df_tab = df_tab[df_tab["Oficial"].astype(str).isin(oficiales_sel)]
 
-            prefer = [
-                "Activo", "Cliente", "Nombre del Cliente",
-                "Nominales",
-                "NumeroManager", "Manager",
-                "NumeroOficial", "Oficial",
-                "Nombre Comitente",
-            ]
-            cols_show = [c for c in prefer if c in df_tab.columns] + [c for c in df_tab.columns if c not in prefer]
-            st.dataframe(df_tab[cols_show], use_container_width=True, hide_index=True)
+            st.dataframe(df_tab, use_container_width=True, hide_index=True)
 
     st.markdown("### Consolidado (todo junto)")
-    prefer_all = [
-        "Activo", "Cliente", "Nombre del Cliente",
-        "Nominales",
-        "NumeroManager", "Manager",
-        "NumeroOficial", "Oficial",
-        "Nombre Comitente",
-    ]
-    cols_show_all = [c for c in prefer_all if c in df_f.columns] + [c for c in df_f.columns if c not in prefer_all]
-    st.dataframe(df_f[cols_show_all], use_container_width=True, hide_index=True)
+    st.dataframe(df_f, use_container_width=True, hide_index=True)
 
     # 7) export
     st.markdown("### Exportar")
