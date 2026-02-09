@@ -281,7 +281,6 @@ def render(back_to_home=None):
         )
 
     # 4) filtros
-    st.markdown("### Filtros")
     c1, c2, c3 = st.columns([0.34, 0.33, 0.33])
 
     with c1:
@@ -311,7 +310,7 @@ def render(back_to_home=None):
         df_f = df_f[df_f["Oficial"].astype(str).isin(oficiales_sel)]
 
     # 5) tablas por activo
-    st.markdown("### Tablas por Activo")
+
     tabs = st.tabs(sorted(dfs_por_activo.keys()))
     for activo, tab in zip(sorted(dfs_por_activo.keys()), tabs):
         with tab:
@@ -323,5 +322,4 @@ def render(back_to_home=None):
 
             st.dataframe(df_tab, use_container_width=True, hide_index=True)
 
-    st.markdown("### Consolidado")
-    st.dataframe(df_f, use_container_width=True, hide_index=True)
+
