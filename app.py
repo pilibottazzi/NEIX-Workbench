@@ -216,7 +216,6 @@ with tabs[1]:
     st.markdown(
         """
         <div class="tool-grid">
-          <a class="tool-btn" href="?tool=cartera">Carteras</a>
           <a class="tool-btn" href="?tool=cauciones_mae">Cauciones MAE</a>
           <a class="tool-btn" href="?tool=cauciones_byma">Cauciones BYMA</a>
           <a class="tool-btn" href="?tool=alquileres">Alquileres</a>
