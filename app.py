@@ -1,29 +1,19 @@
 import streamlit as st
-
-# =========================
-# IMPORTS (SOLO Mesa + Comerciales)
-# =========================
 from tools.mesa import cartera, ons, vencimientos, bonos
 from tools.comerciales import cauciones_mae, cauciones_byma, alquileres
-
-# =========================
-# LINK A WEB BACKOFFICE
-# =========================
 BACKOFFICE_URL = "https://neix-workbench-bo.streamlit.app/"
 
 
-# =========================================================
+
 # CONFIG
-# =========================================================
 st.set_page_config(
     page_title="NEIX Workbench",
     page_icon="🧰",
     layout="wide"
 )
 
-# =========================================================
-# ESTÉTICA PREMIUM (ESTABLE)
-# =========================================================
+
+# ESTÉTICA PREMIUM
 st.markdown(
     """
     <style>
@@ -141,9 +131,8 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# =========================================================
+
 # ROUTER (?tool=...)
-# =========================================================
 tool = (st.query_params.get("tool") or "").lower().strip()
 
 if tool:
@@ -195,18 +184,14 @@ if tool:
     st.stop()
 
 
-# =========================================================
 # HOME
-# =========================================================
 st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
 st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
 
 tabs = st.tabs(["Mesa", "Comercial", "Operaciones"])
 
 
-# =======================
 # MESA
-# =======================
 with tabs[0]:
     st.markdown("<div class='section-title'>Mesa</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-sub'>Bonos, ONs y carteras</div>", unsafe_allow_html=True)
@@ -223,9 +208,7 @@ with tabs[0]:
     )
 
 
-# =======================
 # COMERCIAL
-# =======================
 with tabs[1]:
     st.markdown("<div class='section-title'>Comercial</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-sub'>Seguimiento y herramientas comerciales</div>", unsafe_allow_html=True)
@@ -244,9 +227,8 @@ with tabs[1]:
     )
 
 
-# =======================
+
 # OPERACIONES (solo link externo)
-# =======================
 with tabs[2]:
     st.markdown("<div class='section-title'>Operaciones</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-sub'>Backoffice se abre en web externa (separada del Workbench)</div>", unsafe_allow_html=True)
