@@ -13,9 +13,9 @@ import streamlit as st
 # =========================
 SHEETS = ["WSC A", "WSC B", "INSIGNEO"]
 
+# "Agente" eliminado
 REQUIRED_COLS = [
     "Fecha",
-    "Agente",
     "Producto",
     "Neto Agente",
     "Gross Agente",
@@ -99,6 +99,31 @@ def _find_missing(required: List[str], cols: List[str]) -> List[str]:
     return [c for c in required if c not in cols_set]
 
 
+def _parse_fecha_por_hoja(df: pd.DataFrame, col: str = "Fecha") -> pd.DataFrame:
+    """
+    Excel guarda fechas como seriales o strings, y el formato (DD/MM vs MM/DD)
+    puede variar por hoja. Esto fuerza un parseo robusto por hoja.
+
+    Estrategia:
+    - Probar dayfirst=True (AR).
+    - Si queda mucha NaT, probar dayfirst=False (US).
+    """
+    df = df.copy()
+
+    # Si viene como datetime/serial, pandas normalmente lo convierte bien.
+    # Si viene como string ambiguo, esto lo resuelve por hoja.
+    fechas_ar = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
+    ratio_nat = float(fechas_ar.isna().mean())
+
+    if ratio_nat > 0.4:
+        fechas_us = pd.to_datetime(df[col], errors="coerce", dayfirst=False)
+        df[col] = fechas_us
+    else:
+        df[col] = fechas_ar
+
+    return df
+
+
 def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
     df = pd.read_excel(xls, sheet_name=sheet_name)
     df = _normalize_headers(df)
@@ -111,17 +136,19 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
         )
 
     df = df[REQUIRED_COLS].copy()
-    df.insert(0, "Banco", sheet_name)
 
+    # Parseo de fecha robusto por hoja (AR vs US)
+    df = _parse_fecha_por_hoja(df, "Fecha")
+
+    df.insert(0, "Banco", sheet_name)
     return df
 
 
-def _to_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
+def _to_excel_bytes(df: pd.DataFrame) -> bytes:
     bio = io.BytesIO()
-    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-        for name, df in sheets.items():
-            safe = re.sub(r"[\[\]\*\?/\\:]", "-", name)[:31]
-            df.to_excel(writer, index=False, sheet_name=safe)
+    # datetime_format define cómo se VE en el Excel final
+    with pd.ExcelWriter(bio, engine="openpyxl", datetime_format="DD/MM/YYYY") as writer:
+        df.to_excel(writer, index=False, sheet_name="Consolidado")
     bio.seek(0)
     return bio.read()
 
@@ -151,16 +178,6 @@ def render(back_to_home=None) -> None:
         key="cn_bancos_uploader",
     )
 
-    c1, c2 = st.columns([0.55, 0.45])
-    with c1:
-        include_clean_sheets = st.checkbox(
-            "Incluir también hojas individuales limpias en el Excel de salida",
-            value=True,
-        )
-    with c2:
-        st.caption("Columnas requeridas (en todas las hojas):")
-        st.code(" | ".join(REQUIRED_COLS), language="text")
-
     st.markdown(
         '<div class="hint">Hojas esperadas: <b>WSC A</b>, <b>WSC B</b>, <b>INSIGNEO</b>.</div>',
         unsafe_allow_html=True,
@@ -171,7 +188,6 @@ def render(back_to_home=None) -> None:
         return
 
     try:
-        # más robusto en Streamlit Cloud
         data = up.getvalue()
         xls = pd.ExcelFile(io.BytesIO(data))
         available = list(xls.sheet_names)
@@ -181,28 +197,28 @@ def render(back_to_home=None) -> None:
             st.error(f"Faltan hojas en el Excel: {missing_sheets}. Hojas detectadas: {available}")
             return
 
-        dfs: Dict[str, pd.DataFrame] = {}
-        for s in SHEETS:
-            dfs[s] = _read_one_sheet(xls, s)
-
+        dfs: Dict[str, pd.DataFrame] = {s: _read_one_sheet(xls, s) for s in SHEETS}
         df_all = pd.concat([dfs[s] for s in SHEETS], ignore_index=True)
 
-        st.markdown("### Preview consolidado")
-        st.dataframe(df_all, use_container_width=True, height=620)
+        # Evita el "contador" del preview y asegura índice limpio
+        df_all = df_all.reset_index(drop=True)
 
-        st.markdown("### Descargar")
-        out_sheets: Dict[str, pd.DataFrame] = {"Consolidado": df_all}
-        if include_clean_sheets:
-            for s in SHEETS:
-                out_sheets[s] = dfs[s]
-
+        # Descargar arriba (solo 1 hoja) y texto "Excel"
         st.download_button(
-            "⬇️ Descargar Excel consolidado",
-            data=_to_excel_bytes(out_sheets),
+            "Excel",
+            data=_to_excel_bytes(df_all),
             file_name="cn_bancos_consolidado.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
+        st.markdown("### Preview consolidado")
+        # hide_index depende de versión de streamlit; fallback incluido
+        try:
+            st.dataframe(df_all, use_container_width=True, height=620, hide_index=True)
+        except TypeError:
+            st.dataframe(df_all, use_container_width=True, height=620)
+
     except Exception as e:
         st.error("Se rompió el procesamiento.")
         st.exception(e)
+
