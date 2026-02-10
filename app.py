@@ -2,6 +2,9 @@ import streamlit as st
 from tools.mesa import cartera, ons, vencimientos, bonos
 from tools.comerciales import cauciones_mae, cauciones_byma, alquileres
 BACKOFFICE_URL = "https://neix-workbench-bo.streamlit.app/"
+BI_BANCA_PRIVADA = "https://lookerstudio.google.com/reporting/75c2a6d0-0086-491f-b112-88fe3d257ef9"
+BI_BANCA_CORP = "https://lookerstudio.google.com/reporting/4f70efa8-2b86-4134-a9cb-9e6f90117f3b"
+BI_MIDDLE = "https://lookerstudio.google.com/reporting/5b834e5f-aeef-4042-ac0f-e1ed3564a010"
 
 
 
@@ -188,8 +191,7 @@ if tool:
 st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
 st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
 
-tabs = st.tabs(["Mesa", "Comercial", "Operaciones"])
-
+tabs = st.tabs(["Mesa", "Comercial", "Operaciones", "Performance · BI"])
 
 # MESA
 with tabs[0]:
@@ -237,6 +239,32 @@ with tabs[2]:
         <div class="tool-grid">
           <a class="tool-btn tool-btn-primary" href="{BACKOFFICE_URL}" target="_blank" rel="noopener noreferrer">
             Abrir Backoffice
+          </a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+# PERFORMANCE / BI
+with tabs[3]:
+    st.markdown("<div class='section-title'>Performance · BI</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='section-sub'>Dashboards de performance y seguimiento por área</div>",
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        f"""
+        <div class="tool-grid">
+          <a class="tool-btn" href="{BI_BANCA_PRIVADA}" target="_blank" rel="noopener noreferrer">
+            Banca Privada
+          </a>
+          <a class="tool-btn" href="{BI_BANCA_CORP}" target="_blank" rel="noopener noreferrer">
+            Banca Corporativa
+          </a>
+          <a class="tool-btn" href="{BI_MIDDLE}" target="_blank" rel="noopener noreferrer">
+            Middle Office
           </a>
         </div>
         """,
