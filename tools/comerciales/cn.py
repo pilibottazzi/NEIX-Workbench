@@ -164,7 +164,6 @@ def render(back_to_home=None) -> None:
     _inject_css()
 
     st.markdown("## CN · Consolidar Bancos")
-    st.caption("Comercial · WSC A / WSC B / INSIGNEO → 1 consolidado descargable")
 
     if back_to_home is not None:
         st.button("← Volver", on_click=back_to_home)
@@ -178,10 +177,6 @@ def render(back_to_home=None) -> None:
         key="cn_bancos_uploader",
     )
 
-    st.markdown(
-        '<div class="hint">Hojas esperadas: <b>WSC A</b>, <b>WSC B</b>, <b>INSIGNEO</b>.</div>',
-        unsafe_allow_html=True,
-    )
     st.markdown("</div>", unsafe_allow_html=True)
 
     if not up:
