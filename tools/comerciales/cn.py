@@ -12,9 +12,10 @@ import streamlit as st
 # Config
 SHEETS = ["WSC A", "WSC B", "INSIGNEO"]
 
-# "Agente" eliminado
+# ✅ agregamos "Cuenta"
 REQUIRED_COLS = [
     "Fecha",
+    "Cuenta",
     "Producto",
     "Neto Agente",
     "Gross Agente",
@@ -28,7 +29,6 @@ TEXT = "#111827"
 MUTED = "#6b7280"
 BORDER = "rgba(17,24,39,0.10)"
 CARD_BG = "rgba(255,255,255,0.96)"
-
 
 
 # UI helpers
@@ -52,7 +52,7 @@ def _inject_css() -> None:
 
   /* Botón NEIX full width */
   div.stDownloadButton > button {{
-    width: 100% !important;           /* 👈 clave */
+    width: 100% !important;
     background: {NEIX_RED} !important;
     color: white !important;
     border-radius: 14px !important;
@@ -97,9 +97,6 @@ def _parse_fecha_por_hoja(df: pd.DataFrame, col: str = "Fecha") -> pd.DataFrame:
     - Si queda mucha NaT, probar dayfirst=False (US).
     """
     df = df.copy()
-
-    # Si viene como datetime/serial, pandas normalmente lo convierte bien.
-    # Si viene como string ambiguo, esto lo resuelve por hoja.
     fechas_ar = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
     ratio_nat = float(fechas_ar.isna().mean())
 
@@ -116,6 +113,7 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
     df = pd.read_excel(xls, sheet_name=sheet_name)
     df = _normalize_headers(df)
 
+    # ✅ Si en algún Excel viene como "Cuenta " con espacios, ya lo normalizamos.
     missing = _find_missing(REQUIRED_COLS, list(df.columns))
     if missing:
         raise ValueError(
@@ -125,8 +123,11 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
 
     df = df[REQUIRED_COLS].copy()
 
-    # Parseo de fecha robusto por hoja (AR vs US)
+    # ✅ Parseo de fecha robusto por hoja
     df = _parse_fecha_por_hoja(df, "Fecha")
+
+    # ✅ Asegura Cuenta como texto (por si Excel lo trae numérico)
+    df["Cuenta"] = df["Cuenta"].astype(str).str.strip()
 
     df.insert(0, "Banco", sheet_name)
     return df
@@ -134,7 +135,6 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
 
 def _to_excel_bytes(df: pd.DataFrame) -> bytes:
     bio = io.BytesIO()
-    # datetime_format define cómo se VE en el Excel final
     with pd.ExcelWriter(bio, engine="openpyxl", datetime_format="DD/MM/YYYY") as writer:
         df.to_excel(writer, index=False, sheet_name="Consolidado")
     bio.seek(0)
@@ -143,10 +143,6 @@ def _to_excel_bytes(df: pd.DataFrame) -> bytes:
 
 # Tool entrypoint (Workbench)
 def render(back_to_home=None) -> None:
-    """
-    Tool CN (Comercial) - Consolidar hojas WSC A / WSC B / INSIGNEO.
-    Integración Workbench: llamá cn.render(back_to_home=...)
-    """
     _inject_css()
 
     if back_to_home is not None:
@@ -191,7 +187,6 @@ def render(back_to_home=None) -> None:
         )
 
         st.markdown("### Consolidado")
-        # hide_index depende de versión de streamlit; fallback incluido
         try:
             st.dataframe(df_all, use_container_width=True, height=620, hide_index=True)
         except TypeError:
@@ -200,4 +195,3 @@ def render(back_to_home=None) -> None:
     except Exception as e:
         st.error("Se rompió el procesamiento.")
         st.exception(e)
-
