@@ -145,11 +145,6 @@ def _to_excel_bytes(df: pd.DataFrame) -> bytes:
 def render(back_to_home=None) -> None:
     _inject_css()
 
-    if back_to_home is not None:
-        st.button("← Volver", on_click=back_to_home)
-
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-
     up = st.file_uploader(
         "CN: Subí el Excel para consolidar bancos",
         type=["xlsx", "xls"],
