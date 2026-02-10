@@ -231,7 +231,7 @@ with tabs[1]:
 # OPERACIONES (solo link externo)
 with tabs[2]:
     st.markdown("<div class='section-title'>Operaciones</div>", unsafe_allow_html=True)
-    st.markdown("<div class='section-sub'>Backoffice se abre en web externa (separada del Workbench)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-sub'>Se abre en web externa</div>", unsafe_allow_html=True)
 
     st.markdown(
         f"""
