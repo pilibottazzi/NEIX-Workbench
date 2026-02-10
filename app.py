@@ -1,11 +1,15 @@
 import streamlit as st
 
 # =========================
-# IMPORTS
+# IMPORTS (SOLO Mesa + Comerciales)
 # =========================
 from tools.mesa import cartera, ons, vencimientos, bonos
 from tools.comerciales import cauciones_mae, cauciones_byma, alquileres
-from tools.backoffice import control_sliq, moc_tarde, ppt_manana, acreditacion_mav
+
+# =========================
+# LINK A WEB BACKOFFICE
+# =========================
+BACKOFFICE_URL = "https://neix-workbench-bo.streamlit.app/"
 
 
 # =========================================================
@@ -121,6 +125,17 @@ st.markdown(
         box-shadow:0 8px 22px rgba(0,0,0,0.08);
         border-color: rgba(239,68,68,.35);
     }
+
+    /* Botón destacado rojo (link externo Backoffice) */
+    .tool-btn-primary{
+        background:#ef4444 !important;
+        color:white !important;
+        border-color: rgba(0,0,0,0) !important;
+    }
+    .tool-btn-primary:hover{
+        filter: brightness(.96);
+        box-shadow:0 10px 26px rgba(239,68,68,.18);
+    }
     </style>
     """,
     unsafe_allow_html=True
@@ -155,15 +170,20 @@ if tool:
         elif tool == "alquileres":
             alquileres.render(None)
 
-        # Operaciones
-        elif tool == "ppt_manana":
-            ppt_manana.render(None)
-        elif tool == "moc_tarde":
-            moc_tarde.render(None)
-        elif tool == "control_sliq":
-            control_sliq.render(None)
-        elif tool == "acreditacion_mav":
-            acreditacion_mav.render(None)
+        # Operaciones -> solo link externo
+        elif tool in ("operaciones", "backoffice"):
+            st.markdown(
+                f"""
+                <div class="section-title">Operaciones</div>
+                <div class="section-sub">Backoffice se abre en web externa (para evitar saturación del Workbench)</div>
+                <div class="tool-grid">
+                  <a class="tool-btn tool-btn-primary" href="{BACKOFFICE_URL}" target="_blank" rel="noopener noreferrer">
+                    Abrir Backoffice
+                  </a>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         else:
             st.error("Herramienta no encontrada")
@@ -225,19 +245,18 @@ with tabs[1]:
 
 
 # =======================
-# OPERACIONES
+# OPERACIONES (solo link externo)
 # =======================
 with tabs[2]:
     st.markdown("<div class='section-title'>Operaciones</div>", unsafe_allow_html=True)
-    st.markdown("<div class='section-sub'>Procesos operativos y control</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-sub'>Backoffice se abre en web externa (separada del Workbench)</div>", unsafe_allow_html=True)
 
     st.markdown(
-        """
+        f"""
         <div class="tool-grid">
-          <a class="tool-btn" href="?tool=ppt_manana">PPT Mañana</a>
-          <a class="tool-btn" href="?tool=moc_tarde">MOC Tarde</a>
-          <a class="tool-btn" href="?tool=control_sliq">Control SLIQ</a>
-          <a class="tool-btn" href="?tool=acreditacion_mav">Acreditación MAV</a>
+          <a class="tool-btn tool-btn-primary" href="{BACKOFFICE_URL}" target="_blank" rel="noopener noreferrer">
+            Abrir Backoffice
+          </a>
         </div>
         """,
         unsafe_allow_html=True
