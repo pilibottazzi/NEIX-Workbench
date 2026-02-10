@@ -8,9 +8,8 @@ from typing import Dict, List
 import pandas as pd
 import streamlit as st
 
-# =========================
+
 # Config
-# =========================
 SHEETS = ["WSC A", "WSC B", "INSIGNEO"]
 
 # "Agente" eliminado
@@ -31,9 +30,8 @@ BORDER = "rgba(17,24,39,0.10)"
 CARD_BG = "rgba(255,255,255,0.96)"
 
 
-# =========================
+
 # UI helpers
-# =========================
 def _inject_css() -> None:
     st.markdown(
         f"""
@@ -52,24 +50,16 @@ def _inject_css() -> None:
     box-shadow: 0 10px 30px rgba(17,24,39,0.05);
   }}
 
-  .hint {{
-    color:{MUTED};
-    font-size:.92rem;
-    margin-top:10px;
-  }}
-
-  /* Botón rojo NEIX */
-  div.stDownloadButton > button,
-  div.stButton > button {{
-    border-radius: 12px !important;
-    border: 1px solid rgba(0,0,0,0.06) !important;
-    padding: 0.62rem 0.9rem !important;
-    font-weight: 700 !important;
-  }}
+  /* Botón NEIX full width */
   div.stDownloadButton > button {{
+    width: 100% !important;           /* 👈 clave */
     background: {NEIX_RED} !important;
     color: white !important;
+    border-radius: 14px !important;
+    font-weight: 700 !important;
+    padding: 0.9rem 1rem !important;
   }}
+
   div.stDownloadButton > button:hover {{
     filter: brightness(0.97);
   }}
@@ -79,9 +69,7 @@ def _inject_css() -> None:
     )
 
 
-# =========================
 # Data helpers
-# =========================
 def _norm_col(s: str) -> str:
     s = str(s).strip()
     s = re.sub(r"\s+", " ", s)
@@ -153,9 +141,7 @@ def _to_excel_bytes(df: pd.DataFrame) -> bytes:
     return bio.read()
 
 
-# =========================
 # Tool entrypoint (Workbench)
-# =========================
 def render(back_to_home=None) -> None:
     """
     Tool CN (Comercial) - Consolidar hojas WSC A / WSC B / INSIGNEO.
