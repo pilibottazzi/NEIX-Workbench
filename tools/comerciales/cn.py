@@ -163,15 +163,13 @@ def render(back_to_home=None) -> None:
     """
     _inject_css()
 
-    st.markdown("## CN · Consolidar Bancos")
-
     if back_to_home is not None:
         st.button("← Volver", on_click=back_to_home)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
 
     up = st.file_uploader(
-        "Subí el Excel (un solo archivo con 3 hojas)",
+        "CN: Subí el Excel para consolidar bancos",
         type=["xlsx", "xls"],
         accept_multiple_files=False,
         key="cn_bancos_uploader",
@@ -206,7 +204,7 @@ def render(back_to_home=None) -> None:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-        st.markdown("### Preview consolidado")
+        st.markdown("### Consolidado")
         # hide_index depende de versión de streamlit; fallback incluido
         try:
             st.dataframe(df_all, use_container_width=True, height=620, hide_index=True)
