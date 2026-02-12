@@ -3,17 +3,19 @@ from __future__ import annotations
 
 import io
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
 
 
+# =========================================================
 # Config
+# =========================================================
 SHEETS = ["WSC A", "WSC B", "INSIGNEO"]
 
-# ✅ agregamos "Cuenta"
-REQUIRED_COLS = [
+# 👉 Se mantiene Id_Off y SOLO nombres (sin Id_manager / Id_oficial)
+OUTPUT_COLS = [
     "Fecha",
     "Cuenta",
     "Producto",
@@ -25,13 +27,13 @@ REQUIRED_COLS = [
 ]
 
 NEIX_RED = "#ff3b30"
-TEXT = "#111827"
-MUTED = "#6b7280"
 BORDER = "rgba(17,24,39,0.10)"
 CARD_BG = "rgba(255,255,255,0.96)"
 
 
+# =========================================================
 # UI helpers
+# =========================================================
 def _inject_css() -> None:
     st.markdown(
         f"""
@@ -42,15 +44,6 @@ def _inject_css() -> None:
     padding-bottom: 2rem;
   }}
 
-  .card {{
-    background:{CARD_BG};
-    border:1px solid {BORDER};
-    border-radius: 16px;
-    padding: 16px 16px 14px;
-    box-shadow: 0 10px 30px rgba(17,24,39,0.05);
-  }}
-
-  /* Botón NEIX full width */
   div.stDownloadButton > button {{
     width: 100% !important;
     background: {NEIX_RED} !important;
@@ -59,75 +52,85 @@ def _inject_css() -> None:
     font-weight: 700 !important;
     padding: 0.9rem 1rem !important;
   }}
-
-  div.stDownloadButton > button:hover {{
-    filter: brightness(0.97);
-  }}
 </style>
 """,
         unsafe_allow_html=True,
     )
 
 
+# =========================================================
 # Data helpers
+# =========================================================
 def _norm_col(s: str) -> str:
     s = str(s).strip()
     s = re.sub(r"\s+", " ", s)
     return s
 
 
-def _normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
+def _key(s: str) -> str:
+    s = _norm_col(s).lower().replace("_", " ")
+    return re.sub(r"\s+", " ", s)
+
+
+ALIASES = {
+    "Fecha": ["fecha", "fec", "date"],
+    "Cuenta": ["cuenta", "cta", "account"],
+    "Producto": ["producto", "product"],
+    "Neto Agente": ["neto agente", "neto"],
+    "Gross Agente": ["gross agente", "gross"],
+    "Id_Off": ["id off", "id_off", "id oficial"],
+    "MANAGER": ["manager", "nombre manager"],
+    "OFICIAL": ["oficial", "nombre oficial"],
+}
+
+
+def _resolve_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df.columns = [_norm_col(c) for c in df.columns]
+    key_map = {_key(c): c for c in df.columns}
+
+    rename = {}
+    for canonical, aliases in ALIASES.items():
+        for a in [canonical] + aliases:
+            k = _key(a)
+            if k in key_map:
+                rename[key_map[k]] = canonical
+                break
+
+    if rename:
+        df = df.rename(columns=rename)
+
     return df
 
 
-def _find_missing(required: List[str], cols: List[str]) -> List[str]:
-    cols_set = set(cols)
-    return [c for c in required if c not in cols_set]
-
-
-def _parse_fecha_por_hoja(df: pd.DataFrame, col: str = "Fecha") -> pd.DataFrame:
-    """
-    Excel guarda fechas como seriales o strings, y el formato (DD/MM vs MM/DD)
-    puede variar por hoja. Esto fuerza un parseo robusto por hoja.
-
-    Estrategia:
-    - Probar dayfirst=True (AR).
-    - Si queda mucha NaT, probar dayfirst=False (US).
-    """
-    df = df.copy()
-    fechas_ar = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
-    ratio_nat = float(fechas_ar.isna().mean())
-
-    if ratio_nat > 0.4:
-        fechas_us = pd.to_datetime(df[col], errors="coerce", dayfirst=False)
-        df[col] = fechas_us
+def _parse_fecha(df: pd.DataFrame) -> pd.DataFrame:
+    fechas_ar = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
+    if fechas_ar.isna().mean() > 0.4:
+        df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=False)
     else:
-        df[col] = fechas_ar
-
+        df["Fecha"] = fechas_ar
     return df
 
 
-def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
-    df = pd.read_excel(xls, sheet_name=sheet_name)
-    df = _normalize_headers(df)
+def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame]:
+    try:
+        df = pd.read_excel(xls, sheet_name=sheet_name)
+    except Exception:
+        return None
 
-    # ✅ Si en algún Excel viene como "Cuenta " con espacios, ya lo normalizamos.
-    missing = _find_missing(REQUIRED_COLS, list(df.columns))
-    if missing:
-        raise ValueError(
-            f"Hoja '{sheet_name}': faltan columnas {missing}. "
-            f"Columnas detectadas: {list(df.columns)}"
-        )
+    df.columns = [_norm_col(c) for c in df.columns]
+    df = _resolve_columns(df)
 
-    df = df[REQUIRED_COLS].copy()
+    # si no tiene las columnas mínimas, se ignora silenciosamente
+    for c in OUTPUT_COLS:
+        if c not in df.columns:
+            return None
 
-    # ✅ Parseo de fecha robusto por hoja
-    df = _parse_fecha_por_hoja(df, "Fecha")
+    df = df[OUTPUT_COLS].copy()
+    df = _parse_fecha(df)
 
-    # ✅ Asegura Cuenta como texto (por si Excel lo trae numérico)
     df["Cuenta"] = df["Cuenta"].astype(str).str.strip()
+    df["MANAGER"] = df["MANAGER"].astype(str).str.strip()
+    df["OFICIAL"] = df["OFICIAL"].astype(str).str.strip()
 
     df.insert(0, "Banco", sheet_name)
     return df
@@ -141,7 +144,9 @@ def _to_excel_bytes(df: pd.DataFrame) -> bytes:
     return bio.read()
 
 
-# Tool entrypoint (Workbench)
+# =========================================================
+# Entrypoint
+# =========================================================
 def render(back_to_home=None) -> None:
     _inject_css()
 
@@ -149,44 +154,31 @@ def render(back_to_home=None) -> None:
         "CN: Subí el Excel para consolidar bancos",
         type=["xlsx", "xls"],
         accept_multiple_files=False,
-        key="cn_bancos_uploader",
     )
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
     if not up:
         return
 
-    try:
-        data = up.getvalue()
-        xls = pd.ExcelFile(io.BytesIO(data))
-        available = list(xls.sheet_names)
+    xls = pd.ExcelFile(io.BytesIO(up.getvalue()))
 
-        missing_sheets = [s for s in SHEETS if s not in available]
-        if missing_sheets:
-            st.error(f"Faltan hojas en el Excel: {missing_sheets}. Hojas detectadas: {available}")
-            return
+    dfs: List[pd.DataFrame] = []
+    for s in SHEETS:
+        df = _read_one_sheet(xls, s)
+        if df is not None:
+            dfs.append(df)
 
-        dfs: Dict[str, pd.DataFrame] = {s: _read_one_sheet(xls, s) for s in SHEETS}
-        df_all = pd.concat([dfs[s] for s in SHEETS], ignore_index=True)
+    if not dfs:
+        return
 
-        # Evita el "contador" del preview y asegura índice limpio
-        df_all = df_all.reset_index(drop=True)
+    df_all = pd.concat(dfs, ignore_index=True)
 
-        # Descargar arriba (solo 1 hoja) y texto "Excel"
-        st.download_button(
-            "Excel",
-            data=_to_excel_bytes(df_all),
-            file_name="cn_bancos_consolidado.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+    st.download_button(
+        "Excel",
+        data=_to_excel_bytes(df_all),
+        file_name="cn_bancos_consolidado.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
-        st.markdown("### Consolidado")
-        try:
-            st.dataframe(df_all, use_container_width=True, height=620, hide_index=True)
-        except TypeError:
-            st.dataframe(df_all, use_container_width=True, height=620)
+    st.markdown("### Consolidado")
+    st.dataframe(df_all, use_container_width=True, height=620)
 
-    except Exception as e:
-        st.error("Se rompió el procesamiento.")
-        st.exception(e)
