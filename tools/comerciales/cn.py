@@ -14,7 +14,7 @@ import streamlit as st
 # =========================================================
 SHEETS = ["WSC A", "WSC B", "INSIGNEO"]
 
-# 👉 Se mantiene Id_Off y SOLO nombres (sin Id_manager / Id_oficial)
+# 👉 Mantener Id_Off + nombres (sin Id_manager / Id_oficial)
 OUTPUT_COLS = [
     "Fecha",
     "Cuenta",
@@ -76,11 +76,11 @@ ALIASES = {
     "Fecha": ["fecha", "fec", "date"],
     "Cuenta": ["cuenta", "cta", "account"],
     "Producto": ["producto", "product"],
-    "Neto Agente": ["neto agente", "neto"],
-    "Gross Agente": ["gross agente", "gross"],
-    "Id_Off": ["id off", "id_off", "id oficial"],
-    "MANAGER": ["manager", "nombre manager"],
-    "OFICIAL": ["oficial", "nombre oficial"],
+    "Neto Agente": ["neto agente", "neto", "net agent"],
+    "Gross Agente": ["gross agente", "gross", "gross agent"],
+    "Id_Off": ["id off", "id_off", "id oficial", "id of"],
+    "MANAGER": ["manager", "nombre manager", "manager nombre"],
+    "OFICIAL": ["oficial", "nombre oficial", "oficial nombre"],
 }
 
 
@@ -103,6 +103,9 @@ def _resolve_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _parse_fecha(df: pd.DataFrame) -> pd.DataFrame:
+    if "Fecha" not in df.columns:
+        return df
+
     fechas_ar = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
     if fechas_ar.isna().mean() > 0.4:
         df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=False)
@@ -111,7 +114,49 @@ def _parse_fecha(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _parse_ar_decimal_series(s: pd.Series) -> pd.Series:
+    """
+    Convierte strings tipo '1.234,56' -> 1234.56
+    Si ya es numérico, lo deja.
+    """
+    if pd.api.types.is_numeric_dtype(s):
+        return s
+
+    out = (
+        s.astype(str)
+        .str.strip()
+        .str.replace("\u00a0", "", regex=False)  # nbsp
+        .str.replace(" ", "", regex=False)
+        .str.replace(".", "", regex=False)  # miles
+        .str.replace(",", ".", regex=False)  # decimal
+    )
+    return pd.to_numeric(out, errors="coerce")
+
+
+def _fix_scale_if_needed(s: pd.Series) -> pd.Series:
+    """
+    Heurística: si por un tema de coma decimal te quedó algo como 823905
+    (y debería ser 82.3905), detecta y divide por 10.000.
+    """
+    if not pd.api.types.is_numeric_dtype(s):
+        return s
+
+    x = s.dropna()
+    if x.empty:
+        return s
+
+    frac_integer = float(((x % 1) == 0).mean())
+    q95 = float(x.quantile(0.95))
+
+    # si casi todo son enteros y "demasiado grandes" → probablemente coma decimal corrida
+    if frac_integer > 0.9 and q95 > 10000:
+        return s / 10000.0
+
+    return s
+
+
 def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame]:
+    # si no existe o no se puede leer, se ignora SILENCIOSAMENTE
     try:
         df = pd.read_excel(xls, sheet_name=sheet_name)
     except Exception:
@@ -120,17 +165,25 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame
     df.columns = [_norm_col(c) for c in df.columns]
     df = _resolve_columns(df)
 
-    # si no tiene las columnas mínimas, se ignora silenciosamente
+    # si no tiene las columnas mínimas, se ignora SILENCIOSAMENTE
     for c in OUTPUT_COLS:
         if c not in df.columns:
             return None
 
     df = df[OUTPUT_COLS].copy()
+
+    # Fecha robusta
     df = _parse_fecha(df)
 
+    # Tipos
     df["Cuenta"] = df["Cuenta"].astype(str).str.strip()
     df["MANAGER"] = df["MANAGER"].astype(str).str.strip()
     df["OFICIAL"] = df["OFICIAL"].astype(str).str.strip()
+
+    # ✅ Arreglar decimales con coma + escala inflada
+    for col in ["Neto Agente", "Gross Agente"]:
+        df[col] = _parse_ar_decimal_series(df[col])
+        df[col] = _fix_scale_if_needed(df[col])
 
     df.insert(0, "Banco", sheet_name)
     return df
@@ -154,23 +207,27 @@ def render(back_to_home=None) -> None:
         "CN: Subí el Excel para consolidar bancos",
         type=["xlsx", "xls"],
         accept_multiple_files=False,
+        key="cn_bancos_uploader",
     )
 
     if not up:
         return
 
-    xls = pd.ExcelFile(io.BytesIO(up.getvalue()))
+    try:
+        xls = pd.ExcelFile(io.BytesIO(up.getvalue()))
+    except Exception:
+        return
 
     dfs: List[pd.DataFrame] = []
     for s in SHEETS:
-        df = _read_one_sheet(xls, s)
-        if df is not None:
-            dfs.append(df)
+        one = _read_one_sheet(xls, s)
+        if one is not None:
+            dfs.append(one)
 
     if not dfs:
         return
 
-    df_all = pd.concat(dfs, ignore_index=True)
+    df_all = pd.concat(dfs, ignore_index=True).reset_index(drop=True)
 
     st.download_button(
         "Excel",
@@ -180,5 +237,7 @@ def render(back_to_home=None) -> None:
     )
 
     st.markdown("### Consolidado")
-    st.dataframe(df_all, use_container_width=True, height=620)
-
+    try:
+        st.dataframe(df_all, use_container_width=True, height=620, hide_index=True)
+    except TypeError:
+        st.dataframe(df_all, use_container_width=True, height=620)
