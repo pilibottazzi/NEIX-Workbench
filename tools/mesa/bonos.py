@@ -25,6 +25,7 @@ TIR_MAX_FIXED = 20.0
 PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     # Provincia (los que pasaste)
     "BPOB7": "BPB7D",
+    "BPOB8": "BPB8D",
     "BPOC7": "BPC7D",
     "BPOD7": "BPD7D",
 
@@ -43,9 +44,7 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "BPA7": "BPA7D",
     "BPB7": "BPB7D",
     "BPC7": "BPC7D",
-    "BPA8": "BPA8D",
-    "BPB8": "BPB8D",
-}
+    "BPA8": "BPA8D"}
 
 
 # =========================
