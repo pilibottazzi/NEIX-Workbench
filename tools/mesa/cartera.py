@@ -24,21 +24,39 @@ PRICE_SUFFIX = "D"
 
 # Excepciones PESOS -> USD (cuando no es solo + "D")
 PESOS_TO_USD_OVERRIDES: dict[str, str] = {
+    # =========================
+    # Provincia de Bs. As.
+    # =========================
     "BPOB7": "BPB7D",
+    "BPOB8": "BPB8D",
     "BPOC7": "BPC7D",
     "BPOD7": "BPD7D",
-    "BPY26": "BPY6D",
+
+    # Familia BPA / BPB / BPC (si el cashflow viene sin la O)
+    "BPA7": "BPA7D",
+    "BPA8": "BPA8D",
+    "BPB7": "BPB7D",
+    "BPB8": "BPB8D",
+    "BPC7": "BPC7D",
+
+    # =========================
+    # Bonos soberanos USD-link
+    # =========================
     "AL30": "AL30D",
     "AL35": "AL35D",
     "AE38": "AE38D",
     "AL41": "AL41D",
+
     "GD30": "GD30D",
     "GD35": "GD35D",
     "GD38": "GD38D",
     "GD41": "GD41D",
-    "BPA7": "BPA7D",
-    "BPB7": "BPB7D",
-    "BPC7": "BPC7D"}
+
+    # =========================
+    # Otros / atípicos
+    # =========================
+    "BPY26": "BPY6D",
+}
 
 
 # =========================
