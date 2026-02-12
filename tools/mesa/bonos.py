@@ -18,34 +18,41 @@ PRICE_SUFFIX = "D"
 TIR_MIN_FIXED = -15.0
 TIR_MAX_FIXED = 20.0
 
-# =========================
-# Excepciones ticker pesos -> ticker USD (MEP)
-# (cuando NO es simplemente "ticker + D")
-# =========================
+# Excepciones PESOS -> USD (cuando no es solo + "D")
 PESOS_TO_USD_OVERRIDES: dict[str, str] = {
-    # Provincia (los que pasaste)
+    # =========================
+    # Provincia de Bs. As.
+    # =========================
     "BPOB7": "BPB7D",
     "BPOB8": "BPB8D",
     "BPOC7": "BPC7D",
     "BPOD7": "BPD7D",
 
-    # Otros
-    "BPY26": "BPY6D",
+    # Familia BPA / BPB / BPC (si el cashflow viene sin la O)
+    "BPA7": "BPA7D",
+    "BPA8": "BPA8D",
+    "BPB7": "BPB7D",
+    "BPB8": "BPB8D",
+    "BPC7": "BPC7D",
+
+    # =========================
+    # Bonos soberanos USD-link
+    # =========================
     "AL30": "AL30D",
     "AL35": "AL35D",
     "AE38": "AE38D",
     "AL41": "AL41D",
+
     "GD30": "GD30D",
     "GD35": "GD35D",
     "GD38": "GD38D",
     "GD41": "GD41D",
 
-    # “familia” BPA/BPB/BPC/BPA8/BPB8 (si tu cashflow los trae así)
-    "BPA7": "BPA7D",
-    "BPB7": "BPB7D",
-    "BPC7": "BPC7D",
-    "BPA8": "BPA8D"}
-
+    # =========================
+    # Otros / atípicos
+    # =========================
+    "BPY26": "BPY6D",
+}
 
 # =========================
 # Parsing AR numbers
