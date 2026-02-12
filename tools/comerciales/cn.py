@@ -28,11 +28,10 @@ OUTPUT_COLS = [
 
 NEIX_RED = "#ff3b30"
 BORDER = "rgba(17,24,39,0.10)"
-CARD_BG = "rgba(255,255,255,0.96)"
 
 
 # =========================================================
-# UI helpers
+# UI
 # =========================================================
 def _inject_css() -> None:
     st.markdown(
@@ -59,7 +58,7 @@ def _inject_css() -> None:
 
 
 # =========================================================
-# Data helpers
+# Helpers
 # =========================================================
 def _norm_col(s: str) -> str:
     s = str(s).strip()
@@ -107,58 +106,62 @@ def _parse_fecha(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     fechas_ar = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
-    if fechas_ar.isna().mean() > 0.4:
+    if float(fechas_ar.isna().mean()) > 0.4:
         df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=False)
     else:
         df["Fecha"] = fechas_ar
     return df
 
 
-def _parse_ar_decimal_series(s: pd.Series) -> pd.Series:
+def _parse_decimal_coma_strict(series: pd.Series) -> pd.Series:
     """
-    Convierte strings tipo '1.234,56' -> 1234.56
-    Si ya es numérico, lo deja.
+    Regla:
+    - Si viene como texto con coma: '82,3905' => 82.3905
+    - Si viene sin coma y es todo dígitos y largo (ej '823905'): asumimos 4 decimales implícitos => /10000
+    - Si ya es número razonable, queda
     """
-    if pd.api.types.is_numeric_dtype(s):
-        return s
+    s = series.copy()
 
-    out = (
-        s.astype(str)
-        .str.strip()
-        .str.replace("\u00a0", "", regex=False)  # nbsp
-        .str.replace(" ", "", regex=False)
-        .str.replace(".", "", regex=False)  # miles
+    # Trabajamos con representación textual "cruda"
+    raw = s.astype(str).str.strip()
+
+    # Normalizamos NBSP y espacios raros
+    raw = raw.str.replace("\u00a0", "", regex=False).str.replace(" ", "", regex=False)
+
+    # Caso A: trae coma decimal -> parse AR
+    has_comma = raw.str.contains(",", regex=False)
+
+    # Convertimos AR: miles '.' y decimal ','
+    raw_ar = (
+        raw.where(has_comma, other=None)
+        .dropna()
+        .str.replace(".", "", regex=False)   # miles
         .str.replace(",", ".", regex=False)  # decimal
     )
-    return pd.to_numeric(out, errors="coerce")
 
+    out = pd.to_numeric(raw_ar, errors="coerce")
+    s_out = pd.Series(index=s.index, dtype="float64")
+    s_out.loc[out.index] = out
 
-def _fix_scale_if_needed(s: pd.Series) -> pd.Series:
-    """
-    Heurística: si por un tema de coma decimal te quedó algo como 823905
-    (y debería ser 82.3905), detecta y divide por 10.000.
-    """
-    if not pd.api.types.is_numeric_dtype(s):
-        return s
+    # Caso B: NO trae coma, NO trae punto, es todo dígitos y "largo" (ej 823905) -> 4 decimales implícitos
+    mask_digits = (~has_comma) & (~raw.str.contains(r"\.", regex=True)) & raw.str.fullmatch(r"\d{5,}")
+    if mask_digits.any():
+        as_num = pd.to_numeric(raw.where(mask_digits), errors="coerce")
+        # 4 decimales implícitos
+        s_out.loc[mask_digits] = (as_num / 10000.0).astype("float64")
 
-    x = s.dropna()
-    if x.empty:
-        return s
+    # Caso C: resto -> intentar numérico directo (por si vino como float ya ok)
+    mask_rest = s_out.isna()
+    if mask_rest.any():
+        s_out.loc[mask_rest] = pd.to_numeric(raw.where(mask_rest), errors="coerce")
 
-    frac_integer = float(((x % 1) == 0).mean())
-    q95 = float(x.quantile(0.95))
-
-    # si casi todo son enteros y "demasiado grandes" → probablemente coma decimal corrida
-    if frac_integer > 0.9 and q95 > 10000:
-        return s / 10000.0
-
-    return s
+    return s_out
 
 
 def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame]:
     # si no existe o no se puede leer, se ignora SILENCIOSAMENTE
     try:
-        df = pd.read_excel(xls, sheet_name=sheet_name)
+        df = pd.read_excel(xls, sheet_name=sheet_name, dtype=object)
     except Exception:
         return None
 
@@ -175,15 +178,14 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame
     # Fecha robusta
     df = _parse_fecha(df)
 
-    # Tipos
+    # Tipos texto
     df["Cuenta"] = df["Cuenta"].astype(str).str.strip()
     df["MANAGER"] = df["MANAGER"].astype(str).str.strip()
     df["OFICIAL"] = df["OFICIAL"].astype(str).str.strip()
 
-    # ✅ Arreglar decimales con coma + escala inflada
+    # ✅ Decimales: coma decimal SIEMPRE
     for col in ["Neto Agente", "Gross Agente"]:
-        df[col] = _parse_ar_decimal_series(df[col])
-        df[col] = _fix_scale_if_needed(df[col])
+        df[col] = _parse_decimal_coma_strict(df[col])
 
     df.insert(0, "Banco", sheet_name)
     return df
