@@ -38,7 +38,7 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "GD41": "GD41D",
     "BPA7": "BPA7D",
     "BPB7": "BPB7D",
-    "BPC7": "BPC7D"}
+    "BPC7": "BPC7D",}
 
 
 
