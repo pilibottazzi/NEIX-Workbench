@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import io
 import re
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import pandas as pd
 import streamlit as st
@@ -14,7 +14,6 @@ import streamlit as st
 # =========================================================
 SHEETS = ["WSC A", "WSC B", "INSIGNEO"]
 
-# 👉 Mantener Id_Off + nombres (sin Id_manager / Id_oficial)
 OUTPUT_COLS = [
     "Fecha",
     "Cuenta",
@@ -27,7 +26,6 @@ OUTPUT_COLS = [
 ]
 
 NEIX_RED = "#ff3b30"
-BORDER = "rgba(17,24,39,0.10)"
 
 
 # =========================================================
@@ -67,30 +65,30 @@ def _norm_col(s: str) -> str:
 
 
 def _key(s: str) -> str:
-    s = _norm_col(s).lower().replace("_", " ")
-    return re.sub(r"\s+", " ", s)
+    return _norm_col(s).lower().replace("_", " ")
 
 
 ALIASES = {
     "Fecha": ["fecha", "fec", "date"],
     "Cuenta": ["cuenta", "cta", "account"],
     "Producto": ["producto", "product"],
-    "Neto Agente": ["neto agente", "neto", "net agent"],
-    "Gross Agente": ["gross agente", "gross", "gross agent"],
-    "Id_Off": ["id off", "id_off", "id oficial", "id of"],
-    "MANAGER": ["manager", "nombre manager", "manager nombre"],
-    "OFICIAL": ["oficial", "nombre oficial", "oficial nombre"],
+    "Neto Agente": ["neto agente", "neto"],
+    "Gross Agente": ["gross agente", "gross"],
+    "Id_Off": ["id off", "id_off", "id of"],
+    "MANAGER": ["manager", "nombre manager"],
+    "OFICIAL": ["oficial", "nombre oficial"],
 }
 
 
 def _resolve_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    key_map = {_key(c): c for c in df.columns}
+    cols = list(df.columns)
+    key_map = {_key(c): c for c in cols}
 
     rename = {}
     for canonical, aliases in ALIASES.items():
-        for a in [canonical] + aliases:
-            k = _key(a)
+        # pruebo canonical + aliases
+        for cand in [canonical] + aliases:
+            k = _key(cand)
             if k in key_map:
                 rename[key_map[k]] = canonical
                 break
@@ -113,79 +111,47 @@ def _parse_fecha(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _parse_decimal_coma_strict(series: pd.Series) -> pd.Series:
+def _comma_to_dot_number(x: pd.Series) -> pd.Series:
     """
-    Regla:
-    - Si viene como texto con coma: '82,3905' => 82.3905
-    - Si viene sin coma y es todo dígitos y largo (ej '823905'): asumimos 4 decimales implícitos => /10000
-    - Si ya es número razonable, queda
+    Regla SIMPLE:
+    - tomar como texto
+    - reemplazar ',' por '.'
+    - convertir a número
     """
-    s = series.copy()
-
-    # Trabajamos con representación textual "cruda"
-    raw = s.astype(str).str.strip()
-
-    # Normalizamos NBSP y espacios raros
-    raw = raw.str.replace("\u00a0", "", regex=False).str.replace(" ", "", regex=False)
-
-    # Caso A: trae coma decimal -> parse AR
-    has_comma = raw.str.contains(",", regex=False)
-
-    # Convertimos AR: miles '.' y decimal ','
-    raw_ar = (
-        raw.where(has_comma, other=None)
-        .dropna()
-        .str.replace(".", "", regex=False)   # miles
-        .str.replace(",", ".", regex=False)  # decimal
-    )
-
-    out = pd.to_numeric(raw_ar, errors="coerce")
-    s_out = pd.Series(index=s.index, dtype="float64")
-    s_out.loc[out.index] = out
-
-    # Caso B: NO trae coma, NO trae punto, es todo dígitos y "largo" (ej 823905) -> 4 decimales implícitos
-    mask_digits = (~has_comma) & (~raw.str.contains(r"\.", regex=True)) & raw.str.fullmatch(r"\d{5,}")
-    if mask_digits.any():
-        as_num = pd.to_numeric(raw.where(mask_digits), errors="coerce")
-        # 4 decimales implícitos
-        s_out.loc[mask_digits] = (as_num / 10000.0).astype("float64")
-
-    # Caso C: resto -> intentar numérico directo (por si vino como float ya ok)
-    mask_rest = s_out.isna()
-    if mask_rest.any():
-        s_out.loc[mask_rest] = pd.to_numeric(raw.where(mask_rest), errors="coerce")
-
-    return s_out
+    s = x.astype(str).str.strip()
+    s = s.str.replace("\u00a0", "", regex=False)  # NBSP
+    s = s.str.replace(",", ".", regex=False)
+    return pd.to_numeric(s, errors="coerce")
 
 
 def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame]:
-    # si no existe o no se puede leer, se ignora SILENCIOSAMENTE
+    # si no existe / no se lee -> ignorar
     try:
-        df = pd.read_excel(xls, sheet_name=sheet_name, dtype=object)
+        df = pd.read_excel(xls, sheet_name=sheet_name, dtype=str)
     except Exception:
         return None
 
     df.columns = [_norm_col(c) for c in df.columns]
     df = _resolve_columns(df)
 
-    # si no tiene las columnas mínimas, se ignora SILENCIOSAMENTE
+    # si faltan columnas mínimas -> ignorar
     for c in OUTPUT_COLS:
         if c not in df.columns:
             return None
 
     df = df[OUTPUT_COLS].copy()
 
-    # Fecha robusta
+    # fecha robusta
     df = _parse_fecha(df)
 
-    # Tipos texto
+    # texto limpio
     df["Cuenta"] = df["Cuenta"].astype(str).str.strip()
     df["MANAGER"] = df["MANAGER"].astype(str).str.strip()
     df["OFICIAL"] = df["OFICIAL"].astype(str).str.strip()
 
-    # ✅ Decimales: coma decimal SIEMPRE
-    for col in ["Neto Agente", "Gross Agente"]:
-        df[col] = _parse_decimal_coma_strict(df[col])
+    # ✅ decimal simple
+    df["Neto Agente"] = _comma_to_dot_number(df["Neto Agente"])
+    df["Gross Agente"] = _comma_to_dot_number(df["Gross Agente"])
 
     df.insert(0, "Banco", sheet_name)
     return df
@@ -193,7 +159,7 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame
 
 def _to_excel_bytes(df: pd.DataFrame) -> bytes:
     bio = io.BytesIO()
-    with pd.ExcelWriter(bio, engine="openpyxl", datetime_format="DD/MM/YYYY") as writer:
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Consolidado")
     bio.seek(0)
     return bio.read()
@@ -211,7 +177,6 @@ def render(back_to_home=None) -> None:
         accept_multiple_files=False,
         key="cn_bancos_uploader",
     )
-
     if not up:
         return
 
