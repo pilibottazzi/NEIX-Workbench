@@ -41,7 +41,7 @@ def _inject_css() -> None:
     padding-bottom: 2rem;
   }}
 
-  /* Download button full width (de verdad) */
+  /* Download button full width */
   div[data-testid="stDownloadButton"] {{
     width: 100% !important;
   }}
@@ -113,30 +113,25 @@ def _clean_text_series(x: pd.Series) -> pd.Series:
     s = s.str.replace("\u00a0", " ", regex=False)  # NBSP
     s = s.str.strip()
     s = s.str.replace(r"\s+", " ", regex=True)
-    # si viene "nan" por conversión a str:
     s = s.replace({"nan": ""})
     return s
 
 
-def _fecha_sin_hora(x: pd.Series) -> pd.Series:
+def _parse_fecha(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Convierte Fecha a 'YYYY-MM-DD' (sin hora).
-    Si no parsea, deja el valor original.
+    Fecha como estaba antes:
+    intenta dayfirst=True y si falla mucho, prueba dayfirst=False.
     """
-    raw = _clean_text_series(x)
-    dt = pd.to_datetime(raw, errors="coerce", dayfirst=True)
+    if "Fecha" not in df.columns:
+        return df
 
-    # si parseó muy poco con dayfirst=True, pruebo dayfirst=False
-    if float(dt.isna().mean()) > 0.4:
-        dt2 = pd.to_datetime(raw, errors="coerce", dayfirst=False)
-        # elijo el que parsea mejor
-        if dt2.isna().mean() < dt.isna().mean():
-            dt = dt2
+    fechas_ar = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
+    if float(fechas_ar.isna().mean()) > 0.4:
+        df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=False)
+    else:
+        df["Fecha"] = fechas_ar
 
-    out = raw.copy()
-    mask = dt.notna()
-    out.loc[mask] = dt.loc[mask].dt.strftime("%Y-%m-%d")
-    return out
+    return df
 
 
 def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame]:
@@ -156,8 +151,8 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame
 
     df = df[OUTPUT_COLS].copy()
 
-    # Fecha sin hora (y sin tocar neto/gross)
-    df["Fecha"] = _fecha_sin_hora(df["Fecha"])
+    # Fecha como antes (datetime)
+    df = _parse_fecha(df)
 
     # Texto limpio (sin modificar separadores decimales)
     df["Cuenta"] = _clean_text_series(df["Cuenta"])
@@ -226,4 +221,5 @@ def render(back_to_home=None) -> None:
         st.dataframe(df_all, use_container_width=True, height=620, hide_index=True)
     except TypeError:
         st.dataframe(df_all, use_container_width=True, height=620)
+
 
