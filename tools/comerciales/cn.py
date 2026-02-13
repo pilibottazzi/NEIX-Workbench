@@ -1,3 +1,4 @@
+```python
 # tools/comercial/cn.py
 from __future__ import annotations
 
@@ -106,8 +107,8 @@ def _resolve_columns(df: pd.DataFrame) -> pd.DataFrame:
 def _clean_text_series(x: pd.Series) -> pd.Series:
     """
     Limpieza mínima y segura:
-    - mantener exactamente el contenido (coma/punto tal cual)
-    - solo limpiar espacios y NBSP
+    - mantiene exactamente el contenido (coma/punto tal cual)
+    - solo limpia espacios y NBSP
     """
     s = x.astype(str)
     s = s.str.replace("\u00a0", " ", regex=False)  # NBSP
@@ -117,26 +118,35 @@ def _clean_text_series(x: pd.Series) -> pd.Series:
     return s
 
 
-def _parse_fecha(df: pd.DataFrame) -> pd.DataFrame:
+def _parse_fecha_robusta(x: pd.Series) -> pd.Series:
     """
-    Fecha como estaba antes:
-    intenta dayfirst=True y si falla mucho, prueba dayfirst=False.
+    Fecha ROBUSTA (como habíamos hablado):
+    - A veces viene estilo AR (dayfirst=True) y otras estilo US (dayfirst=False)
+    - PERO dentro de la misma hoja siempre es consistente.
+    Entonces:
+      1) probamos parsear con dayfirst=True
+      2) probamos parsear con dayfirst=False
+      3) elegimos el que menos NaT genera (por hoja)
+    Devuelve datetime (no string), igual que antes.
     """
-    if "Fecha" not in df.columns:
-        return df
+    raw = _clean_text_series(x)
 
-    fechas_ar = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
-    if float(fechas_ar.isna().mean()) > 0.4:
-        df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=False)
-    else:
-        df["Fecha"] = fechas_ar
+    dt_ar = pd.to_datetime(raw, errors="coerce", dayfirst=True)
+    dt_us = pd.to_datetime(raw, errors="coerce", dayfirst=False)
 
-    return df
+    ar_bad = float(dt_ar.isna().mean())
+    us_bad = float(dt_us.isna().mean())
+
+    # elegimos el mejor (menos NaT). si empatan, preferimos AR.
+    dt = dt_ar if ar_bad <= us_bad else dt_us
+
+    # Si igual salió TODO NaT, no rompo: dejo NaT y listo.
+    return dt
 
 
 def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame]:
     try:
-        # IMPORTANTÍSIMO: dtype=str para NO romper neto/gross
+        # dtype=str para NO romper neto/gross
         df = pd.read_excel(xls, sheet_name=sheet_name, dtype=str)
     except Exception:
         return None
@@ -151,8 +161,8 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame
 
     df = df[OUTPUT_COLS].copy()
 
-    # Fecha como antes (datetime)
-    df = _parse_fecha(df)
+    # ✅ Fecha robusta y consistente por hoja
+    df["Fecha"] = _parse_fecha_robusta(df["Fecha"])
 
     # Texto limpio (sin modificar separadores decimales)
     df["Cuenta"] = _clean_text_series(df["Cuenta"])
@@ -221,5 +231,5 @@ def render(back_to_home=None) -> None:
         st.dataframe(df_all, use_container_width=True, height=620, hide_index=True)
     except TypeError:
         st.dataframe(df_all, use_container_width=True, height=620)
-
+```
 
