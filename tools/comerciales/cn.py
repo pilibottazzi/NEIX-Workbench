@@ -1,10 +1,9 @@
-```python
 # tools/comercial/cn.py
 from __future__ import annotations
 
 import io
 import re
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import pandas as pd
 import streamlit as st
@@ -74,40 +73,10 @@ def _key(s: str) -> str:
     return _norm_col(s).lower().replace("_", " ")
 
 
-ALIASES = {
-    "Fecha": ["fecha", "fec", "date"],
-    "Cuenta": ["cuenta", "cta", "account"],
-    "Producto": ["producto", "product"],
-    "Neto Agente": ["neto agente", "neto"],
-    "Gross Agente": ["gross agente", "gross"],
-    "Id_Off": ["id off", "id_off", "id of"],
-    "MANAGER": ["manager", "nombre manager"],
-    "OFICIAL": ["oficial", "nombre oficial"],
-}
-
-
-def _resolve_columns(df: pd.DataFrame) -> pd.DataFrame:
-    cols = list(df.columns)
-    key_map = {_key(c): c for c in cols}
-
-    rename = {}
-    for canonical, aliases in ALIASES.items():
-        for cand in [canonical] + aliases:
-            k = _key(cand)
-            if k in key_map:
-                rename[key_map[k]] = canonical
-                break
-
-    if rename:
-        df = df.rename(columns=rename)
-
-    return df
-
-
 def _clean_text_series(x: pd.Series) -> pd.Series:
     """
     Limpieza mínima y segura:
-    - mantiene exactamente el contenido (coma/punto tal cual)
+    - NO cambia coma/punto
     - solo limpia espacios y NBSP
     """
     s = x.astype(str)
@@ -118,35 +87,175 @@ def _clean_text_series(x: pd.Series) -> pd.Series:
     return s
 
 
-def _parse_fecha_robusta(x: pd.Series) -> pd.Series:
+def _letters_ratio(s: pd.Series, n: int = 60) -> float:
     """
-    Fecha ROBUSTA (como habíamos hablado):
-    - A veces viene estilo AR (dayfirst=True) y otras estilo US (dayfirst=False)
-    - PERO dentro de la misma hoja siempre es consistente.
-    Entonces:
-      1) probamos parsear con dayfirst=True
-      2) probamos parsear con dayfirst=False
-      3) elegimos el que menos NaT genera (por hoja)
-    Devuelve datetime (no string), igual que antes.
+    Cuánto "texto" tiene una columna (para distinguir Nombre vs Id).
     """
+    sample = _clean_text_series(s).dropna().astype(str)
+    if sample.empty:
+        return 0.0
+    sample = sample.head(n)
+    joined = " ".join(sample.tolist())
+    if not joined:
+        return 0.0
+    letters = sum(ch.isalpha() for ch in joined)
+    return letters / max(1, len(joined))
+
+
+# =========================================================
+# Column resolution (FIX)
+# =========================================================
+ALIASES: Dict[str, List[str]] = {
+    "Fecha": ["fecha", "fec", "date"],
+    "Cuenta": ["cuenta", "cta", "account"],
+    "Producto": ["producto", "product"],
+    "Neto Agente": ["neto agente", "neto", "net agent", "netoagente"],
+    "Gross Agente": ["gross agente", "gross", "gross agent", "grossagente"],
+    "Id_Off": ["id off", "id_off", "id of", "idoff", "id oficial", "id_oficial", "oficial id"],
+    # acá metemos variantes comunes para que no agarre cualquier cosa
+    "MANAGER": ["manager", "nombre manager", "manager nombre", "managername", "manager nombre", "managernombre", "manager nombre completo"],
+    "OFICIAL": ["oficial", "nombre oficial", "oficial nombre", "oficialname", "oficial nombre", "oficialnombre", "oficial nombre completo"],
+}
+
+# Para detectar columnas id/nombre típicas
+MANAGER_NAME_HINTS = {"managernombre", "manager nombre", "nombre manager", "manager name"}
+MANAGER_ID_HINTS = {"managerid", "manager id", "id manager"}
+OFICIAL_NAME_HINTS = {"oficialnombre", "oficial nombre", "nombre oficial", "oficial name"}
+OFICIAL_ID_HINTS = {"oficialid", "oficial id", "id oficial"}
+
+
+def _pick_best_column(df: pd.DataFrame, candidates: List[str], canonical: str) -> Optional[str]:
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # Para MANAGER/OFICIAL: priorizar la más "texto" (nombre) por sobre id numérico
+    if canonical in ("MANAGER", "OFICIAL"):
+        best = None
+        best_score = -1.0
+        for c in candidates:
+            score = _letters_ratio(df[c])
+            if score > best_score:
+                best_score = score
+                best = c
+        return best
+
+    # Para Id_Off: priorizar la más numérica (menos letras)
+    if canonical == "Id_Off":
+        best = None
+        best_score = 10.0
+        for c in candidates:
+            score = _letters_ratio(df[c])
+            if score < best_score:
+                best_score = score
+                best = c
+        return best
+
+    # Default: primera
+    return candidates[0]
+
+
+def _resolve_columns(df: pd.DataFrame) -> pd.DataFrame:
+    cols = list(df.columns)
+    key_map = {_key(c): c for c in cols}
+
+    rename: Dict[str, str] = {}
+
+    for canonical, aliases in ALIASES.items():
+        # juntamos candidatos por match de key
+        hits: List[str] = []
+        for cand in [canonical] + aliases:
+            k = _key(cand)
+            if k in key_map:
+                hits.append(key_map[k])
+
+        # BONUS: si canonical es MANAGER/OFICIAL, intentar detectar *Nombre* vs *Id*
+        if canonical == "MANAGER":
+            for k, original in key_map.items():
+                if k in MANAGER_NAME_HINTS or ("manager" in k and "nombre" in k):
+                    hits.append(original)
+        if canonical == "OFICIAL":
+            for k, original in key_map.items():
+                if k in OFICIAL_NAME_HINTS or ("oficial" in k and "nombre" in k):
+                    hits.append(original)
+
+        # limpiar duplicados manteniendo orden
+        seen = set()
+        hits = [h for h in hits if not (h in seen or seen.add(h))]
+
+        chosen = _pick_best_column(df, hits, canonical)
+        if chosen:
+            rename[chosen] = canonical
+
+    if rename:
+        df = df.rename(columns=rename)
+
+    return df
+
+
+# =========================================================
+# Fecha robusta por hoja (FIX)
+# =========================================================
+_DATE_RE = re.compile(r"^\s*(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})")
+
+
+def _infer_dayfirst_from_strings(s: pd.Series) -> bool:
+    """
+    Decide dayfirst por hoja usando reglas simples:
+    - mira muchos valores tipo dd/mm/yyyy o mm/dd/yyyy
+    - si el primer número > 12 muchas veces => dayfirst=True
+    - si el segundo número > 12 muchas veces => dayfirst=False
+    - si no puede decidir => default Argentina (dayfirst=True)
+    """
+    raw = _clean_text_series(s)
+    sample = raw.dropna().astype(str)
+    if sample.empty:
+        return True
+
+    sample = sample.head(200)
+
+    first_gt_12 = 0
+    second_gt_12 = 0
+    total = 0
+
+    for val in sample.tolist():
+        m = _DATE_RE.match(val)
+        if not m:
+            continue
+        a = int(m.group(1))
+        b = int(m.group(2))
+        total += 1
+        if a > 12:
+            first_gt_12 += 1
+        if b > 12:
+            second_gt_12 += 1
+
+    if total == 0:
+        return True
+
+    # Si hay evidencia fuerte
+    if first_gt_12 > second_gt_12:
+        return True
+    if second_gt_12 > first_gt_12:
+        return False
+
+    return True  # default AR
+
+
+def _parse_fecha_robusta_por_hoja(x: pd.Series) -> pd.Series:
     raw = _clean_text_series(x)
-
-    dt_ar = pd.to_datetime(raw, errors="coerce", dayfirst=True)
-    dt_us = pd.to_datetime(raw, errors="coerce", dayfirst=False)
-
-    ar_bad = float(dt_ar.isna().mean())
-    us_bad = float(dt_us.isna().mean())
-
-    # elegimos el mejor (menos NaT). si empatan, preferimos AR.
-    dt = dt_ar if ar_bad <= us_bad else dt_us
-
-    # Si igual salió TODO NaT, no rompo: dejo NaT y listo.
+    dayfirst = _infer_dayfirst_from_strings(raw)
+    dt = pd.to_datetime(raw, errors="coerce", dayfirst=dayfirst)
     return dt
 
 
+# =========================================================
+# Sheet read
+# =========================================================
 def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame]:
     try:
-        # dtype=str para NO romper neto/gross
+        # dtype=str para NO romper neto/gross ni ids/nombres
         df = pd.read_excel(xls, sheet_name=sheet_name, dtype=str)
     except Exception:
         return None
@@ -161,8 +270,8 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame
 
     df = df[OUTPUT_COLS].copy()
 
-    # ✅ Fecha robusta y consistente por hoja
-    df["Fecha"] = _parse_fecha_robusta(df["Fecha"])
+    # ✅ Fecha consistente por hoja (arregla INSIGNEO vs WSC)
+    df["Fecha"] = _parse_fecha_robusta_por_hoja(df["Fecha"])
 
     # Texto limpio (sin modificar separadores decimales)
     df["Cuenta"] = _clean_text_series(df["Cuenta"])
@@ -231,5 +340,4 @@ def render(back_to_home=None) -> None:
         st.dataframe(df_all, use_container_width=True, height=620, hide_index=True)
     except TypeError:
         st.dataframe(df_all, use_container_width=True, height=620)
-```
 
