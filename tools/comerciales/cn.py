@@ -74,26 +74,12 @@ def _key(s: str) -> str:
 
 
 def _clean_text_series(x: pd.Series) -> pd.Series:
-    """Limpieza mínima segura (no toca comas/puntos)."""
+    """Limpieza mínima segura (no toca comas/puntos ni fechas)."""
     s = x.astype(str)
     s = s.str.replace("\u00a0", " ", regex=False)  # NBSP
     s = s.str.strip()
     s = s.str.replace(r"\s+", " ", regex=True)
     return s.replace({"nan": "", "None": "", "NaT": ""})
-
-
-def _parse_fecha_ar(x: pd.Series) -> pd.Series:
-    """
-    Ya confirmaste que viene todo ARG.
-    Parseo dd/mm/yyyy (o compatible) y lo dejo como texto YYYY-MM-DD (Looker friendly).
-    """
-    raw = _clean_text_series(x)
-    dt = pd.to_datetime(raw, errors="coerce", dayfirst=True)
-
-    out = pd.Series([""] * len(raw), index=raw.index, dtype="object")
-    m = dt.notna()
-    out.loc[m] = dt.loc[m].dt.strftime("%Y-%m-%d")
-    return out
 
 
 # =========================================================
@@ -131,6 +117,7 @@ def _resolve_columns(df: pd.DataFrame) -> pd.DataFrame:
 # =========================================================
 def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame]:
     try:
+        # dtype=str: NO tocamos decimales ni fechas
         df = pd.read_excel(xls, sheet_name=sheet_name, dtype=str)
     except Exception:
         return None
@@ -144,10 +131,10 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame
 
     df = df[OUTPUT_COLS].copy()
 
-    # Fecha AR -> texto YYYY-MM-DD
-    df["Fecha"] = _parse_fecha_ar(df["Fecha"])
+    # ✅ Fecha: DEJAR TAL CUAL VIENE (solo limpieza de espacios raros, sin parsear)
+    df["Fecha"] = _clean_text_series(df["Fecha"])
 
-    # Limpieza texto (sin tocar separadores decimales)
+    # Limpieza mínima en el resto (sin tocar coma/punto)
     for c in ["Cuenta", "Producto", "Id_Off", "MANAGER", "OFICIAL", "Neto Agente", "Gross Agente"]:
         df[c] = _clean_text_series(df[c])
 
