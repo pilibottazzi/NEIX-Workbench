@@ -41,13 +41,18 @@ def _inject_css() -> None:
     padding-bottom: 2rem;
   }}
 
-  div.stDownloadButton > button {{
+  /* Download button full width (de verdad) */
+  div[data-testid="stDownloadButton"] {{
+    width: 100% !important;
+  }}
+  div[data-testid="stDownloadButton"] > button {{
     width: 100% !important;
     background: {NEIX_RED} !important;
     color: white !important;
     border-radius: 14px !important;
-    font-weight: 700 !important;
-    padding: 0.9rem 1rem !important;
+    font-weight: 800 !important;
+    padding: 0.95rem 1rem !important;
+    border: 0 !important;
   }}
 </style>
 """,
@@ -86,7 +91,6 @@ def _resolve_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     rename = {}
     for canonical, aliases in ALIASES.items():
-        # pruebo canonical + aliases
         for cand in [canonical] + aliases:
             k = _key(cand)
             if k in key_map:
@@ -99,34 +103,45 @@ def _resolve_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _parse_fecha(df: pd.DataFrame) -> pd.DataFrame:
-    if "Fecha" not in df.columns:
-        return df
-
-    fechas_ar = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=True)
-    if float(fechas_ar.isna().mean()) > 0.4:
-        df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce", dayfirst=False)
-    else:
-        df["Fecha"] = fechas_ar
-    return df
-
-
-def _comma_to_dot_number(x: pd.Series) -> pd.Series:
+def _clean_text_series(x: pd.Series) -> pd.Series:
     """
-    Regla SIMPLE:
-    - tomar como texto
-    - reemplazar ',' por '.'
-    - convertir a número
+    Limpieza mínima y segura:
+    - mantener exactamente el contenido (coma/punto tal cual)
+    - solo limpiar espacios y NBSP
     """
-    s = x.astype(str).str.strip()
-    s = s.str.replace("\u00a0", "", regex=False)  # NBSP
-    s = s.str.replace(",", ".", regex=False)
-    return pd.to_numeric(s, errors="coerce")
+    s = x.astype(str)
+    s = s.str.replace("\u00a0", " ", regex=False)  # NBSP
+    s = s.str.strip()
+    s = s.str.replace(r"\s+", " ", regex=True)
+    # si viene "nan" por conversión a str:
+    s = s.replace({"nan": ""})
+    return s
+
+
+def _fecha_sin_hora(x: pd.Series) -> pd.Series:
+    """
+    Convierte Fecha a 'YYYY-MM-DD' (sin hora).
+    Si no parsea, deja el valor original.
+    """
+    raw = _clean_text_series(x)
+    dt = pd.to_datetime(raw, errors="coerce", dayfirst=True)
+
+    # si parseó muy poco con dayfirst=True, pruebo dayfirst=False
+    if float(dt.isna().mean()) > 0.4:
+        dt2 = pd.to_datetime(raw, errors="coerce", dayfirst=False)
+        # elijo el que parsea mejor
+        if dt2.isna().mean() < dt.isna().mean():
+            dt = dt2
+
+    out = raw.copy()
+    mask = dt.notna()
+    out.loc[mask] = dt.loc[mask].dt.strftime("%Y-%m-%d")
+    return out
 
 
 def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame]:
-    # si no existe / no se lee -> ignorar
     try:
+        # IMPORTANTÍSIMO: dtype=str para NO romper neto/gross
         df = pd.read_excel(xls, sheet_name=sheet_name, dtype=str)
     except Exception:
         return None
@@ -141,17 +156,19 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame
 
     df = df[OUTPUT_COLS].copy()
 
-    # fecha robusta
-    df = _parse_fecha(df)
+    # Fecha sin hora (y sin tocar neto/gross)
+    df["Fecha"] = _fecha_sin_hora(df["Fecha"])
 
-    # texto limpio
-    df["Cuenta"] = df["Cuenta"].astype(str).str.strip()
-    df["MANAGER"] = df["MANAGER"].astype(str).str.strip()
-    df["OFICIAL"] = df["OFICIAL"].astype(str).str.strip()
+    # Texto limpio (sin modificar separadores decimales)
+    df["Cuenta"] = _clean_text_series(df["Cuenta"])
+    df["Producto"] = _clean_text_series(df["Producto"])
+    df["Id_Off"] = _clean_text_series(df["Id_Off"])
+    df["MANAGER"] = _clean_text_series(df["MANAGER"])
+    df["OFICIAL"] = _clean_text_series(df["OFICIAL"])
 
-    # ✅ decimal simple
-    df["Neto Agente"] = _comma_to_dot_number(df["Neto Agente"])
-    df["Gross Agente"] = _comma_to_dot_number(df["Gross Agente"])
+    # ✅ Neto/Gross: TAL CUAL VIENEN
+    df["Neto Agente"] = _clean_text_series(df["Neto Agente"])
+    df["Gross Agente"] = _clean_text_series(df["Gross Agente"])
 
     df.insert(0, "Banco", sheet_name)
     return df
@@ -201,6 +218,7 @@ def render(back_to_home=None) -> None:
         data=_to_excel_bytes(df_all),
         file_name="cn_bancos_consolidado.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
     )
 
     st.markdown("### Consolidado")
@@ -208,3 +226,4 @@ def render(back_to_home=None) -> None:
         st.dataframe(df_all, use_container_width=True, height=620, hide_index=True)
     except TypeError:
         st.dataframe(df_all, use_container_width=True, height=620)
+
