@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import io
 import re
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -87,7 +87,7 @@ def _clean_text_series(x: pd.Series) -> pd.Series:
     return s
 
 
-def _letters_ratio(s: pd.Series, n: int = 60) -> float:
+def _letters_ratio(s: pd.Series, n: int = 80) -> float:
     """
     Cuánto "texto" tiene una columna (para distinguir Nombre vs Id).
     """
@@ -103,7 +103,7 @@ def _letters_ratio(s: pd.Series, n: int = 60) -> float:
 
 
 # =========================================================
-# Column resolution (FIX)
+# Column resolution (Manager/Oficial: nombre vs id)
 # =========================================================
 ALIASES: Dict[str, List[str]] = {
     "Fecha": ["fecha", "fec", "date"],
@@ -112,16 +112,12 @@ ALIASES: Dict[str, List[str]] = {
     "Neto Agente": ["neto agente", "neto", "net agent", "netoagente"],
     "Gross Agente": ["gross agente", "gross", "gross agent", "grossagente"],
     "Id_Off": ["id off", "id_off", "id of", "idoff", "id oficial", "id_oficial", "oficial id"],
-    # acá metemos variantes comunes para que no agarre cualquier cosa
-    "MANAGER": ["manager", "nombre manager", "manager nombre", "managername", "manager nombre", "managernombre", "manager nombre completo"],
-    "OFICIAL": ["oficial", "nombre oficial", "oficial nombre", "oficialname", "oficial nombre", "oficialnombre", "oficial nombre completo"],
+    "MANAGER": ["manager", "nombre manager", "manager nombre", "managername", "managernombre"],
+    "OFICIAL": ["oficial", "nombre oficial", "oficial nombre", "oficialname", "oficialnombre"],
 }
 
-# Para detectar columnas id/nombre típicas
 MANAGER_NAME_HINTS = {"managernombre", "manager nombre", "nombre manager", "manager name"}
-MANAGER_ID_HINTS = {"managerid", "manager id", "id manager"}
 OFICIAL_NAME_HINTS = {"oficialnombre", "oficial nombre", "nombre oficial", "oficial name"}
-OFICIAL_ID_HINTS = {"oficialid", "oficial id", "id oficial"}
 
 
 def _pick_best_column(df: pd.DataFrame, candidates: List[str], canonical: str) -> Optional[str]:
@@ -152,7 +148,6 @@ def _pick_best_column(df: pd.DataFrame, candidates: List[str], canonical: str) -
                 best = c
         return best
 
-    # Default: primera
     return candidates[0]
 
 
@@ -163,14 +158,13 @@ def _resolve_columns(df: pd.DataFrame) -> pd.DataFrame:
     rename: Dict[str, str] = {}
 
     for canonical, aliases in ALIASES.items():
-        # juntamos candidatos por match de key
         hits: List[str] = []
         for cand in [canonical] + aliases:
             k = _key(cand)
             if k in key_map:
                 hits.append(key_map[k])
 
-        # BONUS: si canonical es MANAGER/OFICIAL, intentar detectar *Nombre* vs *Id*
+        # Extra: detectar nombre manager/oficial aunque el alias no matchee exacto
         if canonical == "MANAGER":
             for k, original in key_map.items():
                 if k in MANAGER_NAME_HINTS or ("manager" in k and "nombre" in k):
@@ -180,7 +174,7 @@ def _resolve_columns(df: pd.DataFrame) -> pd.DataFrame:
                 if k in OFICIAL_NAME_HINTS or ("oficial" in k and "nombre" in k):
                     hits.append(original)
 
-        # limpiar duplicados manteniendo orden
+        # dedupe
         seen = set()
         hits = [h for h in hits if not (h in seen or seen.add(h))]
 
@@ -195,32 +189,57 @@ def _resolve_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================================================
-# Fecha robusta por hoja (FIX)
+# FECHA: detectar por hoja ARG vs YANKEE + soportar serial Excel
 # =========================================================
-_DATE_RE = re.compile(r"^\s*(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})")
+# dd/mm/yyyy o mm/dd/yyyy (con / - .)
+_DMY_RE = re.compile(r"^\s*(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})")
+# yyyy-mm-dd ...
+_YMD_RE = re.compile(r"^\s*(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})")
+# serial excel "45234" o "45234.0"
+_NUMERIC_RE = re.compile(r"^\s*\d+(\.\d+)?\s*$")
 
 
-def _infer_dayfirst_from_strings(s: pd.Series) -> bool:
+def _parse_excel_serial_to_datetime(raw: pd.Series) -> pd.Series:
     """
-    Decide dayfirst por hoja usando reglas simples:
-    - mira muchos valores tipo dd/mm/yyyy o mm/dd/yyyy
-    - si el primer número > 12 muchas veces => dayfirst=True
-    - si el segundo número > 12 muchas veces => dayfirst=False
-    - si no puede decidir => default Argentina (dayfirst=True)
+    Excel serial date: días desde 1899-12-30 (convención de pandas).
     """
-    raw = _clean_text_series(s)
-    sample = raw.dropna().astype(str)
-    if sample.empty:
-        return True
+    num = pd.to_numeric(raw, errors="coerce")
+    # descartamos valores muy chicos tipo "1", "2" que no son fechas reales del reporte
+    # (pero si llegaran, igual convierte a 1899...)
+    dt = pd.to_datetime(num, unit="D", origin="1899-12-30", errors="coerce")
+    return dt
 
-    sample = sample.head(200)
 
+def _infer_dayfirst_and_parse(raw: pd.Series) -> Tuple[bool, pd.Series]:
+    """
+    Decide por hoja si dayfirst True/False y parsea.
+    Reglas:
+      1) Si el string es yyyy-mm-dd => parse directo (no depende de dayfirst)
+      2) Si hay evidencia >12: decide
+      3) Si no hay evidencia: elige el parse con menos NaT; si empata, AR (dayfirst=True)
+    """
+    s = raw.dropna().astype(str)
+    if s.empty:
+        return True, pd.to_datetime(raw, errors="coerce", dayfirst=True)
+
+    # Si la mayoría está en formato yyyy-mm-dd, no hace falta inferir
+    ymd_hits = 0
+    checked = 0
+    for v in s.head(200).tolist():
+        checked += 1
+        if _YMD_RE.match(v):
+            ymd_hits += 1
+    if checked and (ymd_hits / checked) > 0.6:
+        dt = pd.to_datetime(raw, errors="coerce")  # ISO safe
+        return True, dt
+
+    # Evidencia dd/mm vs mm/dd
     first_gt_12 = 0
     second_gt_12 = 0
     total = 0
 
-    for val in sample.tolist():
-        m = _DATE_RE.match(val)
+    for v in s.head(250).tolist():
+        m = _DMY_RE.match(v)
         if not m:
             continue
         a = int(m.group(1))
@@ -231,23 +250,60 @@ def _infer_dayfirst_from_strings(s: pd.Series) -> bool:
         if b > 12:
             second_gt_12 += 1
 
-    if total == 0:
-        return True
+    if total > 0:
+        if first_gt_12 > second_gt_12:
+            dayfirst = True
+            return dayfirst, pd.to_datetime(raw, errors="coerce", dayfirst=dayfirst)
+        if second_gt_12 > first_gt_12:
+            dayfirst = False
+            return dayfirst, pd.to_datetime(raw, errors="coerce", dayfirst=dayfirst)
+        # si empata, caemos al método de menor NaT
 
-    # Si hay evidencia fuerte
-    if first_gt_12 > second_gt_12:
-        return True
-    if second_gt_12 > first_gt_12:
-        return False
+    dt_ar = pd.to_datetime(raw, errors="coerce", dayfirst=True)
+    dt_us = pd.to_datetime(raw, errors="coerce", dayfirst=False)
 
-    return True  # default AR
+    ar_bad = float(dt_ar.isna().mean())
+    us_bad = float(dt_us.isna().mean())
+
+    if ar_bad < us_bad:
+        return True, dt_ar
+    if us_bad < ar_bad:
+        return False, dt_us
+
+    # empate => default Argentina
+    return True, dt_ar
 
 
-def _parse_fecha_robusta_por_hoja(x: pd.Series) -> pd.Series:
+def _parse_fecha_por_hoja(x: pd.Series) -> pd.Series:
+    """
+    Parser final por hoja:
+    1) limpia texto
+    2) si parece serial Excel en proporción alta => convierte como serial
+    3) si no => infiere dayfirst por hoja y parsea
+    4) normaliza a string YYYY-MM-DD (sin hora) para Looker
+    """
     raw = _clean_text_series(x)
-    dayfirst = _infer_dayfirst_from_strings(raw)
-    dt = pd.to_datetime(raw, errors="coerce", dayfirst=dayfirst)
-    return dt
+
+    # ¿Parece serial Excel?
+    sample = raw.dropna().astype(str)
+    if not sample.empty:
+        sample = sample.head(200)
+        numeric_like = sum(bool(_NUMERIC_RE.match(v)) for v in sample.tolist())
+        ratio = numeric_like / len(sample)
+
+        # Si la mayoría son números "puros", asumimos serial Excel
+        if ratio > 0.75:
+            dt = _parse_excel_serial_to_datetime(raw)
+        else:
+            _, dt = _infer_dayfirst_and_parse(raw)
+    else:
+        _, dt = _infer_dayfirst_and_parse(raw)
+
+    # Normalizar a fecha para Looker (YYYY-MM-DD)
+    out = pd.Series([""] * len(raw), index=raw.index, dtype="object")
+    mask = dt.notna()
+    out.loc[mask] = dt.loc[mask].dt.strftime("%Y-%m-%d")
+    return out
 
 
 # =========================================================
@@ -270,8 +326,8 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame
 
     df = df[OUTPUT_COLS].copy()
 
-    # ✅ Fecha consistente por hoja (arregla INSIGNEO vs WSC)
-    df["Fecha"] = _parse_fecha_robusta_por_hoja(df["Fecha"])
+    # ✅ Fecha: detectar por HOJA si ARG/YANKEE + soportar serial Excel + unificar a YYYY-MM-DD
+    df["Fecha"] = _parse_fecha_por_hoja(df["Fecha"])
 
     # Texto limpio (sin modificar separadores decimales)
     df["Cuenta"] = _clean_text_series(df["Cuenta"])
@@ -280,7 +336,7 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame
     df["MANAGER"] = _clean_text_series(df["MANAGER"])
     df["OFICIAL"] = _clean_text_series(df["OFICIAL"])
 
-    # ✅ Neto/Gross: TAL CUAL VIENEN
+    # ✅ Neto/Gross: TAL CUAL VIENEN (solo limpieza mínima)
     df["Neto Agente"] = _clean_text_series(df["Neto Agente"])
     df["Gross Agente"] = _clean_text_series(df["Gross Agente"])
 
@@ -340,4 +396,3 @@ def render(back_to_home=None) -> None:
         st.dataframe(df_all, use_container_width=True, height=620, hide_index=True)
     except TypeError:
         st.dataframe(df_all, use_container_width=True, height=620)
-
