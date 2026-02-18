@@ -2,16 +2,12 @@
 from __future__ import annotations
 
 import io
-import re
-from typing import List, Optional, Dict
+from typing import List, Optional
 
 import pandas as pd
 import streamlit as st
 
 
-# =========================================================
-# Config
-# =========================================================
 SHEETS = ["WSC A", "WSC B", "INSIGNEO"]
 
 OUTPUT_COLS = [
@@ -30,9 +26,6 @@ OUTPUT_COLS = [
 NEIX_RED = "#ff3b30"
 
 
-# =========================================================
-# UI
-# =========================================================
 def _inject_css() -> None:
     st.markdown(
         f"""
@@ -43,10 +36,6 @@ def _inject_css() -> None:
     padding-bottom: 2rem;
   }}
 
-  /* Botón Excel full ancho */
-  div[data-testid="stDownloadButton"] {{
-    width: 100% !important;
-  }}
   div[data-testid="stDownloadButton"] > button {{
     width: 100% !important;
     background: {NEIX_RED} !important;
@@ -62,101 +51,24 @@ def _inject_css() -> None:
     )
 
 
-# =========================================================
-# Helpers
-# =========================================================
-def _norm_col(s: str) -> str:
-    s = str(s).strip()
-    s = re.sub(r"\s+", " ", s)
-    return s
-
-
-def _key(s: str) -> str:
-    return _norm_col(s).lower().replace("_", " ")
-
-
-def _clean_text_series(x: pd.Series) -> pd.Series:
-    """Limpieza mínima segura (no toca comas/puntos ni fechas)."""
-    s = x.astype(str)
-    s = s.str.replace("\u00a0", " ", regex=False)  # NBSP
-    s = s.str.strip()
-    s = s.str.replace(r"\s+", " ", regex=True)
-    return s.replace({"nan": "", "None": "", "NaT": ""})
-
-
-# =========================================================
-# Column aliases (simple)
-# =========================================================
-ALIASES: Dict[str, List[str]] = {
-    "Fecha": ["fecha", "fec", "date"],
-    "Cuenta": ["cuenta", "cta", "account"],
-    "Producto": ["producto", "product"],
-    "Neto Agente": ["neto agente", "neto"],
-    "Gross Agente": ["gross agente", "gross"],
-    "Id_Off": ["id off", "id_off", "idoff", "id off ", "idoff "],
-
-    # NUEVOS IDS
-    "Id_manager": ["id manager", "id_manager", "idmanager", "id manag"],
-    "Id_oficial": ["id oficial", "id_oficial", "idoficial", "id ofici"],
-
-    # NOMBRES
-    "MANAGER": ["manager", "nombre manager", "managernombre", "manager nombre"],
-    "OFICIAL": ["oficial", "nombre oficial", "oficialnombre", "oficial nombre"],
-}
-
-
-def _resolve_columns(df: pd.DataFrame) -> pd.DataFrame:
-    cols = list(df.columns)
-    key_map = {_key(c): c for c in cols}
-
-    rename: Dict[str, str] = {}
-    for canonical, aliases in ALIASES.items():
-        for cand in [canonical] + aliases:
-            k = _key(cand)
-            if k in key_map:
-                rename[key_map[k]] = canonical
-                break
-
-    return df.rename(columns=rename) if rename else df
-
-
-# =========================================================
-# Read sheet
-# =========================================================
 def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame]:
     try:
-        # dtype=str: NO tocamos decimales ni fechas
         df = pd.read_excel(xls, sheet_name=sheet_name, dtype=str)
     except Exception:
         return None
 
-    df.columns = [_norm_col(c) for c in df.columns]
-    df = _resolve_columns(df)
+    # limpiar espacios en headers
+    df.columns = df.columns.str.strip()
 
-    # Validación mínima: deben estar todas las columnas finales
-    if any(c not in df.columns for c in OUTPUT_COLS):
+    # verificar que estén todas
+    missing = [c for c in OUTPUT_COLS if c not in df.columns]
+    if missing:
+        st.warning(f"{sheet_name} falta columnas: {missing}")
         return None
 
     df = df[OUTPUT_COLS].copy()
-
-    # ✅ Fecha: DEJAR TAL CUAL VIENE (solo limpieza de espacios raros, sin parsear)
-    df["Fecha"] = _clean_text_series(df["Fecha"])
-
-    # Limpieza mínima en el resto (sin tocar coma/punto)
-    for c in [
-        "Cuenta",
-        "Producto",
-        "Id_Off",
-        "Id_manager",
-        "MANAGER",
-        "Id_oficial",
-        "OFICIAL",
-        "Neto Agente",
-        "Gross Agente",
-    ]:
-        df[c] = _clean_text_series(df[c])
-
     df.insert(0, "Banco", sheet_name)
+
     return df
 
 
@@ -168,9 +80,6 @@ def _to_excel_bytes(df: pd.DataFrame) -> bytes:
     return bio.read()
 
 
-# =========================================================
-# Entrypoint
-# =========================================================
 def render(back_to_home=None) -> None:
     _inject_css()
 
@@ -178,7 +87,6 @@ def render(back_to_home=None) -> None:
         "CN: Subí el Excel para consolidar bancos",
         type=["xlsx", "xls"],
         accept_multiple_files=False,
-        key="cn_bancos_uploader",
     )
     if not up:
         return
@@ -186,7 +94,7 @@ def render(back_to_home=None) -> None:
     try:
         xls = pd.ExcelFile(io.BytesIO(up.getvalue()))
     except Exception:
-        st.error("No pude leer el archivo. Probá guardarlo como .xlsx y re-subirlo.")
+        st.error("No pude leer el archivo.")
         return
 
     dfs: List[pd.DataFrame] = []
@@ -196,10 +104,10 @@ def render(back_to_home=None) -> None:
             dfs.append(one)
 
     if not dfs:
-        st.warning("No encontré hojas válidas con las columnas esperadas.")
+        st.warning("No encontré hojas válidas.")
         return
 
-    df_all = pd.concat(dfs, ignore_index=True).reset_index(drop=True)
+    df_all = pd.concat(dfs, ignore_index=True)
 
     st.download_button(
         "Excel",
@@ -210,8 +118,4 @@ def render(back_to_home=None) -> None:
     )
 
     st.markdown("### Consolidado")
-    try:
-        st.dataframe(df_all, use_container_width=True, height=620, hide_index=True)
-    except TypeError:
-        st.dataframe(df_all, use_container_width=True, height=620)
-
+    st.dataframe(df_all, use_container_width=True, height=620)
