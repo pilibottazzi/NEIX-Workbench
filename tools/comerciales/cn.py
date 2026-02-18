@@ -21,7 +21,9 @@ OUTPUT_COLS = [
     "Neto Agente",
     "Gross Agente",
     "Id_Off",
+    "Id_manager",
     "MANAGER",
+    "Id_oficial",
     "OFICIAL",
 ]
 
@@ -91,7 +93,13 @@ ALIASES: Dict[str, List[str]] = {
     "Producto": ["producto", "product"],
     "Neto Agente": ["neto agente", "neto"],
     "Gross Agente": ["gross agente", "gross"],
-    "Id_Off": ["id off", "id_off", "idoff", "id oficial", "id_oficial"],
+    "Id_Off": ["id off", "id_off", "idoff", "id off ", "idoff "],
+
+    # NUEVOS IDS
+    "Id_manager": ["id manager", "id_manager", "idmanager", "id manag"],
+    "Id_oficial": ["id oficial", "id_oficial", "idoficial", "id ofici"],
+
+    # NOMBRES
     "MANAGER": ["manager", "nombre manager", "managernombre", "manager nombre"],
     "OFICIAL": ["oficial", "nombre oficial", "oficialnombre", "oficial nombre"],
 }
@@ -125,7 +133,7 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame
     df.columns = [_norm_col(c) for c in df.columns]
     df = _resolve_columns(df)
 
-    # Validación mínima
+    # Validación mínima: deben estar todas las columnas finales
     if any(c not in df.columns for c in OUTPUT_COLS):
         return None
 
@@ -135,7 +143,17 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame
     df["Fecha"] = _clean_text_series(df["Fecha"])
 
     # Limpieza mínima en el resto (sin tocar coma/punto)
-    for c in ["Cuenta", "Producto", "Id_Off", "MANAGER", "OFICIAL", "Neto Agente", "Gross Agente"]:
+    for c in [
+        "Cuenta",
+        "Producto",
+        "Id_Off",
+        "Id_manager",
+        "MANAGER",
+        "Id_oficial",
+        "OFICIAL",
+        "Neto Agente",
+        "Gross Agente",
+    ]:
         df[c] = _clean_text_series(df[c])
 
     df.insert(0, "Banco", sheet_name)
@@ -196,3 +214,4 @@ def render(back_to_home=None) -> None:
         st.dataframe(df_all, use_container_width=True, height=620, hide_index=True)
     except TypeError:
         st.dataframe(df_all, use_container_width=True, height=620)
+
