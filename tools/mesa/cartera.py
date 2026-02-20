@@ -679,10 +679,94 @@ def build_portfolio_table(
 
     return df, resumen, flows_pivot
 
+# =========================
+# PDF helpers (MEJORADOS)
+# =========================
+def fmt_usd_pdf(x: float) -> str:
+    """US$ con miles en formato AR (punto)."""
+    if x is None or (isinstance(x, float) and not np.isfinite(x)):
+        return ""
+    try:
+        v = float(x)
+    except Exception:
+        return ""
+    return f"US$ {v:,.0f}".replace(",", ".")
 
-# =========================
-# PDF helpers
-# =========================
+
+def fmt_num_pdf(x: float, dec: int = 2) -> str:
+    if x is None or (isinstance(x, float) and not np.isfinite(x)):
+        return ""
+    try:
+        v = float(x)
+    except Exception:
+        return ""
+    return f"{v:.{dec}f}"
+
+
+def fmt_pct_pdf(x: float, dec: int = 2) -> str:
+    if x is None or (isinstance(x, float) and not np.isfinite(x)):
+        return ""
+    try:
+        v = float(x)
+    except Exception:
+        return ""
+    return f"{v:.{dec}f}%"
+
+
+def _format_cartera_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
+    """Deja la tabla lista para PDF (strings ya formateados)."""
+    d = df.copy()
+
+    if "USD" in d.columns:
+        d["USD"] = d["USD"].apply(fmt_usd_pdf)
+
+    if "Precio (USD, VN100)" in d.columns:
+        d["Precio (USD, VN100)"] = pd.to_numeric(d["Precio (USD, VN100)"], errors="coerce").apply(
+            lambda v: fmt_num_pdf(v, 2)
+        )
+
+    if "VN estimada" in d.columns:
+        d["VN estimada"] = pd.to_numeric(d["VN estimada"], errors="coerce").apply(
+            lambda v: fmt_num_pdf(v, 0)
+        )
+
+    if "TIR (%)" in d.columns:
+        d["TIR (%)"] = pd.to_numeric(d["TIR (%)"], errors="coerce").apply(lambda v: fmt_pct_pdf(v, 2))
+
+    if "MD" in d.columns:
+        d["MD"] = pd.to_numeric(d["MD"], errors="coerce").apply(lambda v: fmt_num_pdf(v, 2))
+
+    if "Duration" in d.columns:
+        d["Duration"] = pd.to_numeric(d["Duration"], errors="coerce").apply(lambda v: fmt_num_pdf(v, 2))
+
+    if "Vencimiento" in d.columns:
+        d["Vencimiento"] = pd.to_datetime(d["Vencimiento"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
+
+    if "%" in d.columns:
+        d["%"] = pd.to_numeric(d["%"], errors="coerce").apply(lambda v: fmt_num_pdf(v, 2))
+
+    d = d.fillna("")
+    return d
+
+
+def _format_flows_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
+    """Flujos: todo lo monetario como US$ sin decimales."""
+    d = df.copy()
+
+    # si hay Totales/Ticker como índice, lo convertimos a columna para PDF
+    if d.index.name is not None or not isinstance(d.index, pd.RangeIndex):
+        d = d.reset_index().rename(columns={"index": "Ticker"})
+
+    # formatear columnas numéricas como US$
+    for c in d.columns:
+        if c == "Ticker":
+            continue
+        d[c] = pd.to_numeric(d[c], errors="coerce").apply(fmt_usd_pdf)
+
+    d = d.fillna("")
+    return d
+
+
 def _df_to_table_data(df: pd.DataFrame, max_rows: int = 60) -> list[list[str]]:
     if df is None or df.empty:
         return [["(sin datos)"]]
@@ -700,45 +784,66 @@ def build_cartera_pdf_bytes(
     resumen: dict,
     cartera_show: pd.DataFrame,
     flows_show: pd.DataFrame,
-    title: str = "NEIX · Cartera Comercial",
     logo_path: str | None = None,
 ) -> bytes:
+    """
+    PDF minimal/pro:
+    - Solo logo (sin título ni "Generado:")
+    - Moneda USD como US$
+    - KPI + tablas al mismo ancho
+    """
     buff = io.BytesIO()
+
+    # Márgenes (definen el ancho útil)
+    left = right = 1.3 * cm
+    top = bottom = 1.2 * cm
+    page_w, page_h = A4
+    usable_w = page_w - left - right
+
     doc = SimpleDocTemplate(
         buff,
         pagesize=A4,
-        rightMargin=1.3 * cm,
-        leftMargin=1.3 * cm,
-        topMargin=1.2 * cm,
-        bottomMargin=1.2 * cm,
-        title=title,
+        leftMargin=left,
+        rightMargin=right,
+        topMargin=top,
+        bottomMargin=bottom,
     )
 
     styles = getSampleStyleSheet()
     story = []
 
-    # Logo
+    # -------------------------
+    # Logo centrado (sin textos)
+    # -------------------------
     if logo_path and os.path.exists(logo_path):
         try:
-            img = RLImage(logo_path, width=4.4 * cm, height=1.25 * cm)
-            story.append(img)
-            story.append(Spacer(1, 6))
+            logo = RLImage(logo_path, width=6.2 * cm, height=1.6 * cm)  # ajustá si querés
+            # Table wrapper para centrar a ancho completo
+            tlogo = Table([[logo]], colWidths=[usable_w])
+            tlogo.setStyle(
+                TableStyle(
+                    [
+                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ]
+                )
+            )
+            story.append(tlogo)
+            story.append(Spacer(1, 8))
         except Exception:
             pass
 
-    # Header
-    story.append(Paragraph(title, styles["Title"]))
-    story.append(Paragraph(dt.datetime.now().strftime("Generado: %d/%m/%Y %H:%M"), styles["Normal"]))
-    story.append(Spacer(1, 10))
-
-    # KPIs
+    # -------------------------
+    # KPI (ancho completo)
+    # -------------------------
     kpi_data = [
-        ["Capital (USD)", f"{fmt_money_int(float(capital_usd))}"],
-        ["TIR total (pond.)", f"{fmt_pct_2(float(resumen.get('tir', np.nan)))}"],
-        ["MD total (pond.)", f"{fmt_num_2(float(resumen.get('md', np.nan)))}"],
-        ["Duration total (pond.)", f"{fmt_num_2(float(resumen.get('dur', np.nan)))}"],
+        ["Capital (USD)", fmt_usd_pdf(float(capital_usd))],
+        ["TIR total (pond.)", fmt_pct_pdf(float(resumen.get("tir", np.nan)), 2)],
+        ["MD total (pond.)", fmt_num_pdf(float(resumen.get("md", np.nan)), 2)],
+        ["Duration total (pond.)", fmt_num_pdf(float(resumen.get("dur", np.nan)), 2)],
     ]
-    t_kpi = Table(kpi_data, colWidths=[6.0 * cm, 10.2 * cm])
+    t_kpi = Table(kpi_data, colWidths=[usable_w * 0.42, usable_w * 0.58])
     t_kpi.setStyle(
         TableStyle(
             [
@@ -746,66 +851,79 @@ def build_cartera_pdf_bytes(
                 ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
                 ("FONTSIZE", (0, 0), (-1, -1), 10),
                 ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ("BOX", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.lightgrey),
+                ("ALIGN", (0, 0), (0, -1), "LEFT"),
+                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                ("TOPPADDING", (0, 0), (-1, -1), 5),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
             ]
         )
     )
     story.append(t_kpi)
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 18))
 
-    # Tabla cartera
+    # -------------------------
+    # Detalle de cartera
+    # -------------------------
     story.append(Paragraph("Detalle de cartera", styles["Heading2"]))
-    cartera_data = _df_to_table_data(cartera_show, max_rows=60)
-    t1 = Table(cartera_data, repeatRows=1)
+
+    cpdf = _format_cartera_for_pdf(cartera_show)
+    cartera_data = _df_to_table_data(cpdf, max_rows=60)
+
+    ncols1 = len(cartera_data[0])
+    col_w1 = [usable_w / max(1, ncols1)] * ncols1  # ✅ mismo ancho total
+    t1 = Table(cartera_data, repeatRows=1, colWidths=col_w1)
     t1.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, 0), 9),
-                ("FONTSIZE", (0, 1), (-1, -1), 8),
+                ("FONTSIZE", (0, 0), (-1, 0), 8.6),
+                ("FONTSIZE", (0, 1), (-1, -1), 8.2),
                 ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ("BOX", (0, 0), (-1, -1), 0.5, colors.lightgrey),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.lightgrey),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 4),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                ("TOPPADDING", (0, 0), (-1, -1), 3),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ]
         )
     )
     story.append(t1)
-    story.append(Spacer(1, 14))
+    story.append(Spacer(1, 18))
 
-    # Flujos
+    # -------------------------
+    # Flujo de fondos
+    # -------------------------
     story.append(Paragraph("Flujo de fondos", styles["Heading2"]))
 
     if flows_show is None or flows_show.empty:
         story.append(Paragraph("(sin flujos futuros)", styles["Normal"]))
     else:
-        flows_pdf = flows_show.copy()
-        flows_pdf = flows_pdf.reset_index().rename(columns={"index": "Ticker"})
-        flows_data = _df_to_table_data(flows_pdf, max_rows=80)
-        t2 = Table(flows_data, repeatRows=1)
+        fpdf = _format_flows_for_pdf(flows_show)
+        flows_data = _df_to_table_data(fpdf, max_rows=80)
+
+        ncols2 = len(flows_data[0])
+        col_w2 = [usable_w / max(1, ncols2)] * ncols2  # ✅ mismo ancho total
+        t2 = Table(flows_data, repeatRows=1, colWidths=col_w2)
         t2.setStyle(
             TableStyle(
                 [
                     ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, 0), 9),
-                    ("FONTSIZE", (0, 1), (-1, -1), 8),
+                    ("FONTSIZE", (0, 0), (-1, 0), 8.6),
+                    ("FONTSIZE", (0, 1), (-1, -1), 8.2),
                     ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                    ("BOX", (0, 0), (-1, -1), 0.5, colors.lightgrey),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("BOX", (0, 0), (-1, -1), 0.6, colors.lightgrey),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 4),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                    ("TOPPADDING", (0, 0), (-1, -1), 3),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
                 ]
             )
         )
