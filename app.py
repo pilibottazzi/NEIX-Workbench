@@ -208,7 +208,7 @@ with tabs[0]:
           <a class="tool-btn" href="?tool=bonos">Bonos</a>
           <a class="tool-btn" href="?tool=ons">Obligaciones Negociables</a>
           <a class="tool-btn" href="?tool=cartera">Carteras (rendimiento)</a>
-          <a class="tool-btn" href="?tool=cartera2">Carteras</a>
+          <a class="tool-btn" href="?tool=cartera2">Carteras (all)</a>
         </div>
         """,
         unsafe_allow_html=True
