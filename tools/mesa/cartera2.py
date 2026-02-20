@@ -412,8 +412,8 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
     story.append(Spacer(1, 10))
     story.append(
         Paragraph(
-            "Nota: Bonos y ON cotizan por cada 100 de V/N (para VN se usa Precio/100). "
-            "Acciones y CEDEARs cotizan por unidad (no se ajusta el precio).",
+            "Nota: Bonos y ON cotizan por cada 100 de V/N. "
+            "Acciones y CEDEARs cotizan por unidad.",
             styles["Normal"],
         )
     )
