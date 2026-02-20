@@ -152,7 +152,7 @@ if tool:
         elif tool == "cartera":
             cartera.render(None)
         elif tool == "cartera2":
-            cartera.render(None)
+            cartera2.render(None)
         elif tool in ("tenencia", "tenencias", "vencimientos"):
             vencimientos.render(None)
 
