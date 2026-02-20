@@ -700,7 +700,7 @@ def build_cartera_pdf_bytes(
     resumen: dict,
     cartera_show: pd.DataFrame,
     flows_show: pd.DataFrame,
-    title: str = "NEIX · Cartera Comercial",
+    title: str = "",
     logo_path: str | None = None,
 ) -> bytes:
     buff = io.BytesIO()
