@@ -18,23 +18,16 @@ from reportlab.lib import colors
 from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.graphics.shapes import Drawing
-from reportlab.graphics.charts.piecharts import Pie
 
 # =========================
 # Config
 # =========================
 DEFAULT_CAPITAL_ARS = 100_000_000.0
-LOGO_PATH = os.path.join("data", "Neix_logo.png")  # si está en /data
+LOGO_PATH = os.path.join("data", "Neix_logo.png")
 
 # Prioridad para resolver duplicados entre categorías
-# (si un ticker aparece como Acción y CEDEAR, se queda Acción)
-TYPE_PRIORITY = {
-    "Acción": 1,
-    "CEDEAR": 2,
-    "ON": 3,
-    "Bono": 4,
-}
+TYPE_PRIORITY = {"Acción": 1, "CEDEAR": 2, "ON": 3, "Bono": 4}
+
 
 # =========================
 # Parsing números AR (IOL)
@@ -59,7 +52,7 @@ def parse_ar_number(x) -> float:
 
 
 # =========================
-# Formateo AR (para evitar confusión . / ,)
+# Formateo AR (PDF)
 # =========================
 def _fmt_ar_int(x) -> str:
     if x is None or (isinstance(x, float) and not np.isfinite(x)):
@@ -68,7 +61,6 @@ def _fmt_ar_int(x) -> str:
         v = int(round(float(x)))
     except Exception:
         return ""
-    # miles con punto
     return f"{v:,}".replace(",", ".")
 
 
@@ -89,10 +81,8 @@ def _fmt_ar_num(x, dec: int = 4) -> str:
         v = float(x)
     except Exception:
         return ""
-    # formato AR: miles '.' y decimales ','
-    s = f"{v:,.{dec}f}"              # 12,345.6789 (US)
-    s = s.replace(",", "X").replace(".", ",").replace("X", ".")  # 12.345,6789
-    return s
+    s = f"{v:,.{dec}f}"  # 12,345.6789
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")  # 12.345,6789
 
 
 def _fmt_pct(x, dec: int = 2) -> str:
@@ -110,9 +100,8 @@ def _fmt_pct(x, dec: int = 2) -> str:
 # =========================
 def _fetch_iol_table(url: str) -> pd.DataFrame:
     """
-    Devuelve DF estandarizado:
-      cols: Ticker, Precio, Volumen, Nombre(opc)
-    Si no puede parsear, df vacío.
+    Devuelve DF:
+      cols: Ticker, Precio, Volumen
     """
     try:
         tables = pd.read_html(url)
@@ -125,8 +114,6 @@ def _fetch_iol_table(url: str) -> pd.DataFrame:
     t = tables[0].copy()
     t.columns = [str(c).strip() for c in t.columns]
 
-    # Formato típico IOL:
-    # Símbolo | Último Operado | Monto Operado | (a veces Nombre/Descripción)
     if "Símbolo" not in t.columns or "Último Operado" not in t.columns:
         return pd.DataFrame()
 
@@ -139,33 +126,16 @@ def _fetch_iol_table(url: str) -> pd.DataFrame:
     else:
         out["Volumen"] = 0.0
 
-    # Nombre opcional (si aparece)
-    name_col = None
-    for c in ["Nombre", "Especie", "Descripción", "Descripcion", "Instrumento"]:
-        if c in t.columns:
-            name_col = c
-            break
-    if name_col:
-        out["Nombre"] = t[name_col].astype(str).str.strip()
-    else:
-        out["Nombre"] = ""
-
     out = out.dropna(subset=["Precio"])
     out = out[~out["Ticker"].duplicated(keep="first")]
-    return out[["Ticker", "Precio", "Volumen", "Nombre"]]
+    return out[["Ticker", "Precio", "Volumen"]]
 
 
 def fetch_universe_prices_pesos() -> pd.DataFrame:
     """
-    Universo SOLO PESOS con coherencia por tipo:
-    - Acciones
-    - CEDEARs
-    - Bonos (ARS)
-    - ONs (ARS)
-
-    Output:
+    Universo SOLO PESOS:
       index = Ticker
-      cols  = Precio, Volumen, Tipo, Nombre
+      cols  = Precio, Volumen, Tipo
     """
     sources = [
         ("Acción", "https://iol.invertironline.com/mercado/cotizaciones/argentina/acciones/todas"),
@@ -193,7 +163,7 @@ def fetch_universe_prices_pesos() -> pd.DataFrame:
     allp = allp.drop_duplicates(subset=["Ticker"], keep="first")
 
     allp = allp.set_index("Ticker")
-    return allp[["Precio", "Volumen", "Tipo", "Nombre"]].sort_values("Volumen", ascending=False)
+    return allp[["Precio", "Volumen", "Tipo"]].sort_values("Volumen", ascending=False)
 
 
 # =========================
@@ -280,64 +250,18 @@ def _df_to_table_data(df: pd.DataFrame, max_rows: int = 200) -> list[list[str]]:
     return data
 
 
-def _pie_by_tipo(df_display: pd.DataFrame, usable_w: float) -> Drawing | None:
-    """
-    Pie por Tipo ponderado por $ asignado.
-    df_display debe traer columnas: Tipo, $ (formato string "$ 1.234.567")
-    """
-    if df_display is None or df_display.empty:
-        return None
-    if "Tipo" not in df_display.columns or "$" not in df_display.columns:
-        return None
-
-    def _to_float_ars(s: str) -> float:
-        ss = str(s).replace("$", "").strip()
-        ss = ss.replace(".", "").replace(",", ".")
-        try:
-            return float(ss)
-        except Exception:
-            return 0.0
-
-    tmp = df_display.copy()
-    tmp["_ars"] = tmp["$"].apply(_to_float_ars)
-    g = tmp.groupby("Tipo")["_ars"].sum().sort_values(ascending=False)
-
-    if g.sum() <= 0:
-        return None
-
-    labels = [f"{k} ({(v / g.sum() * 100):.0f}%)" for k, v in g.items()]
-    values = [float(v) for v in g.values]
-
-    d = Drawing(usable_w, 2.8 * cm)
-    pie = Pie()
-    pie.x = 0
-    pie.y = 0
-    pie.width = 7.0 * cm
-    pie.height = 2.8 * cm
-    pie.data = values
-    pie.labels = labels
-    pie.sideLabels = 1
-    pie.simpleLabels = 0
-    pie.slices.strokeWidth = 0.25
-    d.add(pie)
-    return d
-
-
 def build_cartera_pesos_pdf_bytes(
     *,
     capital_ars: float,
     df_display: pd.DataFrame,
     logo_path: str | None = None,
-    include_pie: bool = True,
 ) -> bytes:
     """
-    PDF minimal:
+    PDF:
     - Logo
-    - "Cartera (Pesos)" + Capital
-    - Un solo cuadro (tabla) ajustado al ancho
-    - VN entero (sin decimales)
-    - Sin columna Nombre
-    - Pie opcional por Tipo
+    - Cartera (Pesos) + Capital
+    - 1 tabla (sin gráfico)
+    - Col widths ajustadas para que NO se pise Ticker/VN
     """
     buff = io.BytesIO()
 
@@ -380,28 +304,21 @@ def build_cartera_pesos_pdf_bytes(
     story.append(Paragraph(f"Capital: {_fmt_ar_money(capital_ars)}", styles["Normal"]))
     story.append(Spacer(1, 10))
 
-    # Pie chart por Tipo (opcional)
-    if include_pie:
-        pie = _pie_by_tipo(df_display, usable_w)
-        if pie:
-            story.append(pie)
-            story.append(Spacer(1, 8))
-
-    # Tabla (un solo cuadro) — sin Nombre
+    # Tabla
     cols_order = ["Ticker", "Tipo", "%", "$", "Precio", "VN"]
     dft = df_display.copy()
     dft = dft[[c for c in cols_order if c in dft.columns]]
 
     data = _df_to_table_data(dft, max_rows=200)
 
-    # colWidths exactos (suman usable_w)
+    # ✅ ColWidths: le damos más aire a Ticker y a VN, y menos a %
     col_widths = [
-        usable_w * 0.14,  # Ticker
+        usable_w * 0.20,  # Ticker (más ancho)
         usable_w * 0.16,  # Tipo
-        usable_w * 0.10,  # %
-        usable_w * 0.20,  # $
-        usable_w * 0.20,  # Precio
-        usable_w * 0.20,  # VN
+        usable_w * 0.08,  # %
+        usable_w * 0.22,  # $
+        usable_w * 0.18,  # Precio
+        usable_w * 0.16,  # VN (más ancho)
     ]
 
     t = Table(data, repeatRows=1, colWidths=col_widths)
@@ -419,9 +336,11 @@ def build_cartera_pesos_pdf_bytes(
                 ("RIGHTPADDING", (0, 0), (-1, -1), 6),
                 ("TOPPADDING", (0, 0), (-1, -1), 4),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                # Alinear números a derecha
+                # Números a derecha
                 ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
                 ("ALIGN", (0, 0), (1, -1), "LEFT"),
+                # ✅ NO WRAP para ticker (evita que se rompa raro)
+                ("WORDWRAP", (0, 0), (0, -1), "CJK"),
             ]
         )
     )
@@ -459,16 +378,13 @@ def _ui_css():
   .sub{ color: rgba(17,24,39,.62); font-size: 13px; margin-top: 4px; }
   .soft-hr{ height:1px; background:rgba(17,24,39,.10); margin: 14px 0 18px; }
 
-  /* Dataframes */
   div[data-testid="stDataFrame"] {
     border-radius: 14px;
     overflow: hidden;
     border: 1px solid rgba(17,24,39,.10);
   }
 
-  /* Buttons */
   .stButton > button { border-radius: 14px; padding: 0.60rem 1.0rem; }
-
 </style>
 """,
         unsafe_allow_html=True,
@@ -488,7 +404,7 @@ def render(back_to_home=None):
     left, right = st.columns([0.72, 0.28], vertical_alignment="center")
     with left:
         st.markdown('<div class="title">Cartera (Pesos)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub">Acciones / CEDEARs / Bonos / ONs — sin cálculos, solo asignación</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub">Acciones / CEDEARs / Bonos / ONs — sin cálculos</div>', unsafe_allow_html=True)
     with right:
         refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_pesos_refresh")
 
@@ -569,24 +485,14 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # ===== Display formateado (AR) =====
+    # Display en pantalla (numérico)
     show = df.copy()
     show["%"] = pd.to_numeric(show["%"], errors="coerce").round(2)
     show["$"] = pd.to_numeric(show["$"], errors="coerce").round(0)
     show["Precio"] = pd.to_numeric(show["Precio"], errors="coerce")
     show["VN"] = pd.to_numeric(show["VN"], errors="coerce").round(0)
 
-    # Version "bonita" para PDF/tabla (strings con AR)
-    show_fmt = show.copy()
-    show_fmt["%"] = show_fmt["%"].apply(lambda v: _fmt_ar_num(v, 2))
-    show_fmt["$"] = show_fmt["$"].apply(_fmt_ar_money)
-    show_fmt["Precio"] = show_fmt["Precio"].apply(lambda v: _fmt_ar_num(v, 4))
-    show_fmt["VN"] = show_fmt["VN"].apply(_fmt_ar_int)
-
-    # Tabla (en pantalla) — mantenemos números como números para filtros,
-    # pero mostramos formato AR con st.dataframe config
     st.markdown("### Detalle de cartera")
-
     h_tbl = _height_for_rows(len(show), max_h=820)
 
     st.dataframe(
@@ -602,7 +508,13 @@ def render(back_to_home=None):
         },
     )
 
-    # ===== Descargas: Excel y PDF =====
+    # PDF/Excel: usar versión string (AR) para que se vea prolijo en PDF
+    show_fmt = show.copy()
+    show_fmt["%"] = show_fmt["%"].apply(lambda v: _fmt_ar_num(v, 2))
+    show_fmt["$"] = show_fmt["$"].apply(_fmt_ar_money)
+    show_fmt["Precio"] = show_fmt["Precio"].apply(lambda v: _fmt_ar_num(v, 4))
+    show_fmt["VN"] = show_fmt["VN"].apply(_fmt_ar_int)
+
     cxl, cpdf = st.columns(2, vertical_alignment="center")
 
     with cxl:
@@ -624,9 +536,8 @@ def render(back_to_home=None):
         try:
             pdf_bytes = build_cartera_pesos_pdf_bytes(
                 capital_ars=float(capital),
-                df_display=show_fmt.drop(columns=["Nombre"], errors="ignore"),  # por si existiera
+                df_display=show_fmt,
                 logo_path=LOGO_PATH,
-                include_pie=True,  # pie por Tipo ponderado por $
             )
             fname = f"NEIX_Cartera_Pesos_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
             st.download_button(
