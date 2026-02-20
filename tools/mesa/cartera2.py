@@ -1,15 +1,4 @@
 # tools/cartera_pesos.py
-# =========================================================
-# ✅ Lee Excel data/Especies.xlsx (columnas: "Pesos" y "Usd")
-# ✅ Baja universo IOL (con link nuevo de ACCIONES)
-# ✅ Filtra SOLO tickers de tu lista
-# ✅ Devuelve DF con Precio / Volumen / Tipo / Label / Moneda
-# ✅ Devuelve listado de faltantes
-#
-# Requisitos:
-#   pip install lxml
-# =========================================================
-
 from __future__ import annotations
 
 import io
