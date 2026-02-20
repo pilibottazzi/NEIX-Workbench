@@ -16,7 +16,14 @@ import streamlit as st
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    Image as RLImage,
+)
 from reportlab.lib.styles import getSampleStyleSheet
 
 # =========================
@@ -26,6 +33,10 @@ DEFAULT_CAPITAL_USD = 100_000.0
 LOGO_PATH = os.path.join("data", "Neix_logo.png")
 
 MONEY_COL_NAME = "US$ (MEP)"  # ✅ header pedido para dólares MEP
+
+# Excel mapping Pesos -> USD
+ESPECIES_XLSX_PATH = os.path.join("data", "Especies.xlsx")
+ESPECIES_SHEET = 0  # o "Hoja1"
 
 # Tipos que cotizan "por 100 V/N"
 PRICE_PER_100_VN_TYPES = {"BONO", "ON"}
@@ -153,6 +164,74 @@ def unit_price_for_vn(*, tipo: str, precio_cotizado: float) -> float:
 
 
 # =========================
+# Pesos -> USD mapping (Especies.xlsx)
+# =========================
+def load_especies_map(path: str = ESPECIES_XLSX_PATH) -> dict[str, str]:
+    """
+    Lee data/Especies.xlsx con columnas: Pesos | Usd
+    Devuelve dict: { 'AL30': 'AL30D', ... }
+    """
+    if not os.path.exists(path):
+        return {}
+
+    try:
+        df = pd.read_excel(path, sheet_name=ESPECIES_SHEET, dtype=str)
+    except Exception:
+        return {}
+
+    cols = {str(c).strip().lower(): c for c in df.columns}
+    col_pesos = cols.get("pesos")
+    col_usd = cols.get("usd")
+
+    if not col_pesos or not col_usd:
+        return {}
+
+    out: dict[str, str] = {}
+    for _, r in df.iterrows():
+        p = (r.get(col_pesos) or "").strip().upper()
+        u = (r.get(col_usd) or "").strip().upper()
+        if p and u:
+            out[p] = u
+    return out
+
+
+def resolve_usd_ticker_strict(ticker_input: str, especies_map: dict[str, str], prices: pd.DataFrame) -> str:
+    """
+    ✅ REGLA PEDIDA (estricta):
+    1) SIEMPRE intentar pasar por Especies.xlsx (Pesos -> USD).
+    2) Si no está en el Excel: tratarlo como si fuera PESOS y buscar su versión USD:
+         - base = ticker sin 'D' si la trae
+         - usd = base + 'D'
+       (si existe en prices, mejor; si no, igual devolvemos ese para que quede como faltante)
+    """
+    t = (ticker_input or "").strip().upper()
+    if not t:
+        return ""
+
+    # 1) Siempre prioriza el Excel (match exacto)
+    if t in especies_map:
+        return especies_map[t]
+
+    # 1b) Si viene con D, igual se interpreta como "posible input en pesos mal tipeado"
+    #     => probamos el Excel con el base sin D
+    if t.endswith("D"):
+        base = t[:-1]
+        if base in especies_map:
+            return especies_map[base]
+    else:
+        base = t
+
+    # 2) Si no está en Excel => "como si estuviera en pesos": base + D
+    usd = base + "D"
+
+    # Si el universo lo trae, perfecto (igual devolvemos el mismo string)
+    if prices is not None and not prices.empty and usd in prices.index:
+        return usd
+
+    return usd
+
+
+# =========================
 # Fetch IOL (DÓLAR MEP = especie D)
 # =========================
 def _fetch_iol_table(url: str) -> pd.DataFrame:
@@ -208,13 +287,9 @@ def fetch_universe_prices_mep() -> pd.DataFrame:
       cols = Precio, Volumen, Tipo, Label
     """
     sources = [
-        # Acciones (panel líderes suele incluir ...D)
         ("Acción", "https://iol.invertironline.com/mercado/cotizaciones"),
-        # CEDEARs (si hubiera especie D, la capturamos y filtramos)
         ("CEDEAR", "https://iol.invertironline.com/mercado/cotizaciones/argentina/cedears/todos"),
-        # Bonos (incluye AL30D, AE38D, etc.)
         ("Bono", "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos"),
-        # ON (endpoint con guiones)
         ("ON", "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones-negociables/todos"),
     ]
 
@@ -233,7 +308,6 @@ def fetch_universe_prices_mep() -> pd.DataFrame:
 
     # ✅ SOLO MEP: especie D
     allp = allp[allp["Ticker"].astype(str).apply(is_mep_ticker)].copy()
-
     if allp.empty:
         return pd.DataFrame()
 
@@ -262,28 +336,39 @@ class SimpleRowUSD:
 
 def build_simple_portfolio_usd(
     prices: pd.DataFrame,
-    selected: list[str],
+    selected_pesos: list[str],
     pct_map: dict[str, float],
     capital_usd: float,
-) -> pd.DataFrame:
-    selected = [str(x).upper().strip() for x in selected if str(x).strip()]
-    if not selected:
-        return pd.DataFrame()
+    especies_map: dict[str, str],
+) -> tuple[pd.DataFrame, list[str]]:
+    """
+    selected_pesos: tickers elegidos (en formato pesos, según el Excel)
+    retorna: (df_cartera, missing_usd_tickers)
+    """
+    selected_raw = [str(x).upper().strip() for x in selected_pesos if str(x).strip()]
+    if not selected_raw:
+        return pd.DataFrame(), []
 
-    pcts = np.array([max(0.0, float(pct_map.get(t, 0.0))) for t in selected], dtype=float)
+    # ✅ resolver SIEMPRE via Excel; si no existe, base + D
+    selected_usd = [resolve_usd_ticker_strict(t, especies_map, prices) for t in selected_raw]
+
+    # Pcts se cargan por lo que el usuario editó (los tickers “pesos” de la UI)
+    pcts = np.array([max(0.0, float(pct_map.get(t, 0.0))) for t in selected_raw], dtype=float)
     s = float(np.sum(pcts))
     pcts = (pcts / s * 100.0) if s > 0 else np.zeros_like(pcts)
 
+    missing = [t_usd for t_usd in selected_usd if t_usd and t_usd not in prices.index]
+
     rows: list[SimpleRowUSD] = []
-    for t, pct in zip(selected, pcts):
+    for t_pesos, t_usd, pct in zip(selected_raw, selected_usd, pcts):
         if pct <= 0:
             continue
-        if t not in prices.index:
+        if t_usd not in prices.index:
             continue
 
-        px = float(prices.loc[t, "Precio"])
-        tipo = str(prices.loc[t, "Tipo"]) if "Tipo" in prices.columns else "NA"
-        label = str(prices.loc[t, "Label"]) if "Label" in prices.columns else t
+        px = float(prices.loc[t_usd, "Precio"])
+        tipo = str(prices.loc[t_usd, "Tipo"]) if "Tipo" in prices.columns else "NA"
+        label = str(prices.loc[t_usd, "Label"]) if "Label" in prices.columns else t_usd
 
         usd_amt = float(capital_usd) * (float(pct) / 100.0)
 
@@ -292,7 +377,7 @@ def build_simple_portfolio_usd(
 
         rows.append(
             SimpleRowUSD(
-                ticker=t,
+                ticker=t_usd,  # USD real
                 label=label,
                 tipo=tipo,
                 pct=float(pct),
@@ -304,9 +389,9 @@ def build_simple_portfolio_usd(
         )
 
     if not rows:
-        return pd.DataFrame()
+        return pd.DataFrame(), missing
 
-    return pd.DataFrame(
+    df = pd.DataFrame(
         {
             "Ticker": [r.label for r in rows],
             "Tipo": [r.tipo for r in rows],
@@ -314,9 +399,10 @@ def build_simple_portfolio_usd(
             MONEY_COL_NAME: [r.usd for r in rows],
             "Precio": [r.precio_cotizado for r in rows],
             "VN": [r.vn for r in rows],
-            "__ticker_base": [r.ticker for r in rows],
+            "__ticker_usd": [r.ticker for r in rows],  # para debug interno si necesitás
         }
     )
+    return df, missing
 
 
 # =========================
@@ -430,8 +516,8 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
     out = io.BytesIO()
     df = table_df.copy()
 
-    if "__ticker_base" in df.columns:
-        df = df.drop(columns=["__ticker_base"], errors="ignore")
+    # limpieza de columna interna
+    df = df.drop(columns=["__ticker_usd"], errors="ignore")
 
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="cartera_mep")
@@ -498,7 +584,7 @@ def render(back_to_home=None):
     left, right = st.columns([0.72, 0.28], vertical_alignment="center")
     with left:
         st.markdown('<div class="title">Herramienta para armar carteras (Dólar MEP)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub">Solo especies D (MEP)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub">SOLO USD MEP. Siempre convierte vía Especies.xlsx (Pesos → USD). Si no existe, usa ticker + D.</div>', unsafe_allow_html=True)
     with right:
         refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_mep_refresh")
 
@@ -511,6 +597,13 @@ def render(back_to_home=None):
     prices = st.session_state.get("cartera_mep_prices")
     if prices is None or prices.empty:
         st.warning("No pude cargar el universo MEP (especie D). Puede haber cambiado el formato de IOL.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # ✅ mapa pesos -> usd (desde Excel)
+    especies_map = load_especies_map()
+    if not especies_map:
+        st.warning("No pude leer data/Especies.xlsx (necesito columnas: Pesos | Usd).")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
@@ -527,19 +620,20 @@ def render(back_to_home=None):
     with c2:
         calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_mep_calc")
 
-    opts = prices.index.tolist()
-    label_map = {tk: str(prices.loc[tk, "Label"]) for tk in opts}
+    # ✅ UI: solo tickers en PESOS (los del Excel). Internamente calcula en USD MEP.
+    opts_pesos = sorted(especies_map.keys())
+    label_map = {p: f"{p} → {especies_map.get(p, p + 'D')}" for p in opts_pesos}
 
     selected = st.multiselect(
-        "Tickers (solo D)",
-        options=opts,
-        default=opts[:6] if len(opts) >= 6 else opts,
+        "Activos (selección en PESOS; cálculo SIEMPRE en USD MEP)",
+        options=opts_pesos,
+        default=opts_pesos[:6] if len(opts_pesos) >= 6 else opts_pesos,
         format_func=lambda tk: label_map.get(tk, tk),
         key="cartera_mep_selected",
     )
 
     if not selected:
-        st.info("Seleccioná al menos un ticker (especie D).")
+        st.info("Seleccioná al menos un activo.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
@@ -566,25 +660,29 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    df = build_simple_portfolio_usd(
+    df, missing = build_simple_portfolio_usd(
         prices=prices,
-        selected=selected,
+        selected_pesos=selected,
         pct_map=pct_map,
         capital_usd=float(capital),
+        especies_map=especies_map,
     )
 
+    if missing:
+        st.warning("No encontré precio USD (MEP) para: " + ", ".join(sorted(set(missing))))
+
     if df.empty:
-        st.warning("No se pudo construir la cartera (faltan precios para los tickers elegidos).")
+        st.warning("No se pudo construir la cartera (ningún ticker resolvió a un precio USD MEP disponible).")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    st.markdown("### Detalle de cartera")
+    st.markdown("### Detalle de cartera (USD MEP)")
     st.caption(
         "Regla de VN: Bonos/ON cotizan por cada 100 de V/N ⇒ para calcular VN se usa Precio/100. "
         "Acciones/CEDEARs cotizan por unidad ⇒ no se ajusta el precio."
     )
 
-    show = df.copy().drop(columns=["__ticker_base"], errors="ignore")
+    show = df.copy().drop(columns=["__ticker_usd"], errors="ignore")
 
     show["%"] = pd.to_numeric(show["%"], errors="coerce").apply(fmt_ar_pct)
     show[MONEY_COL_NAME] = pd.to_numeric(show[MONEY_COL_NAME], errors="coerce").apply(fmt_usd_money)
@@ -628,7 +726,7 @@ def render(back_to_home=None):
         try:
             pdf = build_cartera_mep_pdf_bytes(
                 capital_usd=float(capital),
-                table_df=df.drop(columns=["__ticker_base"], errors="ignore"),
+                table_df=df.drop(columns=["__ticker_usd"], errors="ignore"),
                 logo_path=LOGO_PATH,
             )
             fname = f"NEIX_Cartera_MEP_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
