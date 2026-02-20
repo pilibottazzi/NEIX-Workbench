@@ -153,6 +153,8 @@ if tool:
             cartera.render(None)
         elif tool == "cartera2":
             cartera2.render(None)
+        elif tool == "cartera3":
+            cartera2.render(None)
         elif tool in ("tenencia", "tenencias", "vencimientos"):
             vencimientos.render(None)
 
@@ -208,7 +210,8 @@ with tabs[0]:
           <a class="tool-btn" href="?tool=bonos">Bonos</a>
           <a class="tool-btn" href="?tool=ons">Obligaciones Negociables</a>
           <a class="tool-btn" href="?tool=cartera">Carteras (rendimiento)</a>
-          <a class="tool-btn" href="?tool=cartera2">Carteras (all)</a>
+          <a class="tool-btn" href="?tool=cartera2">Carteras (ARG)</a>
+          <a class="tool-btn" href="?tool=cartera2">Carteras (USD)</a>
         </div>
         """,
         unsafe_allow_html=True
