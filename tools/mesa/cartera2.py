@@ -219,10 +219,10 @@ def render(back_to_home=None):
 
     left, right = st.columns([0.72, 0.28], vertical_alignment="center")
     with left:
-        st.markdown('<div class="title">NEIX · Cartera (Pesos)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub">Acciones / CEDEARs / Bonos / ONs — sin cálculos de TIR/MD.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="title">Cartera (Pesos)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub">Acciones / CEDEARs / Bonos / ONs</div>', unsafe_allow_html=True)
     with right:
-        refresh = st.button("Actualizar universo", use_container_width=True, key="cartera_pesos_refresh")
+        refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_pesos_refresh")
 
     st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
 
@@ -251,7 +251,6 @@ def render(back_to_home=None):
     with c2:
         calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_pesos_calc")
 
-    st.markdown("### Selección de activos (Pesos)")
     opts = prices.index.tolist()
 
     selected = st.multiselect(
