@@ -1,4 +1,4 @@
-# tools/cartera_dolares.py
+# tools/cartera_dolares_mep.py
 from __future__ import annotations
 
 import io
@@ -23,7 +23,13 @@ from reportlab.lib.styles import getSampleStyleSheet
 # Config
 # =========================
 DEFAULT_CAPITAL_USD = 100_000.0
-LOGO_PATH = os.path.join("data", "Neix_logo.png")  # tu logo en /data
+LOGO_PATH = os.path.join("data", "Neix_logo.png")
+
+MONEY_COL_NAME = "US$ (MEP)"  # ✅ header pedido para dólares MEP
+
+# Tipos que cotizan "por 100 V/N"
+PRICE_PER_100_VN_TYPES = {"BONO", "ON"}
+
 
 # =========================
 # Helpers
@@ -48,7 +54,7 @@ def parse_ar_number(x) -> float:
 
 
 def base_ticker(symbol_raw: str) -> str:
-    """Ticker 'real' = primer token antes del primer espacio (ej: 'VIST CEDEAR ...' -> 'VIST')."""
+    """Primer token antes del primer espacio (ej: 'AL30D CI' -> 'AL30D')."""
     s = (symbol_raw or "").strip().upper()
     if not s:
         return ""
@@ -56,11 +62,7 @@ def base_ticker(symbol_raw: str) -> str:
 
 
 def short_label(symbol_raw: str) -> str:
-    """
-    Display corto:
-      - si tiene >= 2 tokens => "TOKEN1 TOKEN2"
-      - si no => "TOKEN1"
-    """
+    """Display corto: 2 tokens como máximo."""
     s = (symbol_raw or "").strip().upper()
     toks = s.split()
     if len(toks) >= 2:
@@ -68,8 +70,28 @@ def short_label(symbol_raw: str) -> str:
     return toks[0] if toks else ""
 
 
+def display_label(symbol_raw: str) -> str:
+    """
+    Display final:
+      - Si el 2do token es "CEDEAR", lo sacamos: "VIST CEDEAR ..." -> "VIST"
+      - Si no, short_label: "AL30D CI" -> "AL30D CI"
+    """
+    s = (symbol_raw or "").strip().upper()
+    toks = s.split()
+    if not toks:
+        return ""
+    if len(toks) >= 2 and toks[1] == "CEDEAR":
+        return toks[0]
+    return short_label(symbol_raw)
+
+
+def is_mep_ticker(ticker: str) -> bool:
+    """MEP = especie D (termina en D). Excluye CCL (C)."""
+    t = (ticker or "").strip().upper()
+    return bool(t) and t.endswith("D")
+
+
 def fmt_ar_int(x: float) -> str:
-    """Miles con punto, sin decimales."""
     if x is None or (isinstance(x, float) and not np.isfinite(x)):
         return ""
     try:
@@ -80,7 +102,7 @@ def fmt_ar_int(x: float) -> str:
 
 
 def fmt_usd_money(x: float) -> str:
-    """US$ con miles punto."""
+    """US$ con miles punto (sin decimales)."""
     if x is None or (isinstance(x, float) and not np.isfinite(x)):
         return ""
     try:
@@ -91,7 +113,6 @@ def fmt_usd_money(x: float) -> str:
 
 
 def fmt_ar_pct(x: float) -> str:
-    """Porcentaje con coma decimal."""
     if x is None or (isinstance(x, float) and not np.isfinite(x)):
         return ""
     try:
@@ -102,7 +123,7 @@ def fmt_ar_pct(x: float) -> str:
 
 
 def fmt_ar_2dec(x: float) -> str:
-    """Número con 2 decimales, miles punto y coma decimal."""
+    """2 decimales, miles punto y coma decimal."""
     if x is None or (isinstance(x, float) and not np.isfinite(x)):
         return ""
     try:
@@ -116,8 +137,23 @@ def fmt_ar_2dec(x: float) -> str:
     return s
 
 
+def unit_price_for_vn(*, tipo: str, precio_cotizado: float) -> float:
+    """
+    Precio unitario para VN:
+      - Bonos/ON: cotizan cada 100 V/N => unit = precio/100
+      - Acciones/CEDEAR: unit = precio
+    """
+    t = (tipo or "").strip().upper()
+    px = float(precio_cotizado) if np.isfinite(precio_cotizado) else np.nan
+    if not np.isfinite(px) or px <= 0:
+        return np.nan
+    if t in PRICE_PER_100_VN_TYPES:
+        return px / 100.0
+    return px
+
+
 # =========================
-# Fetch IOL (USD via sufijos C/D)
+# Fetch IOL (DÓLAR MEP = especie D)
 # =========================
 def _fetch_iol_table(url: str) -> pd.DataFrame:
     """
@@ -141,7 +177,7 @@ def _fetch_iol_table(url: str) -> pd.DataFrame:
     out = pd.DataFrame()
     out["SymbolRaw"] = t["Símbolo"].astype(str).str.strip().str.upper()
     out["Ticker"] = out["SymbolRaw"].apply(base_ticker)
-    out["Label"] = out["SymbolRaw"].apply(short_label)
+    out["Label"] = out["SymbolRaw"].apply(display_label)
 
     out["Precio"] = t["Último Operado"].apply(parse_ar_number)
 
@@ -160,33 +196,26 @@ def _fetch_iol_table(url: str) -> pd.DataFrame:
     return out[["SymbolRaw", "Ticker", "Label", "Precio", "Volumen"]]
 
 
-def fetch_universe_prices_usd(*, mode: str = "MEP") -> pd.DataFrame:
+def fetch_universe_prices_mep() -> pd.DataFrame:
     """
-    Universo USD tomando especies con sufijo:
-      - mode="MEP" => tickers terminan en D
-      - mode="CCL" => tickers terminan en C
-      - mode="AMBOS" => C o D
+    Universo DÓLAR MEP (solo especie D) con tipos:
+      - Acción (tickers ...D)
+      - CEDEAR (si existiera ...D)
+      - Bono (AL30D, GD30D, etc.)
+      - ON (si existiera ...D)
 
     Output index = Ticker
       cols = Precio, Volumen, Tipo, Label
     """
-    mode = (mode or "MEP").upper().strip()
-    if mode not in {"MEP", "CCL", "AMBOS"}:
-        mode = "MEP"
-
-    if mode == "MEP":
-        allowed_suffix = ("D",)
-    elif mode == "CCL":
-        allowed_suffix = ("C",)
-    else:
-        allowed_suffix = ("C", "D")
-
-    # OJO: CEDEAR generalmente no tiene "MELID/MELIC"; por eso en USD suele quedar más chico el universo.
     sources = [
-        ("Acción", "https://iol.invertironline.com/mercado/cotizaciones/argentina/acciones/todas"),
+        # Acciones (panel líderes suele incluir ...D)
+        ("Acción", "https://iol.invertironline.com/mercado/cotizaciones"),
+        # CEDEARs (si hubiera especie D, la capturamos y filtramos)
         ("CEDEAR", "https://iol.invertironline.com/mercado/cotizaciones/argentina/cedears/todos"),
-        ("Bono",   "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos"),
-        ("ON",     "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones-negociables/todos"),
+        # Bonos (incluye AL30D, AE38D, etc.)
+        ("Bono", "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos"),
+        # ON (endpoint con guiones)
+        ("ON", "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones-negociables/todos"),
     ]
 
     frames = []
@@ -202,8 +231,8 @@ def fetch_universe_prices_usd(*, mode: str = "MEP") -> pd.DataFrame:
 
     allp = pd.concat(frames, ignore_index=True)
 
-    # Filtrar por sufijo USD
-    allp = allp[allp["Ticker"].astype(str).str.upper().str.endswith(allowed_suffix)]
+    # ✅ SOLO MEP: especie D
+    allp = allp[allp["Ticker"].astype(str).apply(is_mep_ticker)].copy()
 
     if allp.empty:
         return pd.DataFrame()
@@ -217,7 +246,7 @@ def fetch_universe_prices_usd(*, mode: str = "MEP") -> pd.DataFrame:
 
 
 # =========================
-# Cartera simple (USD)
+# Cartera simple (USD MEP)
 # =========================
 @dataclass
 class SimpleRowUSD:
@@ -226,7 +255,8 @@ class SimpleRowUSD:
     tipo: str
     pct: float
     usd: float
-    precio: float
+    precio_cotizado: float
+    precio_unitario: float
     vn: float
 
 
@@ -256,7 +286,9 @@ def build_simple_portfolio_usd(
         label = str(prices.loc[t, "Label"]) if "Label" in prices.columns else t
 
         usd_amt = float(capital_usd) * (float(pct) / 100.0)
-        vn = (usd_amt / px) if px > 0 else np.nan
+
+        px_unit = unit_price_for_vn(tipo=tipo, precio_cotizado=px)
+        vn = (usd_amt / px_unit) if (np.isfinite(px_unit) and px_unit > 0) else np.nan
 
         rows.append(
             SimpleRowUSD(
@@ -265,7 +297,8 @@ def build_simple_portfolio_usd(
                 tipo=tipo,
                 pct=float(pct),
                 usd=float(usd_amt),
-                precio=float(px),
+                precio_cotizado=float(px),
+                precio_unitario=float(px_unit) if np.isfinite(px_unit) else np.nan,
                 vn=float(vn) if np.isfinite(vn) else np.nan,
             )
         )
@@ -275,11 +308,11 @@ def build_simple_portfolio_usd(
 
     return pd.DataFrame(
         {
-            "Ticker": [r.label for r in rows],  # display corto
+            "Ticker": [r.label for r in rows],
             "Tipo": [r.tipo for r in rows],
             "%": [r.pct for r in rows],
-            "US$": [r.usd for r in rows],
-            "Precio": [r.precio for r in rows],  # precio en “USD del panel” (C/D)
+            MONEY_COL_NAME: [r.usd for r in rows],
+            "Precio": [r.precio_cotizado for r in rows],
             "VN": [r.vn for r in rows],
             "__ticker_base": [r.ticker for r in rows],
         }
@@ -287,9 +320,9 @@ def build_simple_portfolio_usd(
 
 
 # =========================
-# PDF (simple / prolijo)
+# PDF
 # =========================
-def build_cartera_usd_pdf_bytes(*, capital_usd: float, table_df: pd.DataFrame, logo_path: str | None = None) -> bytes:
+def build_cartera_mep_pdf_bytes(*, capital_usd: float, table_df: pd.DataFrame, logo_path: str | None = None) -> bytes:
     buff = io.BytesIO()
 
     left = right = 1.3 * cm
@@ -325,26 +358,27 @@ def build_cartera_usd_pdf_bytes(*, capital_usd: float, table_df: pd.DataFrame, l
         except Exception:
             pass
 
-    story.append(Paragraph("Cartera recomendada (USD)", styles["Heading2"]))
+    story.append(Paragraph("Cartera recomendada (Dólar MEP)", styles["Heading2"]))
     story.append(Paragraph(f"Capital: {fmt_usd_money(capital_usd)}", styles["Normal"]))
     story.append(Spacer(1, 10))
 
     df = table_df.copy()
-    cols = ["Ticker", "Tipo", "%", "US$", "Precio", "VN"]
+
+    cols = ["Ticker", "Tipo", "%", MONEY_COL_NAME, "Precio", "VN"]
     df = df[cols].copy()
 
     df["%"] = pd.to_numeric(df["%"], errors="coerce").apply(fmt_ar_pct)
-    df["US$"] = pd.to_numeric(df["US$"], errors="coerce").apply(fmt_usd_money)
+    df[MONEY_COL_NAME] = pd.to_numeric(df[MONEY_COL_NAME], errors="coerce").apply(fmt_usd_money)
     df["Precio"] = pd.to_numeric(df["Precio"], errors="coerce").apply(fmt_ar_2dec)
     df["VN"] = pd.to_numeric(df["VN"], errors="coerce").apply(lambda v: fmt_ar_int(v))
 
     data = [cols] + df.fillna("").astype(str).values.tolist()
 
     col_widths = [
-        usable_w * 0.20,  # Ticker
-        usable_w * 0.16,  # Tipo
+        usable_w * 0.22,  # Ticker
+        usable_w * 0.14,  # Tipo
         usable_w * 0.10,  # %
-        usable_w * 0.20,  # US$
+        usable_w * 0.20,  # US$ (MEP)
         usable_w * 0.18,  # Precio
         usable_w * 0.16,  # VN
     ]
@@ -365,15 +399,24 @@ def build_cartera_usd_pdf_bytes(*, capital_usd: float, table_df: pd.DataFrame, l
                 ("RIGHTPADDING", (0, 0), (-1, -1), 5),
                 ("TOPPADDING", (0, 0), (-1, -1), 4),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("ALIGN", (2, 1), (2, -1), "RIGHT"),  # %
-                ("ALIGN", (3, 1), (3, -1), "RIGHT"),  # US$
-                ("ALIGN", (4, 1), (4, -1), "RIGHT"),  # Precio
-                ("ALIGN", (5, 1), (5, -1), "RIGHT"),  # VN
+                ("ALIGN", (2, 1), (2, -1), "RIGHT"),
+                ("ALIGN", (3, 1), (3, -1), "RIGHT"),
+                ("ALIGN", (4, 1), (4, -1), "RIGHT"),
+                ("ALIGN", (5, 1), (5, -1), "RIGHT"),
             ]
         )
     )
 
     story.append(t)
+    story.append(Spacer(1, 10))
+    story.append(
+        Paragraph(
+            "Nota: Bonos y ON cotizan por cada 100 de V/N (para VN se usa Precio/100). "
+            "Acciones y CEDEARs cotizan por unidad (no se ajusta el precio).",
+            styles["Normal"],
+        )
+    )
+
     doc.build(story)
     pdf = buff.getvalue()
     buff.close()
@@ -381,7 +424,7 @@ def build_cartera_usd_pdf_bytes(*, capital_usd: float, table_df: pd.DataFrame, l
 
 
 # =========================
-# Excel export (con formatos)
+# Excel export
 # =========================
 def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
     out = io.BytesIO()
@@ -391,12 +434,12 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
         df = df.drop(columns=["__ticker_base"], errors="ignore")
 
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="cartera_usd")
-        ws = writer.sheets["cartera_usd"]
+        df.to_excel(writer, index=False, sheet_name="cartera_mep")
+        ws = writer.sheets["cartera_mep"]
 
-        headers = {cell.value: idx + 1 for idx, cell in enumerate(ws[1])}
+        headers = {cell.value: idx + 1 for idx, cell in enumerate(ws[1])}  # 1-based
         col_pct = headers.get("%")
-        col_money = headers.get("US$")
+        col_money = headers.get(MONEY_COL_NAME)
         col_price = headers.get("Precio")
         col_vn = headers.get("VN")
 
@@ -410,7 +453,7 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
             if col_vn:
                 ws.cell(r, col_vn).number_format = "#,##0"
 
-        for name, w in [("Ticker", 18), ("Tipo", 12), ("%", 8), ("US$", 16), ("Precio", 14), ("VN", 12)]:
+        for name, w in [("Ticker", 18), ("Tipo", 12), ("%", 8), (MONEY_COL_NAME, 16), ("Precio", 14), ("VN", 12)]:
             c = headers.get(name)
             if c:
                 ws.column_dimensions[chr(64 + c)].width = w
@@ -420,7 +463,7 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
 
 
 # =========================
-# UI (minimal / ordenada)
+# UI
 # =========================
 def _ui_css():
     st.markdown(
@@ -428,12 +471,9 @@ def _ui_css():
 <style>
   .wrap{ max-width: 1180px; margin: 0 auto; }
   .block-container { padding-top: 1.1rem; padding-bottom: 1.8rem; }
-
   .title{ font-size: 28px; font-weight: 850; letter-spacing: .02em; color:#111827; margin: 0; }
   .sub{ color: rgba(17,24,39,.62); font-size: 13px; margin-top: 4px; }
-
   .soft-hr{ height:1px; background:rgba(17,24,39,.10); margin: 14px 0 18px; }
-
   div[data-testid="stDataFrame"] {
     border-radius: 14px;
     overflow: hidden;
@@ -457,58 +497,49 @@ def render(back_to_home=None):
 
     left, right = st.columns([0.72, 0.28], vertical_alignment="center")
     with left:
-        st.markdown('<div class="title">Herramienta para armar carteras (USD)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub">Panel dólar vía sufijo: MEP (D) / CCL (C)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="title">Herramienta para armar carteras (Dólar MEP)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub">Solo especies D (MEP)</div>', unsafe_allow_html=True)
     with right:
-        refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_usd_refresh")
+        refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_mep_refresh")
 
     st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
 
-    m1, m2, m3 = st.columns([0.26, 0.37, 0.37], vertical_alignment="bottom")
-    with m1:
-        mode = st.selectbox(
-            "Tipo de dólar",
-            options=["MEP", "CCL", "AMBOS"],
-            index=0,
-            key="cartera_usd_mode",
-        )
-    with m2:
+    if refresh or "cartera_mep_prices" not in st.session_state:
+        with st.spinner("Actualizando precios (MEP / especie D)..."):
+            st.session_state["cartera_mep_prices"] = fetch_universe_prices_mep()
+
+    prices = st.session_state.get("cartera_mep_prices")
+    if prices is None or prices.empty:
+        st.warning("No pude cargar el universo MEP (especie D). Puede haber cambiado el formato de IOL.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    c1, c2 = st.columns([0.42, 0.58], vertical_alignment="bottom")
+    with c1:
         capital = st.number_input(
-            "Capital (USD)",
+            "Capital (USD MEP)",
             min_value=0.0,
             value=float(DEFAULT_CAPITAL_USD),
             step=1_000.0,
             format="%.0f",
-            key="cartera_usd_capital",
+            key="cartera_mep_capital",
         )
-    with m3:
-        calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_usd_calc")
-
-    # Cache universo
-    cache_key = f"cartera_usd_prices_{mode}"
-    if refresh or cache_key not in st.session_state:
-        with st.spinner(f"Actualizando precios (USD - {mode})..."):
-            st.session_state[cache_key] = fetch_universe_prices_usd(mode=mode)
-
-    prices = st.session_state.get(cache_key)
-    if prices is None or prices.empty:
-        st.warning("No pude cargar el universo USD (C/D). Puede haber cambiado el formato de IOL o no haber volumen.")
-        st.markdown("</div>", unsafe_allow_html=True)
-        return
+    with c2:
+        calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_mep_calc")
 
     opts = prices.index.tolist()
     label_map = {tk: str(prices.loc[tk, "Label"]) for tk in opts}
 
     selected = st.multiselect(
-        "Tickers (USD)",
+        "Tickers (solo D)",
         options=opts,
         default=opts[:6] if len(opts) >= 6 else opts,
         format_func=lambda tk: label_map.get(tk, tk),
-        key="cartera_usd_selected",
+        key="cartera_mep_selected",
     )
 
     if not selected:
-        st.info("Seleccioná al menos un ticker.")
+        st.info("Seleccioná al menos un ticker (especie D).")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
@@ -526,7 +557,7 @@ def render(back_to_home=None):
             "Ticker": st.column_config.TextColumn("Ticker", disabled=True),
             "%": st.column_config.NumberColumn("%", min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
         },
-        key="cartera_usd_pct_editor",
+        key="cartera_mep_pct_editor",
     )
 
     pct_map = {r["Ticker"]: float(r["%"]) for _, r in edited.iterrows()}
@@ -548,12 +579,17 @@ def render(back_to_home=None):
         return
 
     st.markdown("### Detalle de cartera")
+    st.caption(
+        "Regla de VN: Bonos/ON cotizan por cada 100 de V/N ⇒ para calcular VN se usa Precio/100. "
+        "Acciones/CEDEARs cotizan por unidad ⇒ no se ajusta el precio."
+    )
 
     show = df.copy().drop(columns=["__ticker_base"], errors="ignore")
+
     show["%"] = pd.to_numeric(show["%"], errors="coerce").apply(fmt_ar_pct)
-    show["US$"] = pd.to_numeric(show["US$"], errors="coerce").apply(fmt_usd_money)
+    show[MONEY_COL_NAME] = pd.to_numeric(show[MONEY_COL_NAME], errors="coerce").apply(fmt_usd_money)
     show["Precio"] = pd.to_numeric(show["Precio"], errors="coerce").apply(fmt_ar_2dec)
-    show["VN"] = pd.to_numeric(show["VN"], errors="coerce").apply(fmt_ar_int)
+    show["VN"] = pd.to_numeric(show["VN"], errors="coerce").apply(lambda v: fmt_ar_int(v))
 
     h_tbl = _height_for_rows(len(show), max_h=820)
 
@@ -566,7 +602,7 @@ def render(back_to_home=None):
             "Ticker": st.column_config.TextColumn("Ticker"),
             "Tipo": st.column_config.TextColumn("Tipo"),
             "%": st.column_config.TextColumn("%"),
-            "US$": st.column_config.TextColumn("US$"),
+            MONEY_COL_NAME: st.column_config.TextColumn(MONEY_COL_NAME),
             "Precio": st.column_config.TextColumn("Precio"),
             "VN": st.column_config.TextColumn("VN"),
         },
@@ -576,33 +612,33 @@ def render(back_to_home=None):
     with cxl:
         try:
             xlsx = build_excel_bytes(df)
-            fname = f"NEIX_Cartera_USD_{mode}_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+            fname = f"NEIX_Cartera_MEP_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
             st.download_button(
                 "Descargar Excel",
                 data=xlsx,
                 file_name=fname,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                key="cartera_usd_xlsx",
+                key="cartera_mep_xlsx",
             )
         except Exception as e:
             st.warning(f"No pude generar el Excel: {e}")
 
     with cpdf:
         try:
-            pdf = build_cartera_usd_pdf_bytes(
+            pdf = build_cartera_mep_pdf_bytes(
                 capital_usd=float(capital),
                 table_df=df.drop(columns=["__ticker_base"], errors="ignore"),
                 logo_path=LOGO_PATH,
             )
-            fname = f"NEIX_Cartera_USD_{mode}_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+            fname = f"NEIX_Cartera_MEP_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
             st.download_button(
                 "Descargar PDF",
                 data=pdf,
                 file_name=fname,
                 mime="application/pdf",
                 use_container_width=True,
-                key="cartera_usd_pdf",
+                key="cartera_mep_pdf",
             )
         except Exception as e:
             st.warning(f"No pude generar el PDF: {e}")
