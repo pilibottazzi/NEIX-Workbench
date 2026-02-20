@@ -681,14 +681,14 @@ def build_portfolio_table(
 # PDF helpers (MEJORADOS)
 # =========================
 def fmt_usd_pdf(x: float) -> str:
-    """US$ con miles en formato AR (punto)."""
+    """$ con miles en formato AR (punto)."""
     if x is None or (isinstance(x, float) and not np.isfinite(x)):
         return ""
     try:
         v = float(x)
     except Exception:
         return ""
-    return f"US$ {v:,.0f}".replace(",", ".")
+    return f"$ {v:,.0f}".replace(",", ".")
 
 
 def fmt_num_pdf(x: float, dec: int = 2) -> str:
