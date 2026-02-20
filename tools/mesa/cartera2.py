@@ -25,6 +25,9 @@ from reportlab.lib.styles import getSampleStyleSheet
 DEFAULT_CAPITAL_ARS = 100_000_000.0
 LOGO_PATH = os.path.join("data", "Neix_logo.png")  # tu logo en /data
 
+# Header moneda (UI / PDF / Excel)
+MONEY_COL_NAME = "$ (ARS)"  # <-- si querés literal "$ (ARG)", cambiá acá
+
 # Tipos que cotizan "por 100 V/N"
 PRICE_PER_100_VN_TYPES = {"BONO", "ON"}
 
@@ -175,7 +178,7 @@ def _fetch_iol_table(url: str) -> pd.DataFrame:
     out = pd.DataFrame()
     out["SymbolRaw"] = t["Símbolo"].astype(str).str.strip().str.upper()
     out["Ticker"] = out["SymbolRaw"].apply(base_ticker)
-    out["Label"] = out["SymbolRaw"].apply(display_label)  # ✅ sin "CEDEAR" al final
+    out["Label"] = out["SymbolRaw"].apply(display_label)  # ✅ sin "CEDEAR"
 
     out["Precio"] = t["Último Operado"].apply(parse_ar_number)
 
@@ -187,7 +190,6 @@ def _fetch_iol_table(url: str) -> pd.DataFrame:
     out = out.dropna(subset=["Ticker", "Precio"])
     out = out[out["Ticker"].astype(str).str.len() > 0]
 
-    # si se repite ticker dentro de la misma tabla, dejamos el mayor volumen
     out = out.sort_values(["Ticker", "Volumen"], ascending=[True, False])
     out = out.drop_duplicates(subset=["Ticker"], keep="first")
 
@@ -225,7 +227,6 @@ def fetch_universe_prices_pesos() -> pd.DataFrame:
 
     allp = pd.concat(frames, ignore_index=True)
 
-    # Si un ticker aparece en más de una categoría, priorizamos mayor volumen.
     allp = allp.sort_values(["Ticker", "Volumen"], ascending=[True, False])
     allp = allp.drop_duplicates(subset=["Ticker"], keep="first")
 
@@ -275,10 +276,7 @@ def build_simple_portfolio_ars(
 
         ars_amt = float(capital_ars) * (float(pct) / 100.0)
 
-        # ✅ precio unitario según tipo
         px_unit = unit_price_for_vn(tipo=tipo, precio_cotizado=px)
-
-        # ✅ VN calculado con el precio unitario
         vn = (ars_amt / px_unit) if (np.isfinite(px_unit) and px_unit > 0) else np.nan
 
         rows.append(
@@ -299,13 +297,13 @@ def build_simple_portfolio_ars(
 
     return pd.DataFrame(
         {
-            "Ticker": [r.label for r in rows],         # ✅ display (sin "CEDEAR")
+            "Ticker": [r.label for r in rows],
             "Tipo": [r.tipo for r in rows],
             "%": [r.pct for r in rows],
-            "$": [r.ars for r in rows],
-            "Precio": [r.precio_cotizado for r in rows],  # precio como lo ves cotizar
+            MONEY_COL_NAME: [r.ars for r in rows],   # ✅ header renombrado
+            "Precio": [r.precio_cotizado for r in rows],
             "VN": [r.vn for r in rows],
-            "__ticker_base": [r.ticker for r in rows],     # interno
+            "__ticker_base": [r.ticker for r in rows],
         }
     )
 
@@ -314,13 +312,6 @@ def build_simple_portfolio_ars(
 # PDF (simple / prolijo)
 # =========================
 def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame, logo_path: str | None = None) -> bytes:
-    """
-    PDF:
-    - Logo
-    - Título Cartera (Pesos) + Capital
-    - UNA sola tabla ajustada al ancho útil
-    - Nota: regla de VN para Bonos/ON
-    """
     buff = io.BytesIO()
 
     left = right = 1.3 * cm
@@ -339,7 +330,6 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
     styles = getSampleStyleSheet()
     story = []
 
-    # Logo
     if logo_path and os.path.exists(logo_path):
         try:
             logo = RLImage(logo_path, width=6.2 * cm, height=1.6 * cm)
@@ -361,15 +351,13 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
     story.append(Paragraph(f"Capital: {fmt_ar_money(capital_ars)}", styles["Normal"]))
     story.append(Spacer(1, 10))
 
-    # Preparar tabla (strings AR)
     df = table_df.copy()
 
-    cols = ["Ticker", "Tipo", "%", "$", "Precio", "VN"]
+    cols = ["Ticker", "Tipo", "%", MONEY_COL_NAME, "Precio", "VN"]  # ✅ header renombrado
     df = df[cols].copy()
 
-    # Formatos
     df["%"] = pd.to_numeric(df["%"], errors="coerce").apply(fmt_ar_pct)
-    df["$"] = pd.to_numeric(df["$"], errors="coerce").apply(fmt_ar_money)
+    df[MONEY_COL_NAME] = pd.to_numeric(df[MONEY_COL_NAME], errors="coerce").apply(fmt_ar_money)
     df["Precio"] = pd.to_numeric(df["Precio"], errors="coerce").apply(fmt_ar_2dec)
     df["VN"] = pd.to_numeric(df["VN"], errors="coerce").apply(lambda v: fmt_ar_int(v))
 
@@ -379,7 +367,7 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
         usable_w * 0.22,  # Ticker
         usable_w * 0.14,  # Tipo
         usable_w * 0.10,  # %
-        usable_w * 0.20,  # $
+        usable_w * 0.20,  # $ (ARS)
         usable_w * 0.18,  # Precio
         usable_w * 0.16,  # VN
     ]
@@ -412,8 +400,8 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
     story.append(Spacer(1, 10))
     story.append(
         Paragraph(
-            "Nota: Bonos y ON cotizan por cada 100 de V/N. "
-            "Acciones y CEDEARs cotizan por unidad.",
+            "Nota: Bonos y ON cotizan por cada 100 de V/N (para VN se usa Precio/100). "
+            "Acciones y CEDEARs cotizan por unidad (no se ajusta el precio).",
             styles["Normal"],
         )
     )
@@ -440,7 +428,7 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
 
         headers = {cell.value: idx + 1 for idx, cell in enumerate(ws[1])}  # 1-based
         col_pct = headers.get("%")
-        col_money = headers.get("$")
+        col_money = headers.get(MONEY_COL_NAME)  # ✅ nuevo header
         col_price = headers.get("Precio")
         col_vn = headers.get("VN")
 
@@ -454,7 +442,8 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
             if col_vn:
                 ws.cell(r, col_vn).number_format = "#,##0"
 
-        for name, w in [("Ticker", 18), ("Tipo", 12), ("%", 8), ("$", 16), ("Precio", 14), ("VN", 12)]:
+        # anchos (actualizo el nombre de la col dinero)
+        for name, w in [("Ticker", 18), ("Tipo", 12), ("%", 8), (MONEY_COL_NAME, 16), ("Precio", 14), ("VN", 12)]:
             c = headers.get(name)
             if c:
                 ws.column_dimensions[chr(64 + c)].width = w
@@ -478,17 +467,6 @@ def _ui_css():
 
   .soft-hr{ height:1px; background:rgba(17,24,39,.10); margin: 14px 0 18px; }
 
-  /* Cards suaves */
-  .card{
-    border: 1px solid rgba(17,24,39,.10);
-    border-radius: 16px;
-    padding: 12px 14px;
-    background: #fff;
-  }
-  .kpi_lbl{ color: rgba(17,24,39,.60); font-size: 12px; margin-bottom: 6px; }
-  .kpi_val{ font-size: 26px; font-weight: 850; color:#111827; letter-spacing: .01em; }
-
-  /* Dataframes */
   div[data-testid="stDataFrame"] {
     border-radius: 14px;
     overflow: hidden;
@@ -603,7 +581,7 @@ def render(back_to_home=None):
     show = show.drop(columns=["__ticker_base"], errors="ignore")
 
     show["%"] = pd.to_numeric(show["%"], errors="coerce").apply(fmt_ar_pct)
-    show["$"] = pd.to_numeric(show["$"], errors="coerce").apply(fmt_ar_money)
+    show[MONEY_COL_NAME] = pd.to_numeric(show[MONEY_COL_NAME], errors="coerce").apply(fmt_ar_money)
     show["Precio"] = pd.to_numeric(show["Precio"], errors="coerce").apply(fmt_ar_2dec)
     show["VN"] = pd.to_numeric(show["VN"], errors="coerce").apply(lambda v: fmt_ar_int(v))
 
@@ -618,7 +596,7 @@ def render(back_to_home=None):
             "Ticker": st.column_config.TextColumn("Ticker"),
             "Tipo": st.column_config.TextColumn("Tipo"),
             "%": st.column_config.TextColumn("%"),
-            "$": st.column_config.TextColumn("$"),
+            MONEY_COL_NAME: st.column_config.TextColumn(MONEY_COL_NAME),
             "Precio": st.column_config.TextColumn("Precio"),
             "VN": st.column_config.TextColumn("VN"),
         },
