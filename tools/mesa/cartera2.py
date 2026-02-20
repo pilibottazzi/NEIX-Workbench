@@ -347,7 +347,7 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
         except Exception:
             pass
 
-    story.append(Paragraph("Cartera recomendada (Pesos)", styles["Heading2"]))
+    story.append(Paragraph("Cartera recomendada", styles["Heading2"]))
     story.append(Paragraph(f"Capital: {fmt_ar_money(capital_ars)}", styles["Normal"]))
     story.append(Spacer(1, 10))
 
@@ -400,8 +400,8 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
     story.append(Spacer(1, 10))
     story.append(
         Paragraph(
-            "Nota: Bonos y ON cotizan por cada 100 de V/N (para VN se usa Precio/100). "
-            "Acciones y CEDEARs cotizan por unidad (no se ajusta el precio).",
+            "Nota: Bonos y ON cotizan por cada 100 de V/N. "
+            "Acciones y CEDEARs cotizan por unidad.",
             styles["Normal"],
         )
     )
@@ -490,7 +490,7 @@ def render(back_to_home=None):
 
     left, right = st.columns([0.72, 0.28], vertical_alignment="center")
     with left:
-        st.markdown('<div class="title">Herramienta para armar carteras</div>', unsafe_allow_html=True)
+        st.markdown('<div class="title">Herramienta para armar carteras (ARG)</div>', unsafe_allow_html=True)
         st.markdown('<div class="sub">Acciones / CEDEARs / Bonos / ONs</div>', unsafe_allow_html=True)
     with right:
         refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_pesos_refresh")
