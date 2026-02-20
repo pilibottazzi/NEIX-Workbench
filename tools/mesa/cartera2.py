@@ -274,7 +274,7 @@ def fetch_iol_prices_for_list(
 
     # ✅ Link nuevo de acciones (el que pediste)
     sources = [
-        ("Acción", "https://iol.invertironline.com/mercado/cotizaciones"),
+        ("ACCIONES", "https://iol.invertironline.com/mercado/cotizaciones"),
         ("CEDEAR", "https://iol.invertironline.com/mercado/cotizaciones/argentina/cedears/todos"),
         ("Bono",   "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"),
         ("ON",     "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"),
