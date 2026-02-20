@@ -556,16 +556,6 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # KPI Capital (formato AR)
-    st.markdown(
-        f"""
-<div class="card" style="margin: 0 0 12px 0;">
-  <div class="kpi_lbl">Capital (ARS)</div>
-  <div class="kpi_val">{fmt_ar_money(float(capital))}</div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
 
     st.markdown("### Detalle de cartera")
 
