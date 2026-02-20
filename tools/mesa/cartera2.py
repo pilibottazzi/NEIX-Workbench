@@ -1,4 +1,15 @@
 # tools/cartera_pesos.py
+# =========================================================
+# ✅ Lee Excel data/Especies.xlsx (columnas: "Pesos" y "Usd")
+# ✅ Baja universo IOL (con link nuevo de ACCIONES)
+# ✅ Filtra SOLO tickers de tu lista
+# ✅ Devuelve DF con Precio / Volumen / Tipo / Label / Moneda
+# ✅ Devuelve listado de faltantes
+#
+# Requisitos:
+#   pip install lxml
+# =========================================================
+
 from __future__ import annotations
 
 import io
@@ -26,11 +37,18 @@ DEFAULT_CAPITAL_ARS = 100_000_000.0
 LOGO_PATH = os.path.join("data", "Neix_logo.png")  # tu logo en /data
 
 # Header moneda (UI / PDF / Excel)
-MONEY_COL_NAME = "$ (ARS)"  # <-- si querés literal "$ (ARG)", cambiá acá
+MONEY_COL_NAME = "$ (ARS)"
 
 # Tipos que cotizan "por 100 V/N"
 PRICE_PER_100_VN_TYPES = {"BONO", "ON"}
 
+# =========================
+# ✅ Lista de tickers (Excel en tu repo)
+# =========================
+TICKER_LIST_XLSX = os.path.join("data", "Especies.xlsx")  # ✅ según tu repo
+TICKER_LIST_SHEET = None  # None = primera hoja
+TICKER_COL_PESOS = "Pesos"
+TICKER_COL_USD = "Usd"
 
 # =========================
 # Helpers
@@ -148,18 +166,57 @@ def unit_price_for_vn(*, tipo: str, precio_cotizado: float) -> float:
     px = float(precio_cotizado) if np.isfinite(precio_cotizado) else np.nan
     if not np.isfinite(px) or px <= 0:
         return np.nan
-    if t in PRICE_PER_100_VN_TYPES:
+    if t.upper() in PRICE_PER_100_VN_TYPES:
         return px / 100.0
     return px
 
 
 # =========================
-# Fetch IOL (PESOS)
+# ✅ Leer Excel con tickers (Pesos/Usd)
+# =========================
+def load_ticker_list_from_excel(
+    path: str = TICKER_LIST_XLSX,
+    sheet_name: str | int | None = TICKER_LIST_SHEET,
+    col_pesos: str = TICKER_COL_PESOS,
+    col_usd: str = TICKER_COL_USD,
+) -> dict[str, list[str]]:
+    """
+    Lee un Excel con 2 columnas:
+      - Pesos
+      - Usd
+    Devuelve dict: {"ARS": [...], "USD": [...]} en mayúsculas y sin vacíos.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"No existe el archivo: {path}")
+
+    df = pd.read_excel(path, sheet_name=sheet_name, dtype=str)
+
+    for c in (col_pesos, col_usd):
+        if c not in df.columns:
+            raise ValueError(
+                f"Falta la columna '{c}' en {path}. "
+                f"Columnas encontradas: {list(df.columns)}"
+            )
+
+    def _clean(series: pd.Series) -> list[str]:
+        s = series.fillna("").astype(str).str.strip().str.upper()
+        s = s[s != ""]
+        return s.tolist()
+
+    return {"ARS": _clean(df[col_pesos]), "USD": _clean(df[col_usd])}
+
+
+# =========================
+# Fetch IOL (universo -> filtrar por lista)
 # =========================
 def _fetch_iol_table(url: str) -> pd.DataFrame:
     """
     Devuelve DF estandarizado:
       cols: SymbolRaw, Ticker, Label, Precio, Volumen
+
+    Busca entre TODAS las tablas del HTML una que contenga:
+      - "Símbolo"
+      - "Último Operado"
     """
     try:
         tables = pd.read_html(url)
@@ -169,16 +226,23 @@ def _fetch_iol_table(url: str) -> pd.DataFrame:
     if not tables:
         return pd.DataFrame()
 
-    t = tables[0].copy()
-    t.columns = [str(c).strip() for c in t.columns]
+    chosen = None
+    for tb in tables:
+        t = tb.copy()
+        t.columns = [str(c).strip() for c in t.columns]
+        if "Símbolo" in t.columns and "Último Operado" in t.columns:
+            chosen = t
+            break
 
-    if "Símbolo" not in t.columns or "Último Operado" not in t.columns:
+    if chosen is None:
         return pd.DataFrame()
+
+    t = chosen
 
     out = pd.DataFrame()
     out["SymbolRaw"] = t["Símbolo"].astype(str).str.strip().str.upper()
     out["Ticker"] = out["SymbolRaw"].apply(base_ticker)
-    out["Label"] = out["SymbolRaw"].apply(display_label)  # ✅ sin "CEDEAR"
+    out["Label"] = out["SymbolRaw"].apply(display_label)
 
     out["Precio"] = t["Último Operado"].apply(parse_ar_number)
 
@@ -196,19 +260,32 @@ def _fetch_iol_table(url: str) -> pd.DataFrame:
     return out[["SymbolRaw", "Ticker", "Label", "Precio", "Volumen"]]
 
 
-def fetch_universe_prices_pesos() -> pd.DataFrame:
+def fetch_iol_prices_for_list(
+    *,
+    ticker_list_path: str = TICKER_LIST_XLSX,
+    sheet_name: str | int | None = TICKER_LIST_SHEET,
+) -> tuple[pd.DataFrame, dict[str, list[str]]]:
     """
-    Universo PESOS con tipos:
-      - Acción
-      - CEDEAR
-      - Bono
-      - ON
+    1) Lee el Excel (Pesos/Usd).
+    2) Baja universo IOL:
+       - Acciones (link nuevo)
+       - Cedears
+       - Bonos
+       - ON
+    3) Filtra SOLO tickers de la lista.
 
-    Output index = Ticker
-      cols = Precio, Volumen, Tipo, Label
+    Devuelve:
+      - df_final (index=ticker, con Precio/Volumen/Tipo/Label/Moneda)
+      - faltantes {"ARS":[...], "USD":[...]}
     """
+    tickers = load_ticker_list_from_excel(path=ticker_list_path, sheet_name=sheet_name)
+    ars = [t for t in tickers["ARS"] if t]
+    usd = [t for t in tickers["USD"] if t]
+    wanted_all = set(ars + usd)
+
+    # ✅ Link nuevo de acciones (el que pediste)
     sources = [
-        ("Acción", "https://iol.invertironline.com/mercado/cotizaciones/argentina/acciones/todas"),
+        ("Acción", "https://iol.invertironline.com/mercado/cotizaciones"),
         ("CEDEAR", "https://iol.invertironline.com/mercado/cotizaciones/argentina/cedears/todos"),
         ("Bono",   "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"),
         ("ON",     "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"),
@@ -223,15 +300,29 @@ def fetch_universe_prices_pesos() -> pd.DataFrame:
         frames.append(df)
 
     if not frames:
-        return pd.DataFrame()
+        return pd.DataFrame(), {"ARS": ars, "USD": usd}
 
     allp = pd.concat(frames, ignore_index=True)
+    allp["Ticker"] = allp["Ticker"].astype(str).str.upper().str.strip()
 
+    # dedupe por ticker y volumen
     allp = allp.sort_values(["Ticker", "Volumen"], ascending=[True, False])
     allp = allp.drop_duplicates(subset=["Ticker"], keep="first")
 
-    allp = allp.set_index("Ticker")
-    return allp[["Precio", "Volumen", "Tipo", "Label"]].sort_values("Volumen", ascending=False)
+    # filtrar SOLO los tickers del Excel
+    filt = allp[allp["Ticker"].isin(wanted_all)].copy()
+
+    # moneda desde tu lista (no por sufijo D)
+    moneda_map = {t: "ARS" for t in ars}
+    moneda_map.update({t: "USD" for t in usd})
+    filt["Moneda"] = filt["Ticker"].map(moneda_map).fillna("")
+
+    filt = filt.set_index("Ticker")[["Precio", "Volumen", "Tipo", "Label", "Moneda"]]
+    filt = filt.sort_values(["Moneda", "Tipo", "Volumen"], ascending=[True, True, False])
+
+    got = set(filt.index.tolist())
+    faltantes = {"ARS": [t for t in ars if t not in got], "USD": [t for t in usd if t not in got]}
+    return filt, faltantes
 
 
 # =========================
@@ -300,7 +391,7 @@ def build_simple_portfolio_ars(
             "Ticker": [r.label for r in rows],
             "Tipo": [r.tipo for r in rows],
             "%": [r.pct for r in rows],
-            MONEY_COL_NAME: [r.ars for r in rows],   # ✅ header renombrado
+            MONEY_COL_NAME: [r.ars for r in rows],
             "Precio": [r.precio_cotizado for r in rows],
             "VN": [r.vn for r in rows],
             "__ticker_base": [r.ticker for r in rows],
@@ -309,7 +400,7 @@ def build_simple_portfolio_ars(
 
 
 # =========================
-# PDF (simple / prolijo)
+# PDF
 # =========================
 def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame, logo_path: str | None = None) -> bytes:
     buff = io.BytesIO()
@@ -352,8 +443,7 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
     story.append(Spacer(1, 10))
 
     df = table_df.copy()
-
-    cols = ["Ticker", "Tipo", "%", MONEY_COL_NAME, "Precio", "VN"]  # ✅ header renombrado
+    cols = ["Ticker", "Tipo", "%", MONEY_COL_NAME, "Precio", "VN"]
     df = df[cols].copy()
 
     df["%"] = pd.to_numeric(df["%"], errors="coerce").apply(fmt_ar_pct)
@@ -364,12 +454,12 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
     data = [cols] + df.fillna("").astype(str).values.tolist()
 
     col_widths = [
-        usable_w * 0.22,  # Ticker
-        usable_w * 0.14,  # Tipo
-        usable_w * 0.10,  # %
-        usable_w * 0.20,  # $ (ARS)
-        usable_w * 0.18,  # Precio
-        usable_w * 0.16,  # VN
+        usable_w * 0.22,
+        usable_w * 0.14,
+        usable_w * 0.10,
+        usable_w * 0.20,
+        usable_w * 0.18,
+        usable_w * 0.16,
     ]
 
     t = Table(data, repeatRows=1, colWidths=col_widths)
@@ -400,8 +490,7 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
     story.append(Spacer(1, 10))
     story.append(
         Paragraph(
-            "Nota: Bonos y ON cotizan por cada 100 de V/N. "
-            "Acciones y CEDEARs cotizan por unidad.",
+            "Nota: Bonos y ON cotizan por cada 100 de V/N. Acciones y CEDEARs cotizan por unidad.",
             styles["Normal"],
         )
     )
@@ -413,7 +502,7 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
 
 
 # =========================
-# Excel export (con formatos)
+# Excel export
 # =========================
 def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
     out = io.BytesIO()
@@ -426,9 +515,9 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
         df.to_excel(writer, index=False, sheet_name="cartera_pesos")
         ws = writer.sheets["cartera_pesos"]
 
-        headers = {cell.value: idx + 1 for idx, cell in enumerate(ws[1])}  # 1-based
+        headers = {cell.value: idx + 1 for idx, cell in enumerate(ws[1])}
         col_pct = headers.get("%")
-        col_money = headers.get(MONEY_COL_NAME)  # ✅ nuevo header
+        col_money = headers.get(MONEY_COL_NAME)
         col_price = headers.get("Precio")
         col_vn = headers.get("VN")
 
@@ -442,7 +531,6 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
             if col_vn:
                 ws.cell(r, col_vn).number_format = "#,##0"
 
-        # anchos (actualizo el nombre de la col dinero)
         for name, w in [("Ticker", 18), ("Tipo", 12), ("%", 8), (MONEY_COL_NAME, 16), ("Precio", 14), ("VN", 12)]:
             c = headers.get(name)
             if c:
@@ -453,7 +541,7 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
 
 
 # =========================
-# UI (minimal / ordenada)
+# UI (Streamlit)
 # =========================
 def _ui_css():
     st.markdown(
@@ -461,12 +549,9 @@ def _ui_css():
 <style>
   .wrap{ max-width: 1180px; margin: 0 auto; }
   .block-container { padding-top: 1.1rem; padding-bottom: 1.8rem; }
-
   .title{ font-size: 28px; font-weight: 850; letter-spacing: .02em; color:#111827; margin: 0; }
   .sub{ color: rgba(17,24,39,.62); font-size: 13px; margin-top: 4px; }
-
   .soft-hr{ height:1px; background:rgba(17,24,39,.10); margin: 14px 0 18px; }
-
   div[data-testid="stDataFrame"] {
     border-radius: 14px;
     overflow: hidden;
@@ -491,21 +576,32 @@ def render(back_to_home=None):
     left, right = st.columns([0.72, 0.28], vertical_alignment="center")
     with left:
         st.markdown('<div class="title">Herramienta para armar carteras (ARG)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub">Acciones / CEDEARs / Bonos / ONs</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub">Precios IOL filtrados por tu Excel (Pesos/Usd)</div>', unsafe_allow_html=True)
     with right:
         refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_pesos_refresh")
 
     st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
 
     if refresh or "cartera_pesos_prices" not in st.session_state:
-        with st.spinner("Actualizando precios (Pesos)..."):
-            st.session_state["cartera_pesos_prices"] = fetch_universe_prices_pesos()
+        with st.spinner("Actualizando precios (IOL)..."):
+            prices, missing = fetch_iol_prices_for_list()
+            st.session_state["cartera_pesos_prices"] = prices
+            st.session_state["cartera_pesos_missing"] = missing
 
     prices = st.session_state.get("cartera_pesos_prices")
+    missing = st.session_state.get("cartera_pesos_missing", {"ARS": [], "USD": []})
+
     if prices is None or prices.empty:
-        st.warning("No pude cargar el universo de precios (Pesos). Puede haber cambiado el formato de IOL.")
+        st.warning("No pude cargar precios desde IOL. Puede haber cambiado el formato o estar caído.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
+
+    if missing.get("ARS") or missing.get("USD"):
+        st.warning(
+            "Faltan precios para algunos tickers.\n\n"
+            f"ARS faltantes (muestra): {', '.join(missing.get('ARS', [])[:40])}\n"
+            f"USD faltantes (muestra): {', '.join(missing.get('USD', [])[:40])}"
+        )
 
     c1, c2 = st.columns([0.42, 0.58], vertical_alignment="bottom")
     with c1:
@@ -524,10 +620,10 @@ def render(back_to_home=None):
     label_map = {tk: str(prices.loc[tk, "Label"]) for tk in opts}
 
     selected = st.multiselect(
-        "Tickers",
+        "Tickers (desde data/Especies.xlsx)",
         options=opts,
         default=opts[:6] if len(opts) >= 6 else opts,
-        format_func=lambda tk: label_map.get(tk, tk),
+        format_func=lambda tk: f"{label_map.get(tk, tk)} ({prices.loc[tk, 'Moneda']})",
         key="cartera_pesos_selected",
     )
 
@@ -577,30 +673,13 @@ def render(back_to_home=None):
         "Acciones/CEDEARs cotizan por unidad ⇒ no se ajusta el precio."
     )
 
-    show = df.copy()
-    show = show.drop(columns=["__ticker_base"], errors="ignore")
-
+    show = df.copy().drop(columns=["__ticker_base"], errors="ignore")
     show["%"] = pd.to_numeric(show["%"], errors="coerce").apply(fmt_ar_pct)
     show[MONEY_COL_NAME] = pd.to_numeric(show[MONEY_COL_NAME], errors="coerce").apply(fmt_ar_money)
     show["Precio"] = pd.to_numeric(show["Precio"], errors="coerce").apply(fmt_ar_2dec)
     show["VN"] = pd.to_numeric(show["VN"], errors="coerce").apply(lambda v: fmt_ar_int(v))
 
-    h_tbl = _height_for_rows(len(show), max_h=820)
-
-    st.dataframe(
-        show,
-        hide_index=True,
-        use_container_width=True,
-        height=h_tbl,
-        column_config={
-            "Ticker": st.column_config.TextColumn("Ticker"),
-            "Tipo": st.column_config.TextColumn("Tipo"),
-            "%": st.column_config.TextColumn("%"),
-            MONEY_COL_NAME: st.column_config.TextColumn(MONEY_COL_NAME),
-            "Precio": st.column_config.TextColumn("Precio"),
-            "VN": st.column_config.TextColumn("VN"),
-        },
-    )
+    st.dataframe(show, hide_index=True, use_container_width=True, height=_height_for_rows(len(show), max_h=820))
 
     cxl, cpdf = st.columns(2)
     with cxl:
