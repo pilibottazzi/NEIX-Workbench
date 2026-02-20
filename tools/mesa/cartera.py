@@ -50,14 +50,12 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "BPOB8": "BPB8D",
     "BPOC7": "BPC7D",
     "BPOD7": "BPD7D",
-
     # Familia BPA / BPB / BPC (si el cashflow viene sin la O)
     "BPA7": "BPA7D",
     "BPA8": "BPA8D",
     "BPB7": "BPB7D",
     "BPB8": "BPB8D",
     "BPC7": "BPC7D",
-
     # =========================
     # Bonos soberanos USD-link
     # =========================
@@ -69,7 +67,6 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "GD35": "GD35D",
     "GD38": "GD38D",
     "GD41": "GD41D",
-
     # =========================
     # Otros / atípicos
     # =========================
@@ -679,6 +676,7 @@ def build_portfolio_table(
 
     return df, resumen, flows_pivot
 
+
 # =========================
 # PDF helpers (MEJORADOS)
 # =========================
@@ -714,11 +712,10 @@ def fmt_pct_pdf(x: float, dec: int = 2) -> str:
 
 
 def _format_cartera_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
-    """Deja la tabla lista para PDF (strings ya formateados)."""
     d = df.copy()
 
     if "USD" in d.columns:
-        d["USD"] = d["USD"].apply(fmt_usd_pdf)
+        d["USD"] = pd.to_numeric(d["USD"], errors="coerce").apply(fmt_usd_pdf)
 
     if "Precio (USD, VN100)" in d.columns:
         d["Precio (USD, VN100)"] = pd.to_numeric(d["Precio (USD, VN100)"], errors="coerce").apply(
@@ -750,12 +747,17 @@ def _format_cartera_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _format_flows_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
-    """Flujos: todo lo monetario como US$ sin decimales."""
     d = df.copy()
 
-    # si hay Totales/Ticker como índice, lo convertimos a columna para PDF
+    # si viene con índice (Ticker + Totales), lo convertimos a columna "Ticker"
     if d.index.name is not None or not isinstance(d.index, pd.RangeIndex):
-        d = d.reset_index().rename(columns={"index": "Ticker"})
+        d = d.reset_index()
+        if "index" in d.columns:
+            d = d.rename(columns={"index": "Ticker"})
+
+    # garantizar que exista "Ticker"
+    if "Ticker" not in d.columns:
+        d.insert(0, "Ticker", "")
 
     # formatear columnas numéricas como US$
     for c in d.columns:
@@ -797,7 +799,7 @@ def build_cartera_pdf_bytes(
     # Márgenes (definen el ancho útil)
     left = right = 1.3 * cm
     top = bottom = 1.2 * cm
-    page_w, page_h = A4
+    page_w, _page_h = A4
     usable_w = page_w - left - right
 
     doc = SimpleDocTemplate(
@@ -810,15 +812,14 @@ def build_cartera_pdf_bytes(
     )
 
     styles = getSampleStyleSheet()
-    story = []
+    story: list = []
 
     # -------------------------
     # Logo centrado (sin textos)
     # -------------------------
     if logo_path and os.path.exists(logo_path):
         try:
-            logo = RLImage(logo_path, width=6.2 * cm, height=1.6 * cm)  # ajustá si querés
-            # Table wrapper para centrar a ancho completo
+            logo = RLImage(logo_path, width=6.2 * cm, height=1.6 * cm)
             tlogo = Table([[logo]], colWidths=[usable_w])
             tlogo.setStyle(
                 TableStyle(
@@ -874,7 +875,7 @@ def build_cartera_pdf_bytes(
     cartera_data = _df_to_table_data(cpdf, max_rows=60)
 
     ncols1 = len(cartera_data[0])
-    col_w1 = [usable_w / max(1, ncols1)] * ncols1  # ✅ mismo ancho total
+    col_w1 = [usable_w / max(1, ncols1)] * ncols1
     t1 = Table(cartera_data, repeatRows=1, colWidths=col_w1)
     t1.setStyle(
         TableStyle(
@@ -908,7 +909,7 @@ def build_cartera_pdf_bytes(
         flows_data = _df_to_table_data(fpdf, max_rows=80)
 
         ncols2 = len(flows_data[0])
-        col_w2 = [usable_w / max(1, ncols2)] * ncols2  # ✅ mismo ancho total
+        col_w2 = [usable_w / max(1, ncols2)] * ncols2
         t2 = Table(flows_data, repeatRows=1, colWidths=col_w2)
         t2.setStyle(
             TableStyle(
@@ -986,7 +987,6 @@ def _ui_css():
   }
   .kpi .lbl{ color: rgba(17,24,39,.60); font-size: 12px; margin-bottom: 6px; }
   .kpi .val{ font-size: 26px; font-weight: 850; color:#111827; letter-spacing: .01em; }
-
 </style>
 """,
         unsafe_allow_html=True,
@@ -1196,7 +1196,7 @@ def render(back_to_home=None):
         height=h_tbl,
         column_config={
             "%": st.column_config.NumberColumn("%", format="%.2f"),
-            "USD": st.column_config.NumberColumn("USD", format="$ %.0f"),
+            "USD": st.column_config.NumberColumn("USD", format="US$ %.0f"),
             "Precio (USD, VN100)": st.column_config.NumberColumn("Precio (USD, VN100)", format="%.2f"),
             "VN estimada": st.column_config.NumberColumn("VN estimada", format="%.0f"),
             "TIR (%)": st.column_config.NumberColumn("TIR (%)", format="%.2f"),
@@ -1234,7 +1234,7 @@ def render(back_to_home=None):
         flows,
         use_container_width=True,
         height=h_flows,
-        column_config={col: st.column_config.NumberColumn(col, format="$ %.0f") for col in flows.columns},
+        column_config={col: st.column_config.NumberColumn(col, format="US$ %.0f") for col in flows.columns},
     )
 
     _spacer(14)
@@ -1248,7 +1248,6 @@ def render(back_to_home=None):
             resumen=resumen,
             cartera_show=show.drop(columns=["Ticker precio"], errors="ignore"),
             flows_show=flows,
-            title="NEIX · Cartera Comercial",
             logo_path=LOGO_PATH,
         )
         fname = f"NEIX_Cartera_Comercial_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
