@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import io
 import datetime as dt
 from dataclasses import dataclass
 
@@ -11,9 +12,27 @@ import streamlit as st
 from scipy import optimize
 
 # =========================
+# PDF (ReportLab)
+# =========================
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import cm
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    Image as RLImage,
+)
+from reportlab.lib.styles import getSampleStyleSheet
+
+
+# =========================
 # Config
 # =========================
 CASHFLOW_PATH = os.path.join("data", "cashflows_completos.xlsx")
+LOGO_PATH = os.path.join("data", "Neix_logo.png")  # ✅ tu logo en /data
 
 # TIR fija (no UI)
 TIR_MIN = -15.0
@@ -46,7 +65,6 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "AL35": "AL35D",
     "AE38": "AE38D",
     "AL41": "AL41D",
-
     "GD30": "GD30D",
     "GD35": "GD35D",
     "GD38": "GD38D",
@@ -197,7 +215,7 @@ def is_corporativo(issuer_norm: str) -> bool:
 
 def on_usd_ticker_from_species(species: str) -> str:
     """
-    Regla que pediste:
+    Regla:
       - si termina en 'O' => reemplazar por 'D'
       - si ya termina en 'D' => dejar
       - si no termina en O ni D => agregar 'D'
@@ -663,6 +681,143 @@ def build_portfolio_table(
 
 
 # =========================
+# PDF helpers
+# =========================
+def _df_to_table_data(df: pd.DataFrame, max_rows: int = 60) -> list[list[str]]:
+    if df is None or df.empty:
+        return [["(sin datos)"]]
+    d = df.copy().head(max_rows).fillna("")
+    cols = list(d.columns)
+    data = [cols]
+    for _, r in d.iterrows():
+        data.append([str(r[c]) for c in cols])
+    return data
+
+
+def build_cartera_pdf_bytes(
+    *,
+    capital_usd: float,
+    resumen: dict,
+    cartera_show: pd.DataFrame,
+    flows_show: pd.DataFrame,
+    title: str = "NEIX · Cartera Comercial",
+    logo_path: str | None = None,
+) -> bytes:
+    buff = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buff,
+        pagesize=A4,
+        rightMargin=1.3 * cm,
+        leftMargin=1.3 * cm,
+        topMargin=1.2 * cm,
+        bottomMargin=1.2 * cm,
+        title=title,
+    )
+
+    styles = getSampleStyleSheet()
+    story = []
+
+    # Logo
+    if logo_path and os.path.exists(logo_path):
+        try:
+            img = RLImage(logo_path, width=4.4 * cm, height=1.25 * cm)
+            story.append(img)
+            story.append(Spacer(1, 6))
+        except Exception:
+            pass
+
+    # Header
+    story.append(Paragraph(title, styles["Title"]))
+    story.append(Paragraph(dt.datetime.now().strftime("Generado: %d/%m/%Y %H:%M"), styles["Normal"]))
+    story.append(Spacer(1, 10))
+
+    # KPIs
+    kpi_data = [
+        ["Capital (USD)", f"{fmt_money_int(float(capital_usd))}"],
+        ["TIR total (pond.)", f"{fmt_pct_2(float(resumen.get('tir', np.nan)))}"],
+        ["MD total (pond.)", f"{fmt_num_2(float(resumen.get('md', np.nan)))}"],
+        ["Duration total (pond.)", f"{fmt_num_2(float(resumen.get('dur', np.nan)))}"],
+    ]
+    t_kpi = Table(kpi_data, colWidths=[6.0 * cm, 10.2 * cm])
+    t_kpi.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+                ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+                ("FONTSIZE", (0, 0), (-1, -1), 10),
+                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    story.append(t_kpi)
+    story.append(Spacer(1, 12))
+
+    # Tabla cartera
+    story.append(Paragraph("Detalle de cartera", styles["Heading2"]))
+    cartera_data = _df_to_table_data(cartera_show, max_rows=60)
+    t1 = Table(cartera_data, repeatRows=1)
+    t1.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 9),
+                ("FONTSIZE", (0, 1), (-1, -1), 8),
+                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]
+        )
+    )
+    story.append(t1)
+    story.append(Spacer(1, 14))
+
+    # Flujos
+    story.append(Paragraph("Flujo de fondos", styles["Heading2"]))
+
+    if flows_show is None or flows_show.empty:
+        story.append(Paragraph("(sin flujos futuros)", styles["Normal"]))
+    else:
+        flows_pdf = flows_show.copy()
+        flows_pdf = flows_pdf.reset_index().rename(columns={"index": "Ticker"})
+        flows_data = _df_to_table_data(flows_pdf, max_rows=80)
+        t2 = Table(flows_data, repeatRows=1)
+        t2.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 9),
+                    ("FONTSIZE", (0, 1), (-1, -1), 8),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+        story.append(t2)
+
+    doc.build(story)
+    pdf = buff.getvalue()
+    buff.close()
+    return pdf
+
+
+# =========================
 # UI
 # =========================
 def _ui_css():
@@ -714,24 +869,15 @@ def _ui_css():
   .kpi .lbl{ color: rgba(17,24,39,.60); font-size: 12px; margin-bottom: 6px; }
   .kpi .val{ font-size: 26px; font-weight: 850; color:#111827; letter-spacing: .01em; }
 
-  /* Spacer util */
-  .sp-8{ height: 8px; }
-  .sp-12{ height: 12px; }
-  .sp-16{ height: 16px; }
-  .sp-20{ height: 20px; }
-
 </style>
-""", unsafe_allow_html=True)
-
-
+""",
+        unsafe_allow_html=True,
+    )
 
 
 def _height_for_rows(n: int, row_h: int = 34, header: int = 42, pad: int = 18, max_h: int = 900) -> int:
-    """
-    Altura dinámica más ajustada (evita el "bloque vacío" enorme).
-    """
     n = int(max(0, n))
-    h = header + pad + row_h * max(1, n + 1)  # +1 por header interno
+    h = header + pad + row_h * max(1, n + 1)
     return int(min(max_h, h))
 
 
@@ -867,7 +1013,7 @@ def render(back_to_home=None):
         return
 
     # KPIs
-    st.markdown("### NEIX · Cartera Comercial") 
+    st.markdown("### NEIX · Cartera Comercial")
     k1, k2, k3, k4 = st.columns(4)
     with k1:
         st.markdown(
@@ -912,7 +1058,7 @@ def render(back_to_home=None):
 
     _spacer(14)
 
-    # Tabla cartera
+    # Tabla cartera (show)
     show = cartera_df.copy()
     show["%"] = pd.to_numeric(show["%"], errors="coerce").round(2)
     show["USD"] = pd.to_numeric(show["USD"], errors="coerce").round(0)
@@ -954,6 +1100,7 @@ def render(back_to_home=None):
 
     flows = flows_pivot.copy()
 
+    # Renombrar columnas fecha a "Feb-2026" etc.
     new_cols = []
     for c in flows.columns:
         if isinstance(c, (pd.Timestamp, dt.datetime)):
@@ -965,8 +1112,6 @@ def render(back_to_home=None):
     flows = flows.round(0)
     h_flows = _height_for_rows(len(flows), row_h=34, header=42, pad=12, max_h=820)
 
-    st.markdown('<div class="flows-table">', unsafe_allow_html=True)
-
     st.dataframe(
         flows,
         use_container_width=True,
@@ -974,6 +1119,31 @@ def render(back_to_home=None):
         column_config={col: st.column_config.NumberColumn(col, format="$ %.0f") for col in flows.columns},
     )
 
+    _spacer(14)
+
+    # =========================
+    # Descargar PDF (con logo)
+    # =========================
+    try:
+        pdf_bytes = build_cartera_pdf_bytes(
+            capital_usd=float(capital),
+            resumen=resumen,
+            cartera_show=show.drop(columns=["Ticker precio"], errors="ignore"),
+            flows_show=flows,
+            title="NEIX · Cartera Comercial",
+            logo_path=LOGO_PATH,
+        )
+        fname = f"NEIX_Cartera_Comercial_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+
+        st.download_button(
+            "Descargar PDF",
+            data=pdf_bytes,
+            file_name=fname,
+            mime="application/pdf",
+            use_container_width=True,
+            key="cartera_pdf",
+        )
+    except Exception as e:
+        st.warning(f"No pude generar el PDF: {e}")
 
     st.markdown("</div>", unsafe_allow_html=True)
-
