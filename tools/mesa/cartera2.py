@@ -208,7 +208,7 @@ def fetch_universe_prices_pesos() -> pd.DataFrame:
       cols = Precio, Volumen, Tipo, Label
     """
     sources = [
-        ("ACCIONES", "https://iol.invertironline.com/mercado/cotizaciones/argentina/acciones/todas"),
+        ("ACCIONES", "https://iol.invertironline.com/mercado/cotizaciones"),
         ("CEDEAR", "https://iol.invertironline.com/mercado/cotizaciones/argentina/cedears/todos"),
         ("Bono",   "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"),
         ("ON",     "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"),
