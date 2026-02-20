@@ -318,7 +318,7 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
         except Exception:
             pass
 
-    story.append(Paragraph("Cartera (Pesos)", styles["Heading2"]))
+    story.append(Paragraph("Herramienta para armar carteras", styles["Heading2"]))
     story.append(Paragraph(f"Capital: {fmt_ar_money(capital_ars)}", styles["Normal"]))
     story.append(Spacer(1, 10))
 
