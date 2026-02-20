@@ -8,3 +8,4 @@ lxml
 plotly>=5.0
 html5lib
 xlsxwriter
+reportlab
