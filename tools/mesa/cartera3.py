@@ -22,9 +22,8 @@ from reportlab.lib.styles import getSampleStyleSheet
 # =========================
 # Config
 # =========================
-DEFAULT_CAPITAL_ARS = 100_000_000.0
+DEFAULT_CAPITAL_USD = 100_000.0
 LOGO_PATH = os.path.join("data", "Neix_logo.png")  # tu logo en /data
-
 
 # =========================
 # Helpers
@@ -59,7 +58,7 @@ def base_ticker(symbol_raw: str) -> str:
 def short_label(symbol_raw: str) -> str:
     """
     Display corto:
-      - si tiene >= 2 tokens => "TOKEN1 TOKEN2" (ej: "VIST CEDEAR ... " -> "VIST CEDEAR")
+      - si tiene >= 2 tokens => "TOKEN1 TOKEN2"
       - si no => "TOKEN1"
     """
     s = (symbol_raw or "").strip().upper()
@@ -80,15 +79,15 @@ def fmt_ar_int(x: float) -> str:
     return f"{v:,}".replace(",", ".")
 
 
-def fmt_ar_money(x: float) -> str:
-    """$ con miles punto."""
+def fmt_usd_money(x: float) -> str:
+    """US$ con miles punto."""
     if x is None or (isinstance(x, float) and not np.isfinite(x)):
         return ""
     try:
         v = float(x)
     except Exception:
         return ""
-    return "$ " + f"{v:,.0f}".replace(",", ".")
+    return "US$ " + f"{v:,.0f}".replace(",", ".")
 
 
 def fmt_ar_pct(x: float) -> str:
@@ -99,7 +98,6 @@ def fmt_ar_pct(x: float) -> str:
         v = float(x)
     except Exception:
         return ""
-    # 2 decimales, reemplazar punto por coma
     return f"{v:.2f}".replace(".", ",") + "%"
 
 
@@ -119,7 +117,7 @@ def fmt_ar_2dec(x: float) -> str:
 
 
 # =========================
-# Fetch IOL (PESOS)
+# Fetch IOL (USD via sufijos C/D)
 # =========================
 def _fetch_iol_table(url: str) -> pd.DataFrame:
     """
@@ -162,22 +160,33 @@ def _fetch_iol_table(url: str) -> pd.DataFrame:
     return out[["SymbolRaw", "Ticker", "Label", "Precio", "Volumen"]]
 
 
-def fetch_universe_prices_pesos() -> pd.DataFrame:
+def fetch_universe_prices_usd(*, mode: str = "MEP") -> pd.DataFrame:
     """
-    Universo PESOS con tipos:
-      - Acción
-      - CEDEAR
-      - Bono
-      - ON
+    Universo USD tomando especies con sufijo:
+      - mode="MEP" => tickers terminan en D
+      - mode="CCL" => tickers terminan en C
+      - mode="AMBOS" => C o D
 
     Output index = Ticker
       cols = Precio, Volumen, Tipo, Label
     """
+    mode = (mode or "MEP").upper().strip()
+    if mode not in {"MEP", "CCL", "AMBOS"}:
+        mode = "MEP"
+
+    if mode == "MEP":
+        allowed_suffix = ("D",)
+    elif mode == "CCL":
+        allowed_suffix = ("C",)
+    else:
+        allowed_suffix = ("C", "D")
+
+    # OJO: CEDEAR generalmente no tiene "MELID/MELIC"; por eso en USD suele quedar más chico el universo.
     sources = [
         ("Acción", "https://iol.invertironline.com/mercado/cotizaciones/argentina/acciones/todas"),
         ("CEDEAR", "https://iol.invertironline.com/mercado/cotizaciones/argentina/cedears/todos"),
-        ("Bono",   "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"),
-        ("ON",     "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"),
+        ("Bono",   "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos"),
+        ("ON",     "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones-negociables/todos"),
     ]
 
     frames = []
@@ -193,6 +202,12 @@ def fetch_universe_prices_pesos() -> pd.DataFrame:
 
     allp = pd.concat(frames, ignore_index=True)
 
+    # Filtrar por sufijo USD
+    allp = allp[allp["Ticker"].astype(str).str.upper().str.endswith(allowed_suffix)]
+
+    if allp.empty:
+        return pd.DataFrame()
+
     # Si un ticker aparece en más de una categoría, priorizamos mayor volumen.
     allp = allp.sort_values(["Ticker", "Volumen"], ascending=[True, False])
     allp = allp.drop_duplicates(subset=["Ticker"], keep="first")
@@ -202,24 +217,24 @@ def fetch_universe_prices_pesos() -> pd.DataFrame:
 
 
 # =========================
-# Cartera simple (ARS)
+# Cartera simple (USD)
 # =========================
 @dataclass
-class SimpleRowARS:
+class SimpleRowUSD:
     ticker: str
     label: str
     tipo: str
     pct: float
-    ars: float
+    usd: float
     precio: float
     vn: float
 
 
-def build_simple_portfolio_ars(
+def build_simple_portfolio_usd(
     prices: pd.DataFrame,
     selected: list[str],
     pct_map: dict[str, float],
-    capital_ars: float,
+    capital_usd: float,
 ) -> pd.DataFrame:
     selected = [str(x).upper().strip() for x in selected if str(x).strip()]
     if not selected:
@@ -229,7 +244,7 @@ def build_simple_portfolio_ars(
     s = float(np.sum(pcts))
     pcts = (pcts / s * 100.0) if s > 0 else np.zeros_like(pcts)
 
-    rows: list[SimpleRowARS] = []
+    rows: list[SimpleRowUSD] = []
     for t, pct in zip(selected, pcts):
         if pct <= 0:
             continue
@@ -240,16 +255,16 @@ def build_simple_portfolio_ars(
         tipo = str(prices.loc[t, "Tipo"]) if "Tipo" in prices.columns else "NA"
         label = str(prices.loc[t, "Label"]) if "Label" in prices.columns else t
 
-        ars_amt = float(capital_ars) * (float(pct) / 100.0)
-        vn = (ars_amt / px) if px > 0 else np.nan
+        usd_amt = float(capital_usd) * (float(pct) / 100.0)
+        vn = (usd_amt / px) if px > 0 else np.nan
 
         rows.append(
-            SimpleRowARS(
+            SimpleRowUSD(
                 ticker=t,
                 label=label,
                 tipo=tipo,
                 pct=float(pct),
-                ars=float(ars_amt),
+                usd=float(usd_amt),
                 precio=float(px),
                 vn=float(vn) if np.isfinite(vn) else np.nan,
             )
@@ -260,13 +275,13 @@ def build_simple_portfolio_ars(
 
     return pd.DataFrame(
         {
-            "Ticker": [r.label for r in rows],  # ✅ display corto (ej: "VIST CEDEAR")
+            "Ticker": [r.label for r in rows],  # display corto
             "Tipo": [r.tipo for r in rows],
             "%": [r.pct for r in rows],
-            "$": [r.ars for r in rows],
-            "Precio": [r.precio for r in rows],
+            "US$": [r.usd for r in rows],
+            "Precio": [r.precio for r in rows],  # precio en “USD del panel” (C/D)
             "VN": [r.vn for r in rows],
-            "__ticker_base": [r.ticker for r in rows],  # interno (para exports si querés)
+            "__ticker_base": [r.ticker for r in rows],
         }
     )
 
@@ -274,14 +289,7 @@ def build_simple_portfolio_ars(
 # =========================
 # PDF (simple / prolijo)
 # =========================
-def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame, logo_path: str | None = None) -> bytes:
-    """
-    PDF:
-    - Logo
-    - Título Cartera (Pesos) + Capital
-    - UNA sola tabla ajustada al ancho útil
-    - Sin gráficos
-    """
+def build_cartera_usd_pdf_bytes(*, capital_usd: float, table_df: pd.DataFrame, logo_path: str | None = None) -> bytes:
     buff = io.BytesIO()
 
     left = right = 1.3 * cm
@@ -300,7 +308,6 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
     styles = getSampleStyleSheet()
     story = []
 
-    # Logo
     if logo_path and os.path.exists(logo_path):
         try:
             logo = RLImage(logo_path, width=6.2 * cm, height=1.6 * cm)
@@ -318,31 +325,26 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
         except Exception:
             pass
 
-    story.append(Paragraph("Herramienta para armar carteras", styles["Heading2"]))
-    story.append(Paragraph(f"Capital: {fmt_ar_money(capital_ars)}", styles["Normal"]))
+    story.append(Paragraph("Cartera recomendada (USD)", styles["Heading2"]))
+    story.append(Paragraph(f"Capital: {fmt_usd_money(capital_usd)}", styles["Normal"]))
     story.append(Spacer(1, 10))
 
-    # Preparar tabla (strings AR)
     df = table_df.copy()
-
-    # columnas finales (sin internos)
-    cols = ["Ticker", "Tipo", "%", "$", "Precio", "VN"]
+    cols = ["Ticker", "Tipo", "%", "US$", "Precio", "VN"]
     df = df[cols].copy()
 
-    # VN entero, Precio 2 dec, % con coma, $ miles con punto
     df["%"] = pd.to_numeric(df["%"], errors="coerce").apply(fmt_ar_pct)
-    df["$"] = pd.to_numeric(df["$"], errors="coerce").apply(fmt_ar_money)
+    df["US$"] = pd.to_numeric(df["US$"], errors="coerce").apply(fmt_usd_money)
     df["Precio"] = pd.to_numeric(df["Precio"], errors="coerce").apply(fmt_ar_2dec)
     df["VN"] = pd.to_numeric(df["VN"], errors="coerce").apply(lambda v: fmt_ar_int(v))
 
     data = [cols] + df.fillna("").astype(str).values.tolist()
 
-    # Anchos por proporción (evita que se pisen)
     col_widths = [
         usable_w * 0.20,  # Ticker
         usable_w * 0.16,  # Tipo
         usable_w * 0.10,  # %
-        usable_w * 0.20,  # $
+        usable_w * 0.20,  # US$
         usable_w * 0.18,  # Precio
         usable_w * 0.16,  # VN
     ]
@@ -364,7 +366,7 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
                 ("TOPPADDING", (0, 0), (-1, -1), 4),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
                 ("ALIGN", (2, 1), (2, -1), "RIGHT"),  # %
-                ("ALIGN", (3, 1), (3, -1), "RIGHT"),  # $
+                ("ALIGN", (3, 1), (3, -1), "RIGHT"),  # US$
                 ("ALIGN", (4, 1), (4, -1), "RIGHT"),  # Precio
                 ("ALIGN", (5, 1), (5, -1), "RIGHT"),  # VN
             ]
@@ -385,24 +387,19 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
     out = io.BytesIO()
     df = table_df.copy()
 
-    # export sin columna interna
     if "__ticker_base" in df.columns:
         df = df.drop(columns=["__ticker_base"], errors="ignore")
 
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="cartera_pesos")
+        df.to_excel(writer, index=False, sheet_name="cartera_usd")
+        ws = writer.sheets["cartera_usd"]
 
-        # Formatos (Excel los verá según locale del usuario)
-        ws = writer.sheets["cartera_pesos"]
-
-        # Buscar columnas por header
-        headers = {cell.value: idx + 1 for idx, cell in enumerate(ws[1])}  # 1-based
+        headers = {cell.value: idx + 1 for idx, cell in enumerate(ws[1])}
         col_pct = headers.get("%")
-        col_money = headers.get("$")
+        col_money = headers.get("US$")
         col_price = headers.get("Precio")
         col_vn = headers.get("VN")
 
-        # aplicar formatos desde fila 2
         for r in range(2, ws.max_row + 1):
             if col_pct:
                 ws.cell(r, col_pct).number_format = "0.00"
@@ -413,8 +410,7 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
             if col_vn:
                 ws.cell(r, col_vn).number_format = "#,##0"
 
-        # ancho columnas (prolijo)
-        for name, w in [("Ticker", 18), ("Tipo", 12), ("%", 8), ("$", 16), ("Precio", 14), ("VN", 12)]:
+        for name, w in [("Ticker", 18), ("Tipo", 12), ("%", 8), ("US$", 16), ("Precio", 14), ("VN", 12)]:
             c = headers.get(name)
             if c:
                 ws.column_dimensions[chr(64 + c)].width = w
@@ -438,17 +434,6 @@ def _ui_css():
 
   .soft-hr{ height:1px; background:rgba(17,24,39,.10); margin: 14px 0 18px; }
 
-  /* Cards suaves */
-  .card{
-    border: 1px solid rgba(17,24,39,.10);
-    border-radius: 16px;
-    padding: 12px 14px;
-    background: #fff;
-  }
-  .kpi_lbl{ color: rgba(17,24,39,.60); font-size: 12px; margin-bottom: 6px; }
-  .kpi_val{ font-size: 26px; font-weight: 850; color:#111827; letter-spacing: .01em; }
-
-  /* Dataframes */
   div[data-testid="stDataFrame"] {
     border-radius: 14px;
     overflow: hidden;
@@ -472,48 +457,54 @@ def render(back_to_home=None):
 
     left, right = st.columns([0.72, 0.28], vertical_alignment="center")
     with left:
-        st.markdown('<div class="title">Cartera (Pesos)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub">Acciones / CEDEARs / Bonos / ONs</div>', unsafe_allow_html=True)
+        st.markdown('<div class="title">Herramienta para armar carteras (USD)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub">Panel dólar vía sufijo: MEP (D) / CCL (C)</div>', unsafe_allow_html=True)
     with right:
-        refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_pesos_refresh")
+        refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_usd_refresh")
 
     st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
 
-    # Cache universo
-    if refresh or "cartera_pesos_prices" not in st.session_state:
-        with st.spinner("Actualizando precios (Pesos)..."):
-            st.session_state["cartera_pesos_prices"] = fetch_universe_prices_pesos()
+    m1, m2, m3 = st.columns([0.26, 0.37, 0.37], vertical_alignment="bottom")
+    with m1:
+        mode = st.selectbox(
+            "Tipo de dólar",
+            options=["MEP", "CCL", "AMBOS"],
+            index=0,
+            key="cartera_usd_mode",
+        )
+    with m2:
+        capital = st.number_input(
+            "Capital (USD)",
+            min_value=0.0,
+            value=float(DEFAULT_CAPITAL_USD),
+            step=1_000.0,
+            format="%.0f",
+            key="cartera_usd_capital",
+        )
+    with m3:
+        calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_usd_calc")
 
-    prices = st.session_state.get("cartera_pesos_prices")
+    # Cache universo
+    cache_key = f"cartera_usd_prices_{mode}"
+    if refresh or cache_key not in st.session_state:
+        with st.spinner(f"Actualizando precios (USD - {mode})..."):
+            st.session_state[cache_key] = fetch_universe_prices_usd(mode=mode)
+
+    prices = st.session_state.get(cache_key)
     if prices is None or prices.empty:
-        st.warning("No pude cargar el universo de precios (Pesos). Puede haber cambiado el formato de IOL.")
+        st.warning("No pude cargar el universo USD (C/D). Puede haber cambiado el formato de IOL o no haber volumen.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Capital + botón
-    c1, c2 = st.columns([0.42, 0.58], vertical_alignment="bottom")
-    with c1:
-        capital = st.number_input(
-            "Capital (ARS)",
-            min_value=0.0,
-            value=float(DEFAULT_CAPITAL_ARS),
-            step=1_000_000.0,
-            format="%.0f",
-            key="cartera_pesos_capital",
-        )
-    with c2:
-        calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_pesos_calc")
-
-    # Multiselect: options = tickers base, label = "VIST CEDEAR" (hasta 2do espacio)
     opts = prices.index.tolist()
     label_map = {tk: str(prices.loc[tk, "Label"]) for tk in opts}
 
     selected = st.multiselect(
-        "Tickers",
+        "Tickers (USD)",
         options=opts,
         default=opts[:6] if len(opts) >= 6 else opts,
         format_func=lambda tk: label_map.get(tk, tk),
-        key="cartera_pesos_selected",
+        key="cartera_usd_selected",
     )
 
     if not selected:
@@ -535,7 +526,7 @@ def render(back_to_home=None):
             "Ticker": st.column_config.TextColumn("Ticker", disabled=True),
             "%": st.column_config.NumberColumn("%", min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
         },
-        key="cartera_pesos_pct_editor",
+        key="cartera_usd_pct_editor",
     )
 
     pct_map = {r["Ticker"]: float(r["%"]) for _, r in edited.iterrows()}
@@ -544,11 +535,11 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    df = build_simple_portfolio_ars(
+    df = build_simple_portfolio_usd(
         prices=prices,
         selected=selected,
         pct_map=pct_map,
-        capital_ars=float(capital),
+        capital_usd=float(capital),
     )
 
     if df.empty:
@@ -556,29 +547,13 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # KPI Capital (formato AR)
-    st.markdown(
-        f"""
-<div class="card" style="margin: 0 0 12px 0;">
-  <div class="kpi_lbl">Capital (ARS)</div>
-  <div class="kpi_val">{fmt_ar_money(float(capital))}</div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
     st.markdown("### Detalle de cartera")
 
-    # Formato UI como strings AR para evitar confusión . y ,
-    show = df.copy()
-
-    # eliminar columna interna para UI
-    show = show.drop(columns=["__ticker_base"], errors="ignore")
-
-    show["%"] = pd.to_numeric(show["%"], errors="coerce").apply(lambda v: fmt_ar_pct(v))
-    show["$"] = pd.to_numeric(show["$"], errors="coerce").apply(lambda v: fmt_ar_money(v))
-    show["Precio"] = pd.to_numeric(show["Precio"], errors="coerce").apply(lambda v: fmt_ar_2dec(v))
-    show["VN"] = pd.to_numeric(show["VN"], errors="coerce").apply(lambda v: fmt_ar_int(v))  # ✅ entero
+    show = df.copy().drop(columns=["__ticker_base"], errors="ignore")
+    show["%"] = pd.to_numeric(show["%"], errors="coerce").apply(fmt_ar_pct)
+    show["US$"] = pd.to_numeric(show["US$"], errors="coerce").apply(fmt_usd_money)
+    show["Precio"] = pd.to_numeric(show["Precio"], errors="coerce").apply(fmt_ar_2dec)
+    show["VN"] = pd.to_numeric(show["VN"], errors="coerce").apply(fmt_ar_int)
 
     h_tbl = _height_for_rows(len(show), max_h=820)
 
@@ -591,47 +566,43 @@ def render(back_to_home=None):
             "Ticker": st.column_config.TextColumn("Ticker"),
             "Tipo": st.column_config.TextColumn("Tipo"),
             "%": st.column_config.TextColumn("%"),
-            "$": st.column_config.TextColumn("$"),
+            "US$": st.column_config.TextColumn("US$"),
             "Precio": st.column_config.TextColumn("Precio"),
             "VN": st.column_config.TextColumn("VN"),
         },
     )
 
-    # =========================
-    # Descargas: Excel + PDF
-    # =========================
     cxl, cpdf = st.columns(2)
     with cxl:
         try:
             xlsx = build_excel_bytes(df)
-            fname = f"NEIX_Cartera_Pesos_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+            fname = f"NEIX_Cartera_USD_{mode}_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
             st.download_button(
                 "Descargar Excel",
                 data=xlsx,
                 file_name=fname,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                key="cartera_pesos_xlsx",
+                key="cartera_usd_xlsx",
             )
         except Exception as e:
             st.warning(f"No pude generar el Excel: {e}")
 
     with cpdf:
         try:
-            # Para PDF usamos df original (num) para formatear adentro
-            pdf = build_cartera_pesos_pdf_bytes(
-                capital_ars=float(capital),
+            pdf = build_cartera_usd_pdf_bytes(
+                capital_usd=float(capital),
                 table_df=df.drop(columns=["__ticker_base"], errors="ignore"),
                 logo_path=LOGO_PATH,
             )
-            fname = f"NEIX_Cartera_Pesos_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+            fname = f"NEIX_Cartera_USD_{mode}_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
             st.download_button(
                 "Descargar PDF",
                 data=pdf,
                 file_name=fname,
                 mime="application/pdf",
                 use_container_width=True,
-                key="cartera_pesos_pdf",
+                key="cartera_usd_pdf",
             )
         except Exception as e:
             st.warning(f"No pude generar el PDF: {e}")
