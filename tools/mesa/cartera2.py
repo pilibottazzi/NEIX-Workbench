@@ -25,6 +25,9 @@ from reportlab.lib.styles import getSampleStyleSheet
 DEFAULT_CAPITAL_ARS = 100_000_000.0
 LOGO_PATH = os.path.join("data", "Neix_logo.png")  # tu logo en /data
 
+# Tipos que cotizan "por 100 V/N"
+PRICE_PER_100_VN_TYPES = {"BONO", "ON"}
+
 
 # =========================
 # Helpers
@@ -59,7 +62,7 @@ def base_ticker(symbol_raw: str) -> str:
 def short_label(symbol_raw: str) -> str:
     """
     Display corto:
-      - si tiene >= 2 tokens => "TOKEN1 TOKEN2" (ej: "VIST CEDEAR ... " -> "VIST CEDEAR")
+      - si tiene >= 2 tokens => "TOKEN1 TOKEN2"
       - si no => "TOKEN1"
     """
     s = (symbol_raw or "").strip().upper()
@@ -67,6 +70,21 @@ def short_label(symbol_raw: str) -> str:
     if len(toks) >= 2:
         return f"{toks[0]} {toks[1]}"
     return toks[0] if toks else ""
+
+
+def display_label(symbol_raw: str) -> str:
+    """
+    Display final:
+      - Si el 2do token es "CEDEAR", lo sacamos: "VIST CEDEAR ..." -> "VIST"
+      - Si no, usamos el short_label estándar: "AL30D CI" -> "AL30D CI"
+    """
+    s = (symbol_raw or "").strip().upper()
+    toks = s.split()
+    if not toks:
+        return ""
+    if len(toks) >= 2 and toks[1] == "CEDEAR":
+        return toks[0]
+    return short_label(symbol_raw)
 
 
 def fmt_ar_int(x: float) -> str:
@@ -99,7 +117,6 @@ def fmt_ar_pct(x: float) -> str:
         v = float(x)
     except Exception:
         return ""
-    # 2 decimales, reemplazar punto por coma
     return f"{v:.2f}".replace(".", ",") + "%"
 
 
@@ -116,6 +133,21 @@ def fmt_ar_2dec(x: float) -> str:
     s = s.replace(".", ",")    # 12X345,67
     s = s.replace("X", ".")    # 12.345,67
     return s
+
+
+def unit_price_for_vn(*, tipo: str, precio_cotizado: float) -> float:
+    """
+    Precio unitario para calcular VN:
+      - Bonos/ON: cotizan cada 100 V/N => unit = precio/100
+      - Acciones/CEDEAR: unit = precio
+    """
+    t = (tipo or "").strip().upper()
+    px = float(precio_cotizado) if np.isfinite(precio_cotizado) else np.nan
+    if not np.isfinite(px) or px <= 0:
+        return np.nan
+    if t in PRICE_PER_100_VN_TYPES:
+        return px / 100.0
+    return px
 
 
 # =========================
@@ -143,7 +175,7 @@ def _fetch_iol_table(url: str) -> pd.DataFrame:
     out = pd.DataFrame()
     out["SymbolRaw"] = t["Símbolo"].astype(str).str.strip().str.upper()
     out["Ticker"] = out["SymbolRaw"].apply(base_ticker)
-    out["Label"] = out["SymbolRaw"].apply(short_label)
+    out["Label"] = out["SymbolRaw"].apply(display_label)  # ✅ sin "CEDEAR" al final
 
     out["Precio"] = t["Último Operado"].apply(parse_ar_number)
 
@@ -211,7 +243,8 @@ class SimpleRowARS:
     tipo: str
     pct: float
     ars: float
-    precio: float
+    precio_cotizado: float
+    precio_unitario: float
     vn: float
 
 
@@ -241,7 +274,12 @@ def build_simple_portfolio_ars(
         label = str(prices.loc[t, "Label"]) if "Label" in prices.columns else t
 
         ars_amt = float(capital_ars) * (float(pct) / 100.0)
-        vn = (ars_amt / px) if px > 0 else np.nan
+
+        # ✅ precio unitario según tipo
+        px_unit = unit_price_for_vn(tipo=tipo, precio_cotizado=px)
+
+        # ✅ VN calculado con el precio unitario
+        vn = (ars_amt / px_unit) if (np.isfinite(px_unit) and px_unit > 0) else np.nan
 
         rows.append(
             SimpleRowARS(
@@ -250,7 +288,8 @@ def build_simple_portfolio_ars(
                 tipo=tipo,
                 pct=float(pct),
                 ars=float(ars_amt),
-                precio=float(px),
+                precio_cotizado=float(px),
+                precio_unitario=float(px_unit) if np.isfinite(px_unit) else np.nan,
                 vn=float(vn) if np.isfinite(vn) else np.nan,
             )
         )
@@ -260,13 +299,13 @@ def build_simple_portfolio_ars(
 
     return pd.DataFrame(
         {
-            "Ticker": [r.label for r in rows],  # ✅ display corto (ej: "VIST CEDEAR")
+            "Ticker": [r.label for r in rows],         # ✅ display (sin "CEDEAR")
             "Tipo": [r.tipo for r in rows],
             "%": [r.pct for r in rows],
             "$": [r.ars for r in rows],
-            "Precio": [r.precio for r in rows],
+            "Precio": [r.precio_cotizado for r in rows],  # precio como lo ves cotizar
             "VN": [r.vn for r in rows],
-            "__ticker_base": [r.ticker for r in rows],  # interno (para exports si querés)
+            "__ticker_base": [r.ticker for r in rows],     # interno
         }
     )
 
@@ -280,7 +319,7 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
     - Logo
     - Título Cartera (Pesos) + Capital
     - UNA sola tabla ajustada al ancho útil
-    - Sin gráficos
+    - Nota: regla de VN para Bonos/ON
     """
     buff = io.BytesIO()
 
@@ -318,18 +357,17 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
         except Exception:
             pass
 
-    story.append(Paragraph("Cartera recomendada", styles["Heading2"]))
+    story.append(Paragraph("Cartera recomendada (Pesos)", styles["Heading2"]))
     story.append(Paragraph(f"Capital: {fmt_ar_money(capital_ars)}", styles["Normal"]))
     story.append(Spacer(1, 10))
 
     # Preparar tabla (strings AR)
     df = table_df.copy()
 
-    # columnas finales (sin internos)
     cols = ["Ticker", "Tipo", "%", "$", "Precio", "VN"]
     df = df[cols].copy()
 
-    # VN entero, Precio 2 dec, % con coma, $ miles con punto
+    # Formatos
     df["%"] = pd.to_numeric(df["%"], errors="coerce").apply(fmt_ar_pct)
     df["$"] = pd.to_numeric(df["$"], errors="coerce").apply(fmt_ar_money)
     df["Precio"] = pd.to_numeric(df["Precio"], errors="coerce").apply(fmt_ar_2dec)
@@ -337,10 +375,9 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
 
     data = [cols] + df.fillna("").astype(str).values.tolist()
 
-    # Anchos por proporción (evita que se pisen)
     col_widths = [
-        usable_w * 0.20,  # Ticker
-        usable_w * 0.16,  # Tipo
+        usable_w * 0.22,  # Ticker
+        usable_w * 0.14,  # Tipo
         usable_w * 0.10,  # %
         usable_w * 0.20,  # $
         usable_w * 0.18,  # Precio
@@ -363,15 +400,24 @@ def build_cartera_pesos_pdf_bytes(*, capital_ars: float, table_df: pd.DataFrame,
                 ("RIGHTPADDING", (0, 0), (-1, -1), 5),
                 ("TOPPADDING", (0, 0), (-1, -1), 4),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("ALIGN", (2, 1), (2, -1), "RIGHT"),  # %
-                ("ALIGN", (3, 1), (3, -1), "RIGHT"),  # $
-                ("ALIGN", (4, 1), (4, -1), "RIGHT"),  # Precio
-                ("ALIGN", (5, 1), (5, -1), "RIGHT"),  # VN
+                ("ALIGN", (2, 1), (2, -1), "RIGHT"),
+                ("ALIGN", (3, 1), (3, -1), "RIGHT"),
+                ("ALIGN", (4, 1), (4, -1), "RIGHT"),
+                ("ALIGN", (5, 1), (5, -1), "RIGHT"),
             ]
         )
     )
 
     story.append(t)
+    story.append(Spacer(1, 10))
+    story.append(
+        Paragraph(
+            "Nota: Bonos y ON cotizan por cada 100 de V/N (para VN se usa Precio/100). "
+            "Acciones y CEDEARs cotizan por unidad (no se ajusta el precio).",
+            styles["Normal"],
+        )
+    )
+
     doc.build(story)
     pdf = buff.getvalue()
     buff.close()
@@ -385,24 +431,19 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
     out = io.BytesIO()
     df = table_df.copy()
 
-    # export sin columna interna
     if "__ticker_base" in df.columns:
         df = df.drop(columns=["__ticker_base"], errors="ignore")
 
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="cartera_pesos")
-
-        # Formatos (Excel los verá según locale del usuario)
         ws = writer.sheets["cartera_pesos"]
 
-        # Buscar columnas por header
         headers = {cell.value: idx + 1 for idx, cell in enumerate(ws[1])}  # 1-based
         col_pct = headers.get("%")
         col_money = headers.get("$")
         col_price = headers.get("Precio")
         col_vn = headers.get("VN")
 
-        # aplicar formatos desde fila 2
         for r in range(2, ws.max_row + 1):
             if col_pct:
                 ws.cell(r, col_pct).number_format = "0.00"
@@ -413,7 +454,6 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
             if col_vn:
                 ws.cell(r, col_vn).number_format = "#,##0"
 
-        # ancho columnas (prolijo)
         for name, w in [("Ticker", 18), ("Tipo", 12), ("%", 8), ("$", 16), ("Precio", 14), ("VN", 12)]:
             c = headers.get(name)
             if c:
@@ -479,7 +519,6 @@ def render(back_to_home=None):
 
     st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
 
-    # Cache universo
     if refresh or "cartera_pesos_prices" not in st.session_state:
         with st.spinner("Actualizando precios (Pesos)..."):
             st.session_state["cartera_pesos_prices"] = fetch_universe_prices_pesos()
@@ -490,7 +529,6 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Capital + botón
     c1, c2 = st.columns([0.42, 0.58], vertical_alignment="bottom")
     with c1:
         capital = st.number_input(
@@ -504,7 +542,6 @@ def render(back_to_home=None):
     with c2:
         calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_pesos_calc")
 
-    # Multiselect: options = tickers base, label = "VIST CEDEAR" (hasta 2do espacio)
     opts = prices.index.tolist()
     label_map = {tk: str(prices.loc[tk, "Label"]) for tk in opts}
 
@@ -556,19 +593,19 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-
     st.markdown("### Detalle de cartera")
+    st.caption(
+        "Regla de VN: Bonos/ON cotizan por cada 100 de V/N ⇒ para calcular VN se usa Precio/100. "
+        "Acciones/CEDEARs cotizan por unidad ⇒ no se ajusta el precio."
+    )
 
-    # Formato UI como strings AR para evitar confusión . y ,
     show = df.copy()
-
-    # eliminar columna interna para UI
     show = show.drop(columns=["__ticker_base"], errors="ignore")
 
-    show["%"] = pd.to_numeric(show["%"], errors="coerce").apply(lambda v: fmt_ar_pct(v))
-    show["$"] = pd.to_numeric(show["$"], errors="coerce").apply(lambda v: fmt_ar_money(v))
-    show["Precio"] = pd.to_numeric(show["Precio"], errors="coerce").apply(lambda v: fmt_ar_2dec(v))
-    show["VN"] = pd.to_numeric(show["VN"], errors="coerce").apply(lambda v: fmt_ar_int(v))  # ✅ entero
+    show["%"] = pd.to_numeric(show["%"], errors="coerce").apply(fmt_ar_pct)
+    show["$"] = pd.to_numeric(show["$"], errors="coerce").apply(fmt_ar_money)
+    show["Precio"] = pd.to_numeric(show["Precio"], errors="coerce").apply(fmt_ar_2dec)
+    show["VN"] = pd.to_numeric(show["VN"], errors="coerce").apply(lambda v: fmt_ar_int(v))
 
     h_tbl = _height_for_rows(len(show), max_h=820)
 
@@ -587,9 +624,6 @@ def render(back_to_home=None):
         },
     )
 
-    # =========================
-    # Descargas: Excel + PDF
-    # =========================
     cxl, cpdf = st.columns(2)
     with cxl:
         try:
@@ -608,7 +642,6 @@ def render(back_to_home=None):
 
     with cpdf:
         try:
-            # Para PDF usamos df original (num) para formatear adentro
             pdf = build_cartera_pesos_pdf_bytes(
                 capital_ars=float(capital),
                 table_df=df.drop(columns=["__ticker_base"], errors="ignore"),
