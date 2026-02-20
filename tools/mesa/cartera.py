@@ -50,12 +50,14 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "BPOB8": "BPB8D",
     "BPOC7": "BPC7D",
     "BPOD7": "BPD7D",
+
     # Familia BPA / BPB / BPC (si el cashflow viene sin la O)
     "BPA7": "BPA7D",
     "BPA8": "BPA8D",
     "BPB7": "BPB7D",
     "BPB8": "BPB8D",
     "BPC7": "BPC7D",
+
     # =========================
     # Bonos soberanos USD-link
     # =========================
@@ -67,6 +69,7 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "GD35": "GD35D",
     "GD38": "GD38D",
     "GD41": "GD41D",
+
     # =========================
     # Otros / atípicos
     # =========================
@@ -179,10 +182,11 @@ def normalize_law(x: str) -> str:
 
 
 def law_cell_label(norm: str) -> str:
+    # ✅ lo que pediste (texto corto)
     if norm == "ARG":
-        return "ARG (Ley local)"
+        return "Ley local"
     if norm == "NY":
-        return "NY (Ley NY)"
+        return "Ley NY"
     if norm == "NA":
         return "Sin ley"
     return norm
@@ -426,7 +430,6 @@ class AssetRow:
     vn: float
     tir: float
     md: float
-    dur: float
     venc: dt.date | None
     ley: str
     issuer: str
@@ -587,7 +590,6 @@ def build_portfolio_table(
 
         y = calc_tir(cf, px, plazo_dias=plazo)
         md = calc_md(cf, px, plazo_dias=plazo)
-        dur = calc_duration(cf, px, plazo_dias=plazo)
 
         venc = None
         if t in meta.index:
@@ -605,7 +607,6 @@ def build_portfolio_table(
                 vn=float(vn),
                 tir=float(y) if np.isfinite(y) else np.nan,
                 md=float(md) if np.isfinite(md) else np.nan,
-                dur=float(dur) if np.isfinite(dur) else np.nan,
                 venc=venc,
                 ley=str(ley),
                 issuer=str(issuer),
@@ -614,14 +615,13 @@ def build_portfolio_table(
         )
 
     if not assets:
-        return pd.DataFrame(), {"tir": np.nan, "md": np.nan, "dur": np.nan}, pd.DataFrame()
+        return pd.DataFrame(), {"tir": np.nan, "md": np.nan}, pd.DataFrame()
 
     # Resumen ponderado por USD asignado
     wsum = float(np.sum([a.usd for a in assets])) or 1.0
     tir_total = float(np.nansum([a.tir * a.usd for a in assets]) / wsum)
     md_total = float(np.nansum([a.md * a.usd for a in assets]) / wsum)
-    dur_total = float(np.nansum([a.dur * a.usd for a in assets]) / wsum)
-    resumen = {"tir": tir_total, "md": md_total, "dur": dur_total}
+    resumen = {"tir": tir_total, "md": md_total}
 
     df = pd.DataFrame(
         {
@@ -631,8 +631,7 @@ def build_portfolio_table(
             "Precio (USD, VN100)": [a.price for a in assets],
             "VN estimada": [a.vn for a in assets],
             "TIR (%)": [a.tir for a in assets],
-            "MD": [a.md for a in assets],
-            "Duration": [a.dur for a in assets],
+            "MD": [a.md for a in assets],  # ✅ Mod Duration
             "Vencimiento": [a.venc for a in assets],
             "Ley": [law_cell_label(a.ley) for a in assets],
             "Issuer": [a.issuer for a in assets],
@@ -678,95 +677,121 @@ def build_portfolio_table(
 
 
 # =========================
-# PDF helpers (MEJORADOS)
+# PDF helpers (AR formatting)
 # =========================
-def fmt_usd_pdf(x: float) -> str:
-    """$ con miles en formato AR (punto)."""
-    if x is None or (isinstance(x, float) and not np.isfinite(x)):
-        return ""
+def _to_float(x) -> float | None:
     try:
         v = float(x)
+        if not np.isfinite(v):
+            return None
+        return v
     except Exception:
+        return None
+
+
+def fmt_money_pdf(x: float) -> str:
+    """$ con miles AR (.) y sin decimales."""
+    v = _to_float(x)
+    if v is None:
         return ""
     return f"$ {v:,.0f}".replace(",", ".")
 
 
-def fmt_num_pdf(x: float, dec: int = 2) -> str:
-    if x is None or (isinstance(x, float) and not np.isfinite(x)):
+def fmt_ar_number(x: float, dec: int = 2) -> str:
+    """
+    Número AR:
+      - miles con '.'
+      - decimales con ','
+    """
+    v = _to_float(x)
+    if v is None:
         return ""
-    try:
-        v = float(x)
-    except Exception:
-        return ""
-    return f"{v:.{dec}f}"
+    s = f"{v:,.{dec}f}"  # ej 12,345.67 (en_US)
+    # pasar a AR -> 12.345,67
+    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+    return s
 
 
-def fmt_pct_pdf(x: float, dec: int = 2) -> str:
-    if x is None or (isinstance(x, float) and not np.isfinite(x)):
+def fmt_ar_pct(x: float, dec: int = 2) -> str:
+    v = _to_float(x)
+    if v is None:
         return ""
-    try:
-        v = float(x)
-    except Exception:
-        return ""
-    return f"{v:.{dec}f}%"
+    return f"{fmt_ar_number(v, dec)}%"
 
 
 def _format_cartera_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
+    """Tabla lista para PDF (headers cortos + AR)."""
     d = df.copy()
 
+    # ✅ headers cortos
+    d = d.rename(
+        columns={
+            "Precio (USD, VN100)": "Precio",
+            "VN estimada": "VN",
+            "TIR (%)": "TIR",
+        }
+    )
+
+    # ✅ dejar solo MOD duration
+    d = d.drop(columns=["Duration"], errors="ignore")
+
+    # ✅ formateos
     if "USD" in d.columns:
-        d["USD"] = pd.to_numeric(d["USD"], errors="coerce").apply(fmt_usd_pdf)
+        d["USD"] = d["USD"].apply(fmt_money_pdf)
 
-    if "Precio (USD, VN100)" in d.columns:
-        d["Precio (USD, VN100)"] = pd.to_numeric(d["Precio (USD, VN100)"], errors="coerce").apply(
-            lambda v: fmt_num_pdf(v, 2)
-        )
+    if "Precio" in d.columns:
+        d["Precio"] = pd.to_numeric(d["Precio"], errors="coerce").apply(lambda v: fmt_ar_number(v, 2))
 
-    if "VN estimada" in d.columns:
-        d["VN estimada"] = pd.to_numeric(d["VN estimada"], errors="coerce").apply(
-            lambda v: fmt_num_pdf(v, 0)
-        )
+    if "VN" in d.columns:
+        # VN sin decimales y miles con punto
+        d["VN"] = pd.to_numeric(d["VN"], errors="coerce").apply(lambda v: fmt_ar_number(v, 0))
 
-    if "TIR (%)" in d.columns:
-        d["TIR (%)"] = pd.to_numeric(d["TIR (%)"], errors="coerce").apply(lambda v: fmt_pct_pdf(v, 2))
+    if "TIR" in d.columns:
+        d["TIR"] = pd.to_numeric(d["TIR"], errors="coerce").apply(lambda v: fmt_ar_pct(v, 2))
 
     if "MD" in d.columns:
-        d["MD"] = pd.to_numeric(d["MD"], errors="coerce").apply(lambda v: fmt_num_pdf(v, 2))
-
-    if "Duration" in d.columns:
-        d["Duration"] = pd.to_numeric(d["Duration"], errors="coerce").apply(lambda v: fmt_num_pdf(v, 2))
+        d["MD"] = pd.to_numeric(d["MD"], errors="coerce").apply(lambda v: fmt_ar_number(v, 2))
 
     if "Vencimiento" in d.columns:
         d["Vencimiento"] = pd.to_datetime(d["Vencimiento"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
 
     if "%" in d.columns:
-        d["%"] = pd.to_numeric(d["%"], errors="coerce").apply(lambda v: fmt_num_pdf(v, 2))
+        d["%"] = pd.to_numeric(d["%"], errors="coerce").apply(lambda v: fmt_ar_number(v, 2))
 
-    d = d.fillna("")
-    return d
+    # ✅ Ley: “Ley local / Ley NY / Sin ley”
+    if "Ley" in d.columns:
+        d["Ley"] = d["Ley"].astype(str).str.strip()
+        d["Ley"] = d["Ley"].replace(
+            {
+                "ARG (Ley local)": "Ley local",
+                "NY (Ley NY)": "Ley NY",
+                "Sin ley": "Sin ley",
+                "ARG": "Ley local",
+                "NY": "Ley NY",
+                "NA": "Sin ley",
+            }
+        )
+        # fallback por si viene con otras variantes
+        d["Ley"] = d["Ley"].str.replace("ARG", "Ley local", regex=False)
+        d["Ley"] = d["Ley"].str.replace("NY", "Ley NY", regex=False)
+        d["Ley"] = d["Ley"].str.replace("(Ley local)", "Ley local", regex=False)
+
+    return d.fillna("")
 
 
 def _format_flows_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
+    """Flujos: $ AR sin decimales."""
     d = df.copy()
 
-    # si viene con índice (Ticker + Totales), lo convertimos a columna "Ticker"
     if d.index.name is not None or not isinstance(d.index, pd.RangeIndex):
-        d = d.reset_index()
-        if "index" in d.columns:
-            d = d.rename(columns={"index": "Ticker"})
+        d = d.reset_index().rename(columns={"index": "Ticker"})
 
-    # garantizar que exista "Ticker"
-    if "Ticker" not in d.columns:
-        d.insert(0, "Ticker", "")
-
-    # formatear columnas numéricas como US$
     for c in d.columns:
         if c == "Ticker":
             continue
-        d[c] = pd.to_numeric(d[c], errors="coerce").apply(fmt_usd_pdf)
+        d[c] = pd.to_numeric(d[c], errors="coerce").apply(fmt_money_pdf)
 
-    d = d.fillna("")
-    return d
+    return d.fillna("")
 
 
 def _df_to_table_data(df: pd.DataFrame, max_rows: int = 60) -> list[list[str]]:
@@ -780,6 +805,39 @@ def _df_to_table_data(df: pd.DataFrame, max_rows: int = 60) -> list[list[str]]:
     return data
 
 
+def _colwidths_by_name(cols: list[str], usable_w: float) -> list[float]:
+    """Anchos inteligentes para que no quede apretado."""
+    weights = []
+    for c in cols:
+        c = str(c)
+
+        if c == "Ticker":
+            weights.append(1.15)
+        elif c == "%":
+            weights.append(0.70)
+        elif c == "USD":
+            weights.append(1.00)
+        elif c == "Precio":
+            weights.append(0.95)
+        elif c == "VN":
+            weights.append(0.90)
+        elif c == "TIR":
+            weights.append(0.85)
+        elif c == "MD":
+            weights.append(0.75)
+        elif "Venc" in c:
+            weights.append(1.00)
+        elif c == "Ley":
+            weights.append(0.95)
+        elif c == "Issuer":
+            weights.append(1.00)
+        else:
+            weights.append(0.95)
+
+    s = sum(weights) or 1.0
+    return [usable_w * (w / s) for w in weights]
+
+
 def build_cartera_pdf_bytes(
     *,
     capital_usd: float,
@@ -790,13 +848,12 @@ def build_cartera_pdf_bytes(
 ) -> bytes:
     """
     PDF minimal/pro:
-    - Solo logo (sin título ni "Generado:")
-    - Moneda USD como US$
-    - KPI + tablas al mismo ancho
+    - Solo logo (sin título ni "Generado")
+    - AR formatting (miles . / decimales ,)
+    - Sin Duration común (solo MD)
     """
     buff = io.BytesIO()
 
-    # Márgenes (definen el ancho útil)
     left = right = 1.3 * cm
     top = bottom = 1.2 * cm
     page_w, _page_h = A4
@@ -812,11 +869,9 @@ def build_cartera_pdf_bytes(
     )
 
     styles = getSampleStyleSheet()
-    story: list = []
+    story = []
 
-    # -------------------------
-    # Logo centrado (sin textos)
-    # -------------------------
+    # Logo centrado
     if logo_path and os.path.exists(logo_path):
         try:
             logo = RLImage(logo_path, width=6.2 * cm, height=1.6 * cm)
@@ -835,15 +890,13 @@ def build_cartera_pdf_bytes(
         except Exception:
             pass
 
-    # -------------------------
-    # KPI (ancho completo)
-    # -------------------------
+    # KPI (sin Duration común)
     kpi_data = [
-        ["Capital (USD)", fmt_usd_pdf(float(capital_usd))],
-        ["TIR total (pond.)", fmt_pct_pdf(float(resumen.get("tir", np.nan)), 2)],
-        ["MD total (pond.)", fmt_num_pdf(float(resumen.get("md", np.nan)), 2)],
-        ["Duration total (pond.)", fmt_num_pdf(float(resumen.get("dur", np.nan)), 2)],
+        ["Capital (USD)", fmt_money_pdf(float(capital_usd))],
+        ["TIR total (pond.)", fmt_ar_pct(float(resumen.get("tir", np.nan)), 2)],
+        ["Mod. Duration (pond.)", fmt_ar_number(float(resumen.get("md", np.nan)), 2)],
     ]
+
     t_kpi = Table(kpi_data, colWidths=[usable_w * 0.42, usable_w * 0.58])
     t_kpi.setStyle(
         TableStyle(
@@ -866,16 +919,14 @@ def build_cartera_pdf_bytes(
     story.append(t_kpi)
     story.append(Spacer(1, 18))
 
-    # -------------------------
     # Detalle de cartera
-    # -------------------------
     story.append(Paragraph("Detalle de cartera", styles["Heading2"]))
 
     cpdf = _format_cartera_for_pdf(cartera_show)
     cartera_data = _df_to_table_data(cpdf, max_rows=60)
 
-    ncols1 = len(cartera_data[0])
-    col_w1 = [usable_w / max(1, ncols1)] * ncols1
+    cols1 = cartera_data[0]
+    col_w1 = _colwidths_by_name(cols1, usable_w)
     t1 = Table(cartera_data, repeatRows=1, colWidths=col_w1)
     t1.setStyle(
         TableStyle(
@@ -887,19 +938,21 @@ def build_cartera_pdf_bytes(
                 ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
                 ("BOX", (0, 0), (-1, -1), 0.6, colors.lightgrey),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("ALIGN", (0, 0), (0, -1), "LEFT"),
+                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, 0), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+                ("TOPPADDING", (0, 1), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 5),
             ]
         )
     )
     story.append(t1)
     story.append(Spacer(1, 18))
 
-    # -------------------------
-    # Flujo de fondos
-    # -------------------------
+    # Flujos
     story.append(Paragraph("Flujo de fondos", styles["Heading2"]))
 
     if flows_show is None or flows_show.empty:
@@ -908,8 +961,8 @@ def build_cartera_pdf_bytes(
         fpdf = _format_flows_for_pdf(flows_show)
         flows_data = _df_to_table_data(fpdf, max_rows=80)
 
-        ncols2 = len(flows_data[0])
-        col_w2 = [usable_w / max(1, ncols2)] * ncols2
+        cols2 = flows_data[0]
+        col_w2 = _colwidths_by_name(cols2, usable_w)
         t2 = Table(flows_data, repeatRows=1, colWidths=col_w2)
         t2.setStyle(
             TableStyle(
@@ -921,10 +974,14 @@ def build_cartera_pdf_bytes(
                     ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
                     ("BOX", (0, 0), (-1, -1), 0.6, colors.lightgrey),
                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("ALIGN", (0, 0), (0, -1), "LEFT"),
+                    ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                    ("TOPPADDING", (0, 0), (-1, 0), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+                    ("TOPPADDING", (0, 1), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 1), (-1, -1), 5),
                 ]
             )
         )
@@ -946,39 +1003,16 @@ def _ui_css():
   .wrap{ max-width: 1180px; margin: 0 auto; }
   .block-container { padding-top: 1.1rem; padding-bottom: 1.8rem; }
 
-  /* Títulos con aire (scoped a wrap) */
-  .wrap h2 { font-size: 1.65rem !important; margin: 0.20rem 0 0.55rem !important; }
-  .wrap h3 { font-size: 1.15rem !important; margin: 0.85rem 0 0.35rem !important; }
-  .wrap p  { margin: 0.15rem 0 0.55rem !important; }
-
   .title{ font-size: 28px; font-weight: 850; letter-spacing: .02em; color:#111827; margin: 0; }
   .sub{ color: rgba(17,24,39,.62); font-size: 13px; margin-top: 4px; }
-
   .soft-hr{ height:1px; background:rgba(17,24,39,.10); margin: 14px 0 18px; }
 
-  /* Chips */
-  div[data-baseweb="tag"]{
-    background: rgba(17,24,39,.06) !important;
-    color:#111827 !important;
-    border: 1px solid rgba(17,24,39,.10) !important;
-    border-radius: 999px !important;
-    font-weight: 650 !important;
-  }
-
-  /* Inputs / botones */
-  label { margin-bottom: 0.25rem !important; }
-  .stSelectbox div[data-baseweb="select"]{ border-radius: 12px; }
-  .stMultiSelect div[data-baseweb="select"]{ border-radius: 12px; }
-  .stButton > button { border-radius: 14px; padding: 0.60rem 1.0rem; }
-
-  /* Dataframes */
   div[data-testid="stDataFrame"] {
     border-radius: 14px;
     overflow: hidden;
     border: 1px solid rgba(17,24,39,.10);
   }
 
-  /* KPI cards */
   .kpi{
     border: 1px solid rgba(17,24,39,.10);
     border-radius: 16px;
@@ -1048,9 +1082,7 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # =========================
     # Selección
-    # =========================
     st.markdown("### Selección de activos")
     opts = universe["Ticker"].tolist()
 
@@ -1078,9 +1110,7 @@ def render(back_to_home=None):
 
     _spacer(6)
 
-    # =========================
     # Asignación
-    # =========================
     st.markdown("### Asignación por activo")
     st.caption("Editá la columna %. Ideal: que sume 100% (si no, escala automáticamente).")
 
@@ -1113,9 +1143,7 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # =========================
     # Calcular cartera
-    # =========================
     cartera_df, resumen, flows_pivot = build_portfolio_table(
         df_cf=df_cf,
         prices=prices,
@@ -1130,9 +1158,9 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # KPIs
-    st.markdown("### NEIX · Cartera Comercial")
-    k1, k2, k3, k4 = st.columns(4)
+    # KPIs (sin Duration común)
+    st.markdown("### Resumen")
+    k1, k2, k3 = st.columns(3)
     with k1:
         st.markdown(
             f"""
@@ -1157,18 +1185,8 @@ def render(back_to_home=None):
         st.markdown(
             f"""
 <div class="kpi">
-  <div class="lbl">MD total (pond.)</div>
+  <div class="lbl">Mod. Duration (pond.)</div>
   <div class="val">{fmt_num_2(float(resumen["md"]))}</div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-    with k4:
-        st.markdown(
-            f"""
-<div class="kpi">
-  <div class="lbl">Duration total (pond.)</div>
-  <div class="val">{fmt_num_2(float(resumen["dur"]))}</div>
 </div>
 """,
             unsafe_allow_html=True,
@@ -1176,7 +1194,7 @@ def render(back_to_home=None):
 
     _spacer(14)
 
-    # Tabla cartera (show)
+    # Tabla cartera (UI)
     show = cartera_df.copy()
     show["%"] = pd.to_numeric(show["%"], errors="coerce").round(2)
     show["USD"] = pd.to_numeric(show["USD"], errors="coerce").round(0)
@@ -1184,8 +1202,10 @@ def render(back_to_home=None):
     show["VN estimada"] = pd.to_numeric(show["VN estimada"], errors="coerce").round(0)
     show["TIR (%)"] = pd.to_numeric(show["TIR (%)"], errors="coerce").round(2)
     show["MD"] = pd.to_numeric(show["MD"], errors="coerce").round(2)
-    show["Duration"] = pd.to_numeric(show["Duration"], errors="coerce").round(2)
     show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
+
+    # ✅ sacar Duration si quedó por algo
+    show = show.drop(columns=["Duration"], errors="ignore")
 
     h_tbl = _height_for_rows(len(show), row_h=34, header=42, pad=12, max_h=780)
 
@@ -1196,12 +1216,11 @@ def render(back_to_home=None):
         height=h_tbl,
         column_config={
             "%": st.column_config.NumberColumn("%", format="%.2f"),
-            "USD": st.column_config.NumberColumn("USD", format="US$ %.0f"),
+            "USD": st.column_config.NumberColumn("USD", format="$ %.0f"),
             "Precio (USD, VN100)": st.column_config.NumberColumn("Precio (USD, VN100)", format="%.2f"),
             "VN estimada": st.column_config.NumberColumn("VN estimada", format="%.0f"),
             "TIR (%)": st.column_config.NumberColumn("TIR (%)", format="%.2f"),
-            "MD": st.column_config.NumberColumn("MD", format="%.2f"),
-            "Duration": st.column_config.NumberColumn("Duration", format="%.2f"),
+            "MD": st.column_config.NumberColumn("MD (Mod. Dur.)", format="%.2f"),
             "Vencimiento": st.column_config.DateColumn("Vencimiento", format="DD/MM/YYYY"),
         },
     )
@@ -1218,7 +1237,6 @@ def render(back_to_home=None):
 
     flows = flows_pivot.copy()
 
-    # Renombrar columnas fecha a "Feb-2026" etc.
     new_cols = []
     for c in flows.columns:
         if isinstance(c, (pd.Timestamp, dt.datetime)):
@@ -1234,7 +1252,7 @@ def render(back_to_home=None):
         flows,
         use_container_width=True,
         height=h_flows,
-        column_config={col: st.column_config.NumberColumn(col, format="US$ %.0f") for col in flows.columns},
+        column_config={col: st.column_config.NumberColumn(col, format="$ %.0f") for col in flows.columns},
     )
 
     _spacer(14)
@@ -1243,10 +1261,16 @@ def render(back_to_home=None):
     # Descargar PDF (con logo)
     # =========================
     try:
+        # ✅ versión para PDF con columnas “limpias”
+        pdf_cartera = show.drop(columns=["Ticker precio"], errors="ignore").copy()
+
+        # (si querés, podés ocultar Issuer en el PDF: descomentá)
+        # pdf_cartera = pdf_cartera.drop(columns=["Issuer"], errors="ignore")
+
         pdf_bytes = build_cartera_pdf_bytes(
             capital_usd=float(capital),
             resumen=resumen,
-            cartera_show=show.drop(columns=["Ticker precio"], errors="ignore"),
+            cartera_show=pdf_cartera,
             flows_show=flows,
             logo_path=LOGO_PATH,
         )
