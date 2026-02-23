@@ -5,6 +5,7 @@ import os
 import io
 import datetime as dt
 from dataclasses import dataclass
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -17,22 +18,14 @@ from scipy import optimize
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import cm
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    Table,
-    TableStyle,
-    Image as RLImage,
-)
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet
-
 
 # =========================
 # Config
 # =========================
 CASHFLOW_PATH = os.path.join("data", "cashflows_completos.xlsx")
-LOGO_PATH = os.path.join("data", "Neix_logo.png")  # ✅ tu logo en /data
+LOGO_PATH = os.path.join("data", "Neix_logo.png")  # tu logo en /data
 
 # TIR fija (no UI)
 TIR_MIN = -15.0
@@ -41,26 +34,24 @@ TIR_MAX = 20.0
 # Precios USD MEP
 PRICE_SUFFIX = "D"
 
+# IOL
+IOL_URL_BONOS = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
+IOL_URL_ONS = "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"
+
 # Excepciones PESOS -> USD (cuando no es solo + "D")
-PESOS_TO_USD_OVERRIDES: dict[str, str] = {
-    # =========================
+PESOS_TO_USD_OVERRIDES: Dict[str, str] = {
     # Provincia de Bs. As.
-    # =========================
     "BPOB7": "BPB7D",
     "BPOB8": "BPB8D",
     "BPOC7": "BPC7D",
     "BPOD7": "BPD7D",
-
     # Familia BPA / BPB / BPC (si el cashflow viene sin la O)
     "BPA7": "BPA7D",
     "BPA8": "BPA8D",
     "BPB7": "BPB7D",
     "BPB8": "BPB8D",
     "BPC7": "BPC7D",
-
-    # =========================
     # Bonos soberanos USD-link
-    # =========================
     "AL30": "AL30D",
     "AL35": "AL35D",
     "AE38": "AE38D",
@@ -69,10 +60,7 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
     "GD35": "GD35D",
     "GD38": "GD38D",
     "GD41": "GD41D",
-
-    # =========================
-    # Otros / atípicos
-    # =========================
+    # Otros
     "BPY26": "BPY6D",
 }
 
@@ -81,11 +69,10 @@ PESOS_TO_USD_OVERRIDES: dict[str, str] = {
 # Utils parse num AR
 # =========================
 def parse_ar_number(x) -> float:
-    """
-    Convierte:
-      89.190,00 -> 89190.00
-      22.733.580,97 -> 22733580.97
-      6323 -> 6323.0
+    """Convierte strings estilo AR a float:
+    89.190,00 -> 89190.00
+    22.733.580,97 -> 22733580.97
+    6323 -> 6323.0
     """
     if x is None:
         return np.nan
@@ -117,7 +104,6 @@ def usd_fix_if_needed(ticker: str, raw_last: str, value: float) -> float:
 
     if not t.endswith("D"):
         return value
-
     if ("," in raw) or ("." in raw):
         return value
 
@@ -127,7 +113,7 @@ def usd_fix_if_needed(ticker: str, raw_last: str, value: float) -> float:
 # =========================
 # XNPV / XIRR
 # =========================
-def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
+def xnpv(rate: float, cashflows: List[Tuple[dt.datetime, float]]) -> float:
     chron = sorted(cashflows, key=lambda x: x[0])
     t0 = chron[0][0]
     if rate <= -0.999999:
@@ -140,7 +126,8 @@ def xnpv(rate: float, cashflows: list[tuple[dt.datetime, float]]) -> float:
     return out
 
 
-def xirr(cashflows: list[tuple[dt.datetime, float]], guess: float = 0.10) -> float:
+def xirr(cashflows: List[Tuple[dt.datetime, float]], guess: float = 0.10) -> float:
+    """Devuelve % (ej 12.34)"""
     try:
         r = optimize.newton(lambda rr: xnpv(rr, cashflows), guess, maxiter=200)
         return float(r) * 100.0
@@ -182,7 +169,6 @@ def normalize_law(x: str) -> str:
 
 
 def law_cell_label(norm: str) -> str:
-    # ✅ texto corto
     if norm == "ARG":
         return "Ley local"
     if norm == "NY":
@@ -258,8 +244,8 @@ def load_cashflows(path: str) -> pd.DataFrame:
     return df
 
 
-def build_cashflow_dict(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    out: dict[str, pd.DataFrame] = {}
+def build_cashflow_dict(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    out: Dict[str, pd.DataFrame] = {}
     for k, g in df.groupby("species", sort=False):
         out[str(k)] = g[["date", "flujo_total"]].copy().sort_values("date")
     return out
@@ -280,12 +266,21 @@ def build_species_meta(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================
-# Market prices (Plan B: bonos + ONs)
+# Market prices (IOL)
 # =========================
+def _select_iol_table(tables: List[pd.DataFrame]) -> pd.DataFrame | None:
+    """IOL a veces no deja la tabla target en tables[0]. Buscamos la primera que tenga columnas clave."""
+    if not tables:
+        return None
+    for tb in tables:
+        cols = {str(c).strip() for c in tb.columns}
+        if ("Símbolo" in cols) and ("Último Operado" in cols):
+            return tb
+    return None
+
+
 def _fetch_prices_from_url(url: str) -> pd.DataFrame:
-    """
-    Lee una tabla de IOL y devuelve un DF con index=TICKER y cols: Precio, Volumen.
-    """
+    """Devuelve DF index=TICKER con cols: Precio, Volumen."""
     try:
         tables = pd.read_html(url)
     except ImportError as e:
@@ -295,12 +290,11 @@ def _fetch_prices_from_url(url: str) -> pd.DataFrame:
     except Exception as e:
         raise RuntimeError(f"No pude leer la tabla de precios. Error: {e}") from e
 
-    if not tables:
+    t = _select_iol_table(tables)
+    if t is None:
         return pd.DataFrame()
 
-    t = tables[0]
     cols = {str(c).strip() for c in t.columns}
-
     if "Símbolo" not in cols or "Último Operado" not in cols:
         return pd.DataFrame()
 
@@ -327,17 +321,9 @@ def _fetch_prices_from_url(url: str) -> pd.DataFrame:
 
 
 def fetch_market_prices() -> pd.DataFrame:
-    """
-    Une precios de BONOS + ONs en un solo DF.
-    Output:
-      index = Ticker (uppercase)
-      cols  = Precio, Volumen
-    """
-    url_bonos = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
-    url_ons = "https://iol.invertironline.com/mercado/cotizaciones/argentina/obligaciones%20negociables"
-
-    bonos = _fetch_prices_from_url(url_bonos)
-    ons = _fetch_prices_from_url(url_ons)
+    """Une precios de BONOS + ONs."""
+    bonos = _fetch_prices_from_url(IOL_URL_BONOS)
+    ons = _fetch_prices_from_url(IOL_URL_ONS)
 
     if bonos.empty and ons.empty:
         return pd.DataFrame()
@@ -357,7 +343,7 @@ def resolve_usd_ticker(species: str) -> str:
     return f"{sp}{PRICE_SUFFIX}"
 
 
-def pick_price_usd(prices: pd.DataFrame, species: str) -> tuple[float, float, str]:
+def pick_price_usd(prices: pd.DataFrame, species: str) -> Tuple[float, float, str]:
     usd_ticker = resolve_usd_ticker(species)
     if usd_ticker in prices.index:
         px = float(prices.loc[usd_ticker, "Precio"])
@@ -402,6 +388,9 @@ class AssetRow:
     px_ticker: str
 
 
+# =========================
+# Formatting helpers (UI)
+# =========================
 def fmt_money_int(x: float) -> str:
     if not np.isfinite(x):
         return ""
@@ -420,20 +409,27 @@ def fmt_pct_2(x: float) -> str:
     return f"{x:.2f}%"
 
 
+def _height_for_rows(n: int, row_h: int = 34, header: int = 42, pad: int = 18, max_h: int = 900) -> int:
+    n = int(max(0, n))
+    h = header + pad + row_h * max(1, n + 1)
+    return int(min(max_h, h))
+
+
+def _spacer(px: int = 14):
+    st.markdown(f'<div style="height:{int(px)}px"></div>', unsafe_allow_html=True)
+
+
 # =========================
-# Universe elegible (no se muestra, solo para options)
+# Universe elegible (solo para options)
 # =========================
 def build_eligible_universe(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int = 1) -> pd.DataFrame:
-    """
-    Universe elegible:
-      - Tiene precio USD
-      - Tiene flujos futuros
-      - TIR dentro de rango fijo
-    """
+    """Universe elegible: precio USD + flujos futuros + TIR en rango."""
     cashflows = build_cashflow_dict(df_cf)
     meta = build_species_meta(df_cf).set_index("species")
 
     rows = []
+    settlement = _settlement(plazo)
+
     for sp in meta.index:
         issuer = meta.loc[sp, "issuer_norm"]
 
@@ -448,7 +444,7 @@ def build_eligible_universe(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: in
                 vol = float(prices.loc[tk_on, "Volumen"])
                 px_ticker = tk_on
 
-        # 2) fallback general: ticker -> USD
+        # 2) fallback general
         if not np.isfinite(px) or px <= 0:
             px, vol, px_ticker = pick_price_usd(prices, sp)
 
@@ -459,15 +455,12 @@ def build_eligible_universe(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: in
         if cf is None or cf.empty:
             continue
 
-        settlement = _settlement(plazo)
         fut = _future_cashflows(cf, settlement)
         if fut.empty:
             continue
 
         y = calc_tir(cf, px, plazo_dias=plazo)
-        if not np.isfinite(y):
-            continue
-        if not (TIR_MIN <= y <= TIR_MAX):
+        if not np.isfinite(y) or not (TIR_MIN <= y <= TIR_MAX):
             continue
 
         rows.append(
@@ -496,14 +489,22 @@ def build_eligible_universe(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: in
 # =========================
 # Construcción cartera + flujos
 # =========================
+def _normalize_pct(selected: List[str], pct_map: Dict[str, float]) -> np.ndarray:
+    pcts = np.array([max(0.0, float(pct_map.get(t, 0.0))) for t in selected], dtype=float)
+    s = float(np.sum(pcts))
+    if s <= 0:
+        return np.zeros_like(pcts)
+    return pcts / s * 100.0
+
+
 def build_portfolio_table(
     df_cf: pd.DataFrame,
     prices: pd.DataFrame,
-    selected: list[str],
-    pct_map: dict[str, float],
+    selected: List[str],
+    pct_map: Dict[str, float],
     capital_usd: float,
     plazo: int = 1,
-) -> tuple[pd.DataFrame, dict[str, float], pd.DataFrame]:
+) -> Tuple[pd.DataFrame, Dict[str, float], pd.DataFrame]:
     df_cf = df_cf.copy()
     df_cf["species"] = df_cf["species"].astype(str).str.upper().str.strip()
     selected = [str(x).upper().strip() for x in selected if str(x).strip()]
@@ -511,15 +512,18 @@ def build_portfolio_table(
     cashflows = build_cashflow_dict(df_cf)
     meta = build_species_meta(df_cf).set_index("species")
 
-    # normalizar % (si no suma 100, escala)
-    pcts = np.array([max(0.0, float(pct_map.get(t, 0.0))) for t in selected], dtype=float)
-    s = float(np.sum(pcts))
-    if s <= 0:
-        pcts = np.zeros_like(pcts)
-    else:
-        pcts = pcts / s * 100.0
+    pcts = _normalize_pct(selected, pct_map)
 
-    assets: list[AssetRow] = []
+    # cache simple de TIR por (ticker, px) dentro del cálculo (evita recalcular)
+    tir_cache: Dict[str, float] = {}
+
+    def get_tir(ticker: str, cf: pd.DataFrame, px: float) -> float:
+        k = f"{ticker}:{px:.6f}"
+        if k not in tir_cache:
+            tir_cache[k] = calc_tir(cf, px, plazo_dias=plazo)
+        return tir_cache[k]
+
+    assets: List[AssetRow] = []
     for t, pct in zip(selected, pcts):
         if pct <= 0:
             continue
@@ -529,14 +533,14 @@ def build_portfolio_table(
 
         issuer = meta.loc[t, "issuer_norm"] if t in meta.index else "NA"
 
-        # 1) ON corporativa: O -> D (o +D)
+        # 1) ON corporativa
         if t in meta.index and is_corporativo(issuer):
             tk_on = on_usd_ticker_from_species(t)
             if tk_on in prices.index:
                 px = float(prices.loc[tk_on, "Precio"])
                 px_ticker = tk_on
 
-        # 2) fallback general: ticker -> USD
+        # 2) fallback general
         if not np.isfinite(px) or px <= 0:
             px, _, px_ticker = pick_price_usd(prices, t)
 
@@ -547,12 +551,10 @@ def build_portfolio_table(
         if cf is None or cf.empty:
             continue
 
-        usd_amt = capital_usd * (pct / 100.0)
+        usd_amt = float(capital_usd) * (float(pct) / 100.0)
+        vn = usd_amt / (px / 100.0) if px > 0 else np.nan  # VN100
 
-        # VN estimada = USD / (Precio/100) asumiendo precio por VN100
-        vn = usd_amt / (px / 100.0) if px > 0 else np.nan
-
-        y = calc_tir(cf, px, plazo_dias=plazo)
+        y = get_tir(t, cf, px)
 
         venc = None
         if t in meta.index:
@@ -584,7 +586,7 @@ def build_portfolio_table(
     tir_total = float(np.nansum([a.tir * a.usd for a in assets]) / wsum)
     resumen = {"tir": tir_total}
 
-    df = pd.DataFrame(
+    cartera_raw = pd.DataFrame(
         {
             "Ticker": [a.ticker for a in assets],
             "%": [a.pct for a in assets],
@@ -633,7 +635,7 @@ def build_portfolio_table(
         totals_row = pd.DataFrame([flows_pivot.sum(axis=0)], index=["Totales"])
         flows_pivot = pd.concat([flows_pivot, totals_row], axis=0)
 
-    return df, resumen, flows_pivot
+    return cartera_raw, resumen, flows_pivot
 
 
 # =========================
@@ -658,11 +660,7 @@ def fmt_money_pdf(x: float) -> str:
 
 
 def fmt_ar_number(x: float, dec: int = 2) -> str:
-    """
-    Número AR:
-      - miles con '.'
-      - decimales con ','
-    """
+    """Número AR: miles con '.' y decimales con ','"""
     v = _to_float(x)
     if v is None:
         return ""
@@ -679,10 +677,9 @@ def fmt_ar_pct(x: float, dec: int = 2) -> str:
 
 
 def _format_cartera_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
-    """Tabla lista para PDF (headers cortos + AR)."""
+    """Tabla lista para PDF (headers cortos + AR). NO incluye Duration/MD."""
     d = df.copy()
 
-    # headers cortos
     d = d.rename(
         columns={
             "Precio (USD, VN100)": "Precio",
@@ -691,10 +688,9 @@ def _format_cartera_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
         }
     )
 
-    # ✅ asegurar que NO aparezcan Duration ni MD
+    # asegurar no existan columnas no deseadas
     d = d.drop(columns=["Duration", "MD"], errors="ignore")
 
-    # formateos
     if "USD" in d.columns:
         d["USD"] = d["USD"].apply(fmt_money_pdf)
 
@@ -713,22 +709,8 @@ def _format_cartera_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
     if "%" in d.columns:
         d["%"] = pd.to_numeric(d["%"], errors="coerce").apply(lambda v: fmt_ar_number(v, 2))
 
-    # Ley: “Ley local / Ley NY / Sin ley”
     if "Ley" in d.columns:
-        d["Ley"] = d["Ley"].astype(str).str.strip()
-        d["Ley"] = d["Ley"].replace(
-            {
-                "ARG (Ley local)": "Ley local",
-                "NY (Ley NY)": "Ley NY",
-                "Sin ley": "Sin ley",
-                "ARG": "Ley local",
-                "NY": "Ley NY",
-                "NA": "Sin ley",
-            }
-        )
-        d["Ley"] = d["Ley"].str.replace("ARG", "Ley local", regex=False)
-        d["Ley"] = d["Ley"].str.replace("NY", "Ley NY", regex=False)
-        d["Ley"] = d["Ley"].str.replace("(Ley local)", "Ley local", regex=False)
+        d["Ley"] = d["Ley"].astype(str).str.strip().replace({"ARG": "Ley local", "NY": "Ley NY", "NA": "Sin ley"})
 
     return d.fillna("")
 
@@ -748,7 +730,7 @@ def _format_flows_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
     return d.fillna("")
 
 
-def _df_to_table_data(df: pd.DataFrame, max_rows: int = 60) -> list[list[str]]:
+def _df_to_table_data(df: pd.DataFrame, max_rows: int = 60) -> List[List[str]]:
     if df is None or df.empty:
         return [["(sin datos)"]]
     d = df.copy().head(max_rows).fillna("")
@@ -759,12 +741,10 @@ def _df_to_table_data(df: pd.DataFrame, max_rows: int = 60) -> list[list[str]]:
     return data
 
 
-def _colwidths_by_name(cols: list[str], usable_w: float) -> list[float]:
-    """Anchos inteligentes para que no quede apretado."""
+def _colwidths_by_name(cols: List[str], usable_w: float) -> List[float]:
     weights = []
     for c in cols:
         c = str(c)
-
         if c == "Ticker":
             weights.append(1.15)
         elif c == "%":
@@ -793,17 +773,12 @@ def _colwidths_by_name(cols: list[str], usable_w: float) -> list[float]:
 def build_cartera_pdf_bytes(
     *,
     capital_usd: float,
-    resumen: dict,
+    resumen: Dict,
     cartera_show: pd.DataFrame,
     flows_show: pd.DataFrame,
     logo_path: str | None = None,
 ) -> bytes:
-    """
-    PDF minimal/pro:
-    - Logo
-    - KPIs: Capital + TIR (NO Duration / NO MD)
-    - Tabla cartera sin Duration / sin MD
-    """
+    """PDF minimal/pro: KPI Capital + TIR. (sin Duration / sin MD)"""
     buff = io.BytesIO()
 
     left = right = 1.3 * cm
@@ -823,7 +798,7 @@ def build_cartera_pdf_bytes(
     styles = getSampleStyleSheet()
     story = []
 
-    # Logo centrado
+    # Logo
     if logo_path and os.path.exists(logo_path):
         try:
             logo = RLImage(logo_path, width=6.2 * cm, height=1.6 * cm)
@@ -842,12 +817,11 @@ def build_cartera_pdf_bytes(
         except Exception:
             pass
 
-    # KPI (sin Duration / sin MD)
+    # KPI
     kpi_data = [
         ["Capital (USD)", fmt_money_pdf(float(capital_usd))],
         ["TIR total (pond.)", fmt_ar_pct(float(resumen.get("tir", np.nan)), 2)],
     ]
-
     t_kpi = Table(kpi_data, colWidths=[usable_w * 0.42, usable_w * 0.58])
     t_kpi.setStyle(
         TableStyle(
@@ -870,9 +844,8 @@ def build_cartera_pdf_bytes(
     story.append(t_kpi)
     story.append(Spacer(1, 18))
 
-    # Detalle de cartera
+    # Cartera
     story.append(Paragraph("Detalle de cartera", styles["Heading2"]))
-
     cpdf = _format_cartera_for_pdf(cartera_show)
     cartera_data = _df_to_table_data(cpdf, max_rows=60)
 
@@ -905,7 +878,6 @@ def build_cartera_pdf_bytes(
 
     # Flujos
     story.append(Paragraph("Flujo de fondos", styles["Heading2"]))
-
     if flows_show is None or flows_show.empty:
         story.append(Paragraph("(sin flujos futuros)", styles["Normal"]))
     else:
@@ -951,22 +923,13 @@ def build_excel_bytes(
     *,
     cartera_df: pd.DataFrame,
     flows_df: pd.DataFrame,
-    resumen: dict,
+    resumen: Dict[str, float],
     capital_usd: float,
 ) -> bytes:
-    """
-    Exporta un .xlsx con:
-      - Resumen
-      - Cartera
-      - Flujos
-    Sin Duration / sin MD.
-    """
+    """Export .xlsx con Resumen / Cartera / Flujos. (sin Duration/MD)"""
     buff = io.BytesIO()
 
-    # Limpiar: no incluir Duration / MD aunque existan por algún motivo
-    cartera_x = cartera_df.copy()
-    cartera_x = cartera_x.drop(columns=["Duration", "MD"], errors="ignore")
-
+    cartera_x = cartera_df.copy().drop(columns=["Duration", "MD"], errors="ignore")
     flows_x = flows_df.copy() if flows_df is not None else pd.DataFrame()
 
     resumen_df = pd.DataFrame(
@@ -984,7 +947,35 @@ def build_excel_bytes(
         else:
             flows_x.to_excel(writer, sheet_name="Flujos")
 
+        # formato mínimo (freeze panes + widths) sin hacerlo enorme
+        wb = writer.book
+        for ws_name in ["Resumen", "Cartera", "Flujos"]:
+            if ws_name not in wb.sheetnames:
+                continue
+            ws = wb[ws_name]
+            ws.freeze_panes = "A2"
+            # widths aproximados
+            for col in ws.columns:
+                try:
+                    max_len = max(len(str(cell.value)) if cell.value is not None else 0 for cell in col[:50])
+                    ws.column_dimensions[col[0].column_letter].width = min(44, max(10, max_len + 2))
+                except Exception:
+                    pass
+
     return buff.getvalue()
+
+
+# =========================
+# Cache wrappers (Streamlit)
+# =========================
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_cashflows_cached(path: str) -> pd.DataFrame:
+    return load_cashflows(path)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_prices_cached() -> pd.DataFrame:
+    return fetch_market_prices()
 
 
 # =========================
@@ -1021,14 +1012,40 @@ def _ui_css():
     )
 
 
-def _height_for_rows(n: int, row_h: int = 34, header: int = 42, pad: int = 18, max_h: int = 900) -> int:
-    n = int(max(0, n))
-    h = header + pad + row_h * max(1, n + 1)
-    return int(min(max_h, h))
+def _download_button(label: str, data: bytes, fname: str, mime: str, key: str):
+    st.download_button(
+        label,
+        data=data,
+        file_name=fname,
+        mime=mime,
+        use_container_width=True,
+        key=key,
+    )
 
 
-def _spacer(px: int = 14):
-    st.markdown(f'<div style="height:{int(px)}px"></div>', unsafe_allow_html=True)
+def _make_flows_view(flows_pivot: pd.DataFrame) -> pd.DataFrame:
+    """Para UI/export: columnas Mes en 'Feb-2026' etc."""
+    flows = flows_pivot.copy()
+    new_cols = []
+    for c in flows.columns:
+        if isinstance(c, (pd.Timestamp, dt.datetime)):
+            new_cols.append(pd.to_datetime(c).strftime("%b-%Y").capitalize())
+        else:
+            new_cols.append(str(c))
+    flows.columns = new_cols
+    return flows.round(0)
+
+
+def _make_cartera_view(cartera_raw: pd.DataFrame) -> pd.DataFrame:
+    """Para UI: redondeos y tipos. NO agrega Duration/MD."""
+    show = cartera_raw.copy().drop(columns=["Duration", "MD"], errors="ignore")
+    show["%"] = pd.to_numeric(show["%"], errors="coerce").round(2)
+    show["USD"] = pd.to_numeric(show["USD"], errors="coerce").round(0)
+    show["Precio (USD, VN100)"] = pd.to_numeric(show["Precio (USD, VN100)"], errors="coerce").round(2)
+    show["VN estimada"] = pd.to_numeric(show["VN estimada"], errors="coerce").round(0)
+    show["TIR (%)"] = pd.to_numeric(show["TIR (%)"], errors="coerce").round(2)
+    show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
+    return show
 
 
 def render(back_to_home=None):
@@ -1044,27 +1061,35 @@ def render(back_to_home=None):
         refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_refresh")
 
     st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
-    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    _spacer(18)
 
-    # Load cashflows
+    # Cashflows (cache)
     try:
-        df_cf = load_cashflows(CASHFLOW_PATH)
+        df_cf = get_cashflows_cached(CASHFLOW_PATH)
     except Exception as e:
         st.error(str(e))
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Precios (cache)
-    if refresh or "cartera_prices" not in st.session_state:
-        with st.spinner("Actualizando precios..."):
-            try:
-                st.session_state["cartera_prices"] = fetch_market_prices()
-            except Exception as e:
-                st.error(str(e))
-                st.markdown("</div>", unsafe_allow_html=True)
-                return
+    # sanity checks suaves (no cortan)
+    try:
+        if df_cf["date"].isna().mean() > 0.05:
+            st.warning("Ojo: hay varias fechas inválidas en cashflows_completos.xlsx.")
+    except Exception:
+        pass
 
-    prices = st.session_state.get("cartera_prices")
+    # Prices (cache + refresh)
+    if refresh:
+        get_prices_cached.clear()
+
+    with st.spinner("Cargando precios..."):
+        try:
+            prices = get_prices_cached()
+        except Exception as e:
+            st.error(str(e))
+            st.markdown("</div>", unsafe_allow_html=True)
+            return
+
     if prices is None or prices.empty:
         st.warning("No pude cargar precios de mercado (tabla vacía o cambió el formato).")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -1128,6 +1153,9 @@ def render(back_to_home=None):
     )
 
     pct_map = {r["Ticker"]: float(r["%"]) for _, r in edited.iterrows()}
+    total_pct = float(np.sum(list(pct_map.values()))) if pct_map else 0.0
+    if abs(total_pct - 100.0) > 0.5:
+        st.info(f"Los % suman {total_pct:.2f}. Se reescala automáticamente a 100 al calcular.")
 
     _spacer(10)
     st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
@@ -1137,8 +1165,8 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Calcular cartera
-    cartera_df, resumen, flows_pivot = build_portfolio_table(
+    # Calcular cartera (raw numérica)
+    cartera_raw, resumen, flows_pivot = build_portfolio_table(
         df_cf=df_cf,
         prices=prices,
         selected=selected,
@@ -1147,15 +1175,15 @@ def render(back_to_home=None):
         plazo=1,
     )
 
-    if cartera_df.empty:
+    if cartera_raw.empty:
         st.warning("No pude armar cartera con la selección actual (faltan precios o flujos).")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # ✅ asegurar que NO aparezcan Duration ni MD por ningún lado
-    cartera_df = cartera_df.drop(columns=["Duration", "MD"], errors="ignore")
+    # Asegurar que no haya Duration/MD (por si se mezcla otra versión)
+    cartera_raw = cartera_raw.drop(columns=["Duration", "MD"], errors="ignore")
 
-    # KPIs (solo Capital + TIR)
+    # KPIs
     st.markdown("### Resumen")
     k1, k2 = st.columns(2)
     with k1:
@@ -1173,7 +1201,7 @@ def render(back_to_home=None):
             f"""
 <div class="kpi">
   <div class="lbl">TIR total (pond.)</div>
-  <div class="val">{fmt_pct_2(float(resumen["tir"]))}</div>
+  <div class="val">{fmt_pct_2(float(resumen.get("tir", np.nan)))}</div>
 </div>
 """,
             unsafe_allow_html=True,
@@ -1181,18 +1209,8 @@ def render(back_to_home=None):
 
     _spacer(14)
 
-    # Tabla cartera (UI)
-    show = cartera_df.copy()
-    show["%"] = pd.to_numeric(show["%"], errors="coerce").round(2)
-    show["USD"] = pd.to_numeric(show["USD"], errors="coerce").round(0)
-    show["Precio (USD, VN100)"] = pd.to_numeric(show["Precio (USD, VN100)"], errors="coerce").round(2)
-    show["VN estimada"] = pd.to_numeric(show["VN estimada"], errors="coerce").round(0)
-    show["TIR (%)"] = pd.to_numeric(show["TIR (%)"], errors="coerce").round(2)
-    show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
-
-    # ✅ por si quedó algo
-    show = show.drop(columns=["Duration", "MD"], errors="ignore")
-
+    # Tabla cartera (UI view)
+    show = _make_cartera_view(cartera_raw)
     h_tbl = _height_for_rows(len(show), row_h=34, header=42, pad=12, max_h=780)
 
     st.dataframe(
@@ -1214,90 +1232,91 @@ def render(back_to_home=None):
 
     # Flujos
     st.markdown("### Flujo de fondos")
-
     if flows_pivot is None or flows_pivot.empty:
         st.info("No hay flujos futuros para mostrar.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    flows = flows_pivot.copy()
-
-    new_cols = []
-    for c in flows.columns:
-        if isinstance(c, (pd.Timestamp, dt.datetime)):
-            new_cols.append(pd.to_datetime(c).strftime("%b-%Y").capitalize())
-        else:
-            new_cols.append(str(c))
-    flows.columns = new_cols
-
-    flows = flows.round(0)
-    h_flows = _height_for_rows(len(flows), row_h=34, header=42, pad=12, max_h=820)
+    flows_view = _make_flows_view(flows_pivot)
+    h_flows = _height_for_rows(len(flows_view), row_h=34, header=42, pad=12, max_h=820)
 
     st.dataframe(
-        flows,
+        flows_view,
         use_container_width=True,
         height=h_flows,
-        column_config={col: st.column_config.NumberColumn(col, format="$ %.0f") for col in flows.columns},
+        column_config={col: st.column_config.NumberColumn(col, format="$ %.0f") for col in flows_view.columns},
     )
 
     _spacer(14)
 
-    # =========================
-    # Export: PDF o Excel (opción)
-    # =========================
-    st.markdown("### Exportar")
-    export_fmt = st.radio(
-        "Formato",
-        options=["PDF", "Excel"],
-        horizontal=True,
-        key="cartera_export_fmt",
-    )
+# =========================
+# Export: 2 botones en paralelo (minimal)
+# =========================
+st.markdown("### Exportar")
 
-    # Armamos versiones limpias para export
-    export_cartera = show.drop(columns=["Ticker precio"], errors="ignore").copy()
-    export_cartera = export_cartera.drop(columns=["Duration", "MD"], errors="ignore")
+# Estado: qué export eligió el usuario
+if "cartera_export_choice" not in st.session_state:
+    st.session_state["cartera_export_choice"] = None  # "pdf" | "xlsx"
 
-    if export_fmt == "PDF":
-        try:
-            pdf_bytes = build_cartera_pdf_bytes(
-                capital_usd=float(capital),
-                resumen=resumen,
-                cartera_show=export_cartera,
-                flows_show=flows,
-                logo_path=LOGO_PATH,
-            )
-            fname = f"NEIX_Cartera_Comercial_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+# Botones minimalistas en paralelo
+b1, b2 = st.columns(2, gap="small")
+with b1:
+    if st.button("Descargar PDF", use_container_width=True, key="btn_export_pdf"):
+        st.session_state["cartera_export_choice"] = "pdf"
+with b2:
+    if st.button("Descargar Excel", use_container_width=True, key="btn_export_xlsx"):
+        st.session_state["cartera_export_choice"] = "xlsx"
 
-            st.download_button(
-                "Descargar PDF",
-                data=pdf_bytes,
-                file_name=fname,
-                mime="application/pdf",
-                use_container_width=True,
-                key="cartera_pdf",
-            )
-        except Exception as e:
-            st.warning(f"No pude generar el PDF: {e}")
+# Dataset para export (sin Duration/MD)
+export_cartera = show.drop(columns=["Ticker precio"], errors="ignore").copy()
+export_cartera = export_cartera.drop(columns=["Duration", "MD"], errors="ignore")
 
-    else:  # Excel
-        try:
-            xlsx_bytes = build_excel_bytes(
-                cartera_df=export_cartera,
-                flows_df=flows,
-                resumen=resumen,
-                capital_usd=float(capital),
-            )
-            fname = f"NEIX_Cartera_Comercial_{dt.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+now = dt.datetime.now().strftime("%Y%m%d_%H%M")
 
-            st.download_button(
-                "Descargar Excel",
-                data=xlsx_bytes,
-                file_name=fname,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="cartera_xlsx",
-            )
-        except Exception as e:
-            st.warning(f"No pude generar el Excel: {e}")
+# Si eligió PDF: genero y muestro download_button ya listo
+if st.session_state["cartera_export_choice"] == "pdf":
+    try:
+        pdf_bytes = build_cartera_pdf_bytes(
+            capital_usd=float(capital),
+            resumen=resumen,
+            cartera_show=export_cartera,
+            flows_show=flows_view,
+            logo_path=LOGO_PATH,
+        )
+        fname = f"NEIX_Cartera_Comercial_{now}.pdf"
+
+        # botón de descarga "instantáneo" (aparece al click de arriba)
+        st.download_button(
+            "📄 Click para descargar PDF",
+            data=pdf_bytes,
+            file_name=fname,
+            mime="application/pdf",
+            use_container_width=True,
+            key="dl_pdf",
+        )
+    except Exception as e:
+        st.warning(f"No pude generar el PDF: {e}")
+
+# Si eligió Excel
+elif st.session_state["cartera_export_choice"] == "xlsx":
+    try:
+        xlsx_bytes = build_excel_bytes(
+            cartera_df=export_cartera,
+            flows_df=flows_view,
+            resumen=resumen,
+            capital_usd=float(capital),
+        )
+        fname = f"NEIX_Cartera_Comercial_{now}.xlsx"
+
+        st.download_button(
+            "📊 Click para descargar Excel",
+            data=xlsx_bytes,
+            file_name=fname,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="dl_xlsx",
+        )
+    except Exception as e:
+        st.warning(f"No pude generar el Excel: {e}")
 
     st.markdown("</div>", unsafe_allow_html=True)
