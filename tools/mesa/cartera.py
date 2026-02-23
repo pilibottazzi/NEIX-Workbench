@@ -1241,11 +1241,6 @@ def render(back_to_home=None):
     _spacer(14)
 
     # =========================
-    # Export: 2 botones en paralelo (PDF / Excel)
-    # Al tocar uno: se genera y aparece inmediatamente el download_button (mismo ancho)
-    # =========================
-    st.markdown("### Exportar")
-
     if "cartera_export_choice" not in st.session_state:
         st.session_state["cartera_export_choice"] = None  # "pdf" | "xlsx"
 
