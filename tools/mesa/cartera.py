@@ -64,7 +64,6 @@ PESOS_TO_USD_OVERRIDES: Dict[str, str] = {
     "BPY26": "BPY6D",
 }
 
-
 # =========================
 # Utils parse num AR
 # =========================
@@ -688,9 +687,6 @@ def _format_cartera_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
         }
     )
 
-    # asegurar no existan columnas no deseadas
-    d = d.drop(columns=["Duration", "MD"], errors="ignore")
-
     if "USD" in d.columns:
         d["USD"] = d["USD"].apply(fmt_money_pdf)
 
@@ -926,10 +922,10 @@ def build_excel_bytes(
     resumen: Dict[str, float],
     capital_usd: float,
 ) -> bytes:
-    """Export .xlsx con Resumen / Cartera / Flujos. (sin Duration/MD)"""
+    """Export .xlsx con Resumen / Cartera / Flujos."""
     buff = io.BytesIO()
 
-    cartera_x = cartera_df.copy().drop(columns=["Duration", "MD"], errors="ignore")
+    cartera_x = cartera_df.copy()
     flows_x = flows_df.copy() if flows_df is not None else pd.DataFrame()
 
     resumen_df = pd.DataFrame(
@@ -947,14 +943,12 @@ def build_excel_bytes(
         else:
             flows_x.to_excel(writer, sheet_name="Flujos")
 
-        # formato mínimo (freeze panes + widths) sin hacerlo enorme
         wb = writer.book
         for ws_name in ["Resumen", "Cartera", "Flujos"]:
             if ws_name not in wb.sheetnames:
                 continue
             ws = wb[ws_name]
             ws.freeze_panes = "A2"
-            # widths aproximados
             for col in ws.columns:
                 try:
                     max_len = max(len(str(cell.value)) if cell.value is not None else 0 for cell in col[:50])
@@ -1006,6 +1000,13 @@ def _ui_css():
   }
   .kpi .lbl{ color: rgba(17,24,39,.60); font-size: 12px; margin-bottom: 6px; }
   .kpi .val{ font-size: 26px; font-weight: 850; color:#111827; letter-spacing: .01em; }
+
+  /* Botones más minimal */
+  div.stButton > button{
+    padding: 0.55rem 0.8rem;
+    border-radius: 14px;
+    font-weight: 800;
+  }
 </style>
 """,
         unsafe_allow_html=True,
@@ -1037,8 +1038,8 @@ def _make_flows_view(flows_pivot: pd.DataFrame) -> pd.DataFrame:
 
 
 def _make_cartera_view(cartera_raw: pd.DataFrame) -> pd.DataFrame:
-    """Para UI: redondeos y tipos. NO agrega Duration/MD."""
-    show = cartera_raw.copy().drop(columns=["Duration", "MD"], errors="ignore")
+    """Para UI: redondeos y tipos."""
+    show = cartera_raw.copy()
     show["%"] = pd.to_numeric(show["%"], errors="coerce").round(2)
     show["USD"] = pd.to_numeric(show["USD"], errors="coerce").round(0)
     show["Precio (USD, VN100)"] = pd.to_numeric(show["Precio (USD, VN100)"], errors="coerce").round(2)
@@ -1070,13 +1071,6 @@ def render(back_to_home=None):
         st.error(str(e))
         st.markdown("</div>", unsafe_allow_html=True)
         return
-
-    # sanity checks suaves (no cortan)
-    try:
-        if df_cf["date"].isna().mean() > 0.05:
-            st.warning("Ojo: hay varias fechas inválidas en cashflows_completos.xlsx.")
-    except Exception:
-        pass
 
     # Prices (cache + refresh)
     if refresh:
@@ -1180,9 +1174,6 @@ def render(back_to_home=None):
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Asegurar que no haya Duration/MD (por si se mezcla otra versión)
-    cartera_raw = cartera_raw.drop(columns=["Duration", "MD"], errors="ignore")
-
     # KPIs
     st.markdown("### Resumen")
     k1, k2 = st.columns(2)
@@ -1250,53 +1241,69 @@ def render(back_to_home=None):
     _spacer(14)
 
     # =========================
-    # Export: PDF o Excel (opción)
+    # Export: 2 botones en paralelo (PDF / Excel)
+    # Al tocar uno: se genera y aparece inmediatamente el download_button (mismo ancho)
     # =========================
     st.markdown("### Exportar")
-    export_fmt = st.radio(
-        "Formato",
-        options=["PDF", "Excel"],
-        horizontal=True,
-        key="cartera_export_fmt",
-    )
 
-    # dataset para export (sin redondeos destructivos)
+    if "cartera_export_choice" not in st.session_state:
+        st.session_state["cartera_export_choice"] = None  # "pdf" | "xlsx"
+
+    b1, b2 = st.columns(2, gap="small")
+    with b1:
+        if st.button("PDF", use_container_width=True, key="btn_export_pdf"):
+            st.session_state["cartera_export_choice"] = "pdf"
+    with b2:
+        if st.button("Excel", use_container_width=True, key="btn_export_xlsx"):
+            st.session_state["cartera_export_choice"] = "xlsx"
+
     export_cartera = show.drop(columns=["Ticker precio"], errors="ignore").copy()
-    export_cartera = export_cartera.drop(columns=["Duration", "MD"], errors="ignore")
-
     now = dt.datetime.now().strftime("%Y%m%d_%H%M")
 
-    if export_fmt == "PDF":
-        try:
-            pdf_bytes = build_cartera_pdf_bytes(
-                capital_usd=float(capital),
-                resumen=resumen,
-                cartera_show=export_cartera,
-                flows_show=flows_view,
-                logo_path=LOGO_PATH,
-            )
-            fname = f"NEIX_Cartera_Comercial_{now}.pdf"
-            _download_button("Descargar PDF", pdf_bytes, fname, "application/pdf", "cartera_pdf")
-        except Exception as e:
-            st.warning(f"No pude generar el PDF: {e}")
+    # Contenedor para que salga “en el mismo lugar”
+    dl1, dl2 = st.columns(2, gap="small")
 
-    else:
-        try:
-            xlsx_bytes = build_excel_bytes(
-                cartera_df=export_cartera,
-                flows_df=flows_view,
-                resumen=resumen,
-                capital_usd=float(capital),
-            )
-            fname = f"NEIX_Cartera_Comercial_{now}.xlsx"
-            _download_button(
-                "Descargar Excel",
-                xlsx_bytes,
-                fname,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "cartera_xlsx",
-            )
-        except Exception as e:
-            st.warning(f"No pude generar el Excel: {e}")
+    if st.session_state["cartera_export_choice"] == "pdf":
+        with dl1:
+            try:
+                pdf_bytes = build_cartera_pdf_bytes(
+                    capital_usd=float(capital),
+                    resumen=resumen,
+                    cartera_show=export_cartera,
+                    flows_show=flows_view,
+                    logo_path=LOGO_PATH,
+                )
+                fname = f"NEIX_Cartera_Comercial_{now}.pdf"
+                st.download_button(
+                    "Descargar PDF",
+                    data=pdf_bytes,
+                    file_name=fname,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="dl_pdf",
+                )
+            except Exception as e:
+                st.warning(f"No pude generar el PDF: {e}")
+
+    elif st.session_state["cartera_export_choice"] == "xlsx":
+        with dl2:
+            try:
+                xlsx_bytes = build_excel_bytes(
+                    cartera_df=export_cartera,
+                    flows_df=flows_view,
+                    resumen=resumen,
+                    capital_usd=float(capital),
+                )
+                fname = f"NEIX_Cartera_Comercial_{now}.xlsx"
+                st.download_button(
+                    "Descargar Excel",
+                    data=xlsx_bytes,
+                    file_name=fname,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="dl_xlsx",
+                )
+            except Exception as e:
+                st.warning(f"No pude generar el Excel: {e}")
 
     st.markdown("</div>", unsafe_allow_html=True)
