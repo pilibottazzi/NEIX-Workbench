@@ -1249,74 +1249,54 @@ def render(back_to_home=None):
 
     _spacer(14)
 
-# =========================
-# Export: 2 botones en paralelo (minimal)
-# =========================
-st.markdown("### Exportar")
+    # =========================
+    # Export: PDF o Excel (opción)
+    # =========================
+    st.markdown("### Exportar")
+    export_fmt = st.radio(
+        "Formato",
+        options=["PDF", "Excel"],
+        horizontal=True,
+        key="cartera_export_fmt",
+    )
 
-# Estado: qué export eligió el usuario
-if "cartera_export_choice" not in st.session_state:
-    st.session_state["cartera_export_choice"] = None  # "pdf" | "xlsx"
+    # dataset para export (sin redondeos destructivos)
+    export_cartera = show.drop(columns=["Ticker precio"], errors="ignore").copy()
+    export_cartera = export_cartera.drop(columns=["Duration", "MD"], errors="ignore")
 
-# Botones minimalistas en paralelo
-b1, b2 = st.columns(2, gap="small")
-with b1:
-    if st.button("Descargar PDF", use_container_width=True, key="btn_export_pdf"):
-        st.session_state["cartera_export_choice"] = "pdf"
-with b2:
-    if st.button("Descargar Excel", use_container_width=True, key="btn_export_xlsx"):
-        st.session_state["cartera_export_choice"] = "xlsx"
+    now = dt.datetime.now().strftime("%Y%m%d_%H%M")
 
-# Dataset para export (sin Duration/MD)
-export_cartera = show.drop(columns=["Ticker precio"], errors="ignore").copy()
-export_cartera = export_cartera.drop(columns=["Duration", "MD"], errors="ignore")
+    if export_fmt == "PDF":
+        try:
+            pdf_bytes = build_cartera_pdf_bytes(
+                capital_usd=float(capital),
+                resumen=resumen,
+                cartera_show=export_cartera,
+                flows_show=flows_view,
+                logo_path=LOGO_PATH,
+            )
+            fname = f"NEIX_Cartera_Comercial_{now}.pdf"
+            _download_button("Descargar PDF", pdf_bytes, fname, "application/pdf", "cartera_pdf")
+        except Exception as e:
+            st.warning(f"No pude generar el PDF: {e}")
 
-now = dt.datetime.now().strftime("%Y%m%d_%H%M")
-
-# Si eligió PDF: genero y muestro download_button ya listo
-if st.session_state["cartera_export_choice"] == "pdf":
-    try:
-        pdf_bytes = build_cartera_pdf_bytes(
-            capital_usd=float(capital),
-            resumen=resumen,
-            cartera_show=export_cartera,
-            flows_show=flows_view,
-            logo_path=LOGO_PATH,
-        )
-        fname = f"NEIX_Cartera_Comercial_{now}.pdf"
-
-        # botón de descarga "instantáneo" (aparece al click de arriba)
-        st.download_button(
-            "📄 Click para descargar PDF",
-            data=pdf_bytes,
-            file_name=fname,
-            mime="application/pdf",
-            use_container_width=True,
-            key="dl_pdf",
-        )
-    except Exception as e:
-        st.warning(f"No pude generar el PDF: {e}")
-
-# Si eligió Excel
-elif st.session_state["cartera_export_choice"] == "xlsx":
-    try:
-        xlsx_bytes = build_excel_bytes(
-            cartera_df=export_cartera,
-            flows_df=flows_view,
-            resumen=resumen,
-            capital_usd=float(capital),
-        )
-        fname = f"NEIX_Cartera_Comercial_{now}.xlsx"
-
-        st.download_button(
-            "📊 Click para descargar Excel",
-            data=xlsx_bytes,
-            file_name=fname,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key="dl_xlsx",
-        )
-    except Exception as e:
-        st.warning(f"No pude generar el Excel: {e}")
+    else:
+        try:
+            xlsx_bytes = build_excel_bytes(
+                cartera_df=export_cartera,
+                flows_df=flows_view,
+                resumen=resumen,
+                capital_usd=float(capital),
+            )
+            fname = f"NEIX_Cartera_Comercial_{now}.xlsx"
+            _download_button(
+                "Descargar Excel",
+                xlsx_bytes,
+                fname,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "cartera_xlsx",
+            )
+        except Exception as e:
+            st.warning(f"No pude generar el Excel: {e}")
 
     st.markdown("</div>", unsafe_allow_html=True)
