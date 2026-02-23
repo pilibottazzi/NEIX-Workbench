@@ -1,4 +1,4 @@
-# tools/cartera.py
+# tools/cartera.py  ✅ Flujos POR AÑO en PDF + Export con 2 botones paralelos (PDF / Excel)
 from __future__ import annotations
 
 import os
@@ -18,7 +18,14 @@ from scipy import optimize
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    Image as RLImage,
+)
 from reportlab.lib.styles import getSampleStyleSheet
 
 # =========================
@@ -304,8 +311,7 @@ def _fetch_prices_from_url(url: str) -> pd.DataFrame:
     df["RawPrecio"] = t["Último Operado"].astype(str).str.strip()
     df["Precio"] = t["Último Operado"].apply(parse_ar_number)
     df["Precio"] = [
-        usd_fix_if_needed(tk, raw, val)
-        for tk, raw, val in zip(df["Ticker"], df["RawPrecio"], df["Precio"])
+        usd_fix_if_needed(tk, raw, val) for tk, raw, val in zip(df["Ticker"], df["RawPrecio"], df["Precio"])
     ]
 
     if "Monto Operado" in cols:
@@ -514,7 +520,6 @@ def build_portfolio_table(
 
     pcts = _normalize_pct(selected, pct_map)
 
-    # cache simple de TIR por (ticker, px) dentro del cálculo (evita recalcular)
     tir_cache: Dict[str, float] = {}
 
     def get_tir(ticker: str, cf: pd.DataFrame, px: float) -> float:
@@ -601,7 +606,7 @@ def build_portfolio_table(
         }
     )
 
-    # Flujos por mes + totales
+    # Flujos por mes + totales (pivote con Timestamp)
     settlement = _settlement(plazo)
     flow_rows = []
     for a in assets:
@@ -712,15 +717,32 @@ def _format_cartera_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
     if "Ley" in d.columns:
         d["Ley"] = d["Ley"].astype(str).str.strip().replace({"ARG": "Ley local", "NY": "Ley NY", "NA": "Sin ley"})
 
+    # ✅ para evitar “Ley localCORPORATIVO”: alinear Ley/Issuer y darles algo más de aire
+    if "Ley" in d.columns:
+        d["Ley"] = d["Ley"].astype(str)
+    if "Issuer" in d.columns:
+        d["Issuer"] = d["Issuer"].astype(str)
+
     return d.fillna("")
 
 
 def _format_flows_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
-    """Flujos: $ AR sin decimales."""
+    """Flujos: headers mes 'Feb-2026' y $ AR sin decimales."""
     d = df.copy()
 
-    if d.index.name is not None or not isinstance(d.index, pd.RangeIndex):
+    if "Ticker" not in d.columns:
         d = d.reset_index().rename(columns={"index": "Ticker"})
+
+    # headers de meses legibles
+    new_cols = []
+    for c in d.columns:
+        if c == "Ticker":
+            new_cols.append("Ticker")
+        elif isinstance(c, (pd.Timestamp, dt.datetime)):
+            new_cols.append(pd.to_datetime(c).strftime("%b-%Y").capitalize())
+        else:
+            new_cols.append(str(c))
+    d.columns = new_cols
 
     for c in d.columns:
         if c == "Ticker":
@@ -745,8 +767,9 @@ def _colwidths_by_name(cols: List[str], usable_w: float) -> List[float]:
     weights = []
     for c in cols:
         c = str(c)
+
         if c == "Ticker":
-            weights.append(1.00)
+            weights.append(1.20)
         elif c == "%":
             weights.append(0.70)
         elif c == "USD":
@@ -754,20 +777,80 @@ def _colwidths_by_name(cols: List[str], usable_w: float) -> List[float]:
         elif c == "Precio":
             weights.append(0.95)
         elif c == "VN":
-            weights.append(0.90)
+            weights.append(0.92)
         elif c == "TIR":
             weights.append(0.90)
         elif "Venc" in c:
-            weights.append(1.05)
+            weights.append(1.10)
         elif c == "Ley":
-            weights.append(0.95)
+            weights.append(1.25)  # ✅ más ancho
         elif c == "Issuer":
-            weights.append(1.40)
+            weights.append(1.45)  # ✅ más ancho
+        elif c == "Total Ticker":
+            weights.append(1.15)
         else:
-            weights.append(0.95)
+            # meses / otros
+            weights.append(0.85)
 
     s = sum(weights) or 1.0
     return [usable_w * (w / s) for w in weights]
+
+
+def _flows_blocks_by_year(flows_pivot: pd.DataFrame) -> list[tuple[int, pd.DataFrame]]:
+    """
+    Recibe flows_pivot con columnas Timestamp (Mes) + 'Total Ticker'
+    y devuelve [(año, df_año), ...] donde df_año tiene:
+      Ticker | (meses de ese año) | Total Ticker
+    """
+    if flows_pivot is None or flows_pivot.empty:
+        return []
+
+    d = flows_pivot.copy()
+
+    # Asegurar columna Ticker
+    if "Ticker" not in d.columns:
+        d = d.reset_index().rename(columns={"index": "Ticker"})
+
+    total_col = "Total Ticker" if "Total Ticker" in d.columns else None
+
+    # columnas mes (Timestamp)
+    month_cols: List[pd.Timestamp] = []
+    for c in d.columns:
+        if c == "Ticker" or c == total_col:
+            continue
+        if isinstance(c, (pd.Timestamp, dt.datetime)):
+            month_cols.append(pd.to_datetime(c))
+        else:
+            try:
+                month_cols.append(pd.to_datetime(c, errors="raise"))
+            except Exception:
+                pass
+
+    if not month_cols:
+        cols = ["Ticker"] + ([total_col] if total_col else [])
+        return [(0, d[cols].copy())]
+
+    month_cols = sorted(set(month_cols))
+    years = sorted({c.year for c in month_cols})
+
+    blocks: list[tuple[int, pd.DataFrame]] = []
+    for y in years:
+        cols_y = [c for c in month_cols if c.year == y]
+        existing_cols_y = []
+
+        for c in cols_y:
+            if c in d.columns:
+                existing_cols_y.append(c)
+            else:
+                for cc in d.columns:
+                    if isinstance(cc, (pd.Timestamp, dt.datetime)) and pd.to_datetime(cc) == c:
+                        existing_cols_y.append(cc)
+                        break
+
+        cols = ["Ticker"] + existing_cols_y + ([total_col] if total_col else [])
+        blocks.append((y, d[cols].copy()))
+
+    return blocks
 
 
 def build_cartera_pdf_bytes(
@@ -778,7 +861,7 @@ def build_cartera_pdf_bytes(
     flows_show: pd.DataFrame,
     logo_path: str | None = None,
 ) -> bytes:
-    """PDF minimal/pro: KPI Capital + TIR. (sin Duration / sin MD)"""
+    """PDF minimal/pro: KPI Capital + TIR. Flujos POR AÑO (nunca se rompe por ancho)."""
     buff = io.BytesIO()
 
     left = right = 1.3 * cm
@@ -852,63 +935,81 @@ def build_cartera_pdf_bytes(
     cols1 = cartera_data[0]
     col_w1 = _colwidths_by_name(cols1, usable_w)
     t1 = Table(cartera_data, repeatRows=1, colWidths=col_w1)
-    t1.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, 0), 8.6),
-                ("FONTSIZE", (0, 1), (-1, -1), 8.2),
-                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ("BOX", (0, 0), (-1, -1), 0.6, colors.lightgrey),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("ALIGN", (0, 0), (0, -1), "LEFT"),
-                ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                ("TOPPADDING", (0, 0), (-1, 0), 6),
-                ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
-                ("TOPPADDING", (0, 1), (-1, -1), 5),
-                ("BOTTOMPADDING", (0, 1), (-1, -1), 5),
-            ]
-        )
-    )
+
+    # alinear Ley/Issuer a la izquierda para que no “invada” a la otra celda
+    ley_i = cols1.index("Ley") if "Ley" in cols1 else None
+    iss_i = cols1.index("Issuer") if "Issuer" in cols1 else None
+
+    style_cmds = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 8.6),
+        ("FONTSIZE", (0, 1), (-1, -1), 8.0),
+        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+        ("BOX", (0, 0), (-1, -1), 0.6, colors.lightgrey),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (0, 0), (0, -1), "LEFT"),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, 0), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+        ("TOPPADDING", (0, 1), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 5),
+    ]
+    if ley_i is not None:
+        style_cmds.append(("ALIGN", (ley_i, 1), (ley_i, -1), "LEFT"))
+    if iss_i is not None:
+        style_cmds.append(("ALIGN", (iss_i, 1), (iss_i, -1), "LEFT"))
+
+    t1.setStyle(TableStyle(style_cmds))
     story.append(t1)
     story.append(Spacer(1, 18))
 
-    # Flujos
+    # Flujos (POR AÑO)
     story.append(Paragraph("Flujo de fondos", styles["Heading2"]))
+
     if flows_show is None or flows_show.empty:
         story.append(Paragraph("(sin flujos futuros)", styles["Normal"]))
     else:
-        fpdf = _format_flows_for_pdf(flows_show)
-        flows_data = _df_to_table_data(fpdf, max_rows=80)
+        blocks = _flows_blocks_by_year(flows_show)
+        if not blocks:
+            story.append(Paragraph("(sin flujos futuros)", styles["Normal"]))
+        else:
+            for year, block_df in blocks:
+                story.append(Paragraph(f"Año {year}", styles["Heading3"]))
+                story.append(Spacer(1, 6))
 
-        cols2 = flows_data[0]
-        col_w2 = _colwidths_by_name(cols2, usable_w)
-        t2 = Table(flows_data, repeatRows=1, colWidths=col_w2)
-        t2.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, 0), 8.6),
-                    ("FONTSIZE", (0, 1), (-1, -1), 8.2),
-                    ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                    ("BOX", (0, 0), (-1, -1), 0.6, colors.lightgrey),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("ALIGN", (0, 0), (0, -1), "LEFT"),
-                    ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                    ("TOPPADDING", (0, 0), (-1, 0), 6),
-                    ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
-                    ("TOPPADDING", (0, 1), (-1, -1), 5),
-                    ("BOTTOMPADDING", (0, 1), (-1, -1), 5),
-                ]
-            )
-        )
-        story.append(t2)
+                fpdf = _format_flows_for_pdf(block_df)
+                flows_data = _df_to_table_data(fpdf, max_rows=120)
+                cols2 = flows_data[0]
+                col_w2 = _colwidths_by_name(cols2, usable_w)
+
+                t2 = Table(flows_data, repeatRows=1, colWidths=col_w2)
+                t2.setStyle(
+                    TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+                            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                            ("FONTSIZE", (0, 0), (-1, 0), 7.6),
+                            ("FONTSIZE", (0, 1), (-1, -1), 7.2),
+                            ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+                            ("BOX", (0, 0), (-1, -1), 0.6, colors.lightgrey),
+                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+                            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                            ("TOPPADDING", (0, 0), (-1, 0), 5),
+                            ("BOTTOMPADDING", (0, 0), (-1, 0), 5),
+                            ("TOPPADDING", (0, 1), (-1, -1), 3),
+                            ("BOTTOMPADDING", (0, 1), (-1, -1), 3),
+                        ]
+                    )
+                )
+
+                story.append(t2)
+                story.append(Spacer(1, 14))
 
     doc.build(story)
     pdf = buff.getvalue()
@@ -930,16 +1031,7 @@ def build_excel_bytes(
     buff = io.BytesIO()
 
     cartera_x = cartera_df.copy().drop(columns=["Duration", "MD"], errors="ignore")
-
-    # flows_df en UI suele venir con índice Ticker -> lo llevamos a columna
-    if flows_df is None or flows_df.empty:
-        flows_x = pd.DataFrame({"info": ["(sin flujos futuros)"]})
-    else:
-        flows_x = flows_df.copy()
-        if flows_x.index.name is not None or not isinstance(flows_x.index, pd.RangeIndex):
-            flows_x = flows_x.reset_index().rename(columns={"index": "Ticker"})
-        if "Ticker" not in flows_x.columns:
-            flows_x.insert(0, "Ticker", flows_df.index.astype(str).tolist())
+    flows_x = flows_df.copy() if flows_df is not None else pd.DataFrame()
 
     resumen_df = pd.DataFrame(
         {
@@ -951,7 +1043,10 @@ def build_excel_bytes(
     with pd.ExcelWriter(buff, engine="openpyxl") as writer:
         resumen_df.to_excel(writer, index=False, sheet_name="Resumen")
         cartera_x.to_excel(writer, index=False, sheet_name="Cartera")
-        flows_x.to_excel(writer, index=False, sheet_name="Flujos")
+        if flows_x is None or flows_x.empty:
+            pd.DataFrame({"info": ["(sin flujos futuros)"]}).to_excel(writer, index=False, sheet_name="Flujos")
+        else:
+            flows_x.to_excel(writer, sheet_name="Flujos")
 
         # formato mínimo (freeze panes + widths)
         wb = writer.book
@@ -984,7 +1079,7 @@ def get_prices_cached() -> pd.DataFrame:
 
 
 # =========================
-# UI helpers
+# UI
 # =========================
 def _ui_css():
     st.markdown(
@@ -1042,9 +1137,82 @@ def _make_cartera_view(cartera_raw: pd.DataFrame) -> pd.DataFrame:
     return show
 
 
-# =========================
-# UI main
-# =========================
+def _download_controls(
+    *,
+    export_cartera: pd.DataFrame,
+    flows_view: pd.DataFrame,
+    flows_pivot: pd.DataFrame,
+    resumen: Dict[str, float],
+    capital: float,
+):
+    """
+    2 botones paralelos minimalistas (PDF / Excel).
+    Al clickear uno: genera bytes y muestra inmediatamente el download_button en el mismo lugar.
+    """
+    st.markdown("### Exportar")
+
+    # init state
+    st.session_state.setdefault("cartera_export_kind", None)  # "pdf" | "xlsx"
+    st.session_state.setdefault("cartera_export_bytes", None)
+    st.session_state.setdefault("cartera_export_name", None)
+    st.session_state.setdefault("cartera_export_mime", None)
+
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("PDF", use_container_width=True, key="cartera_btn_pdf"):
+            try:
+                now = dt.datetime.now().strftime("%Y%m%d_%H%M")
+                pdf_bytes = build_cartera_pdf_bytes(
+                    capital_usd=float(capital),
+                    resumen=resumen,
+                    cartera_show=export_cartera,
+                    flows_show=flows_pivot,  # ✅ pivote original para agrupar por año
+                    logo_path=LOGO_PATH,
+                )
+                st.session_state["cartera_export_kind"] = "pdf"
+                st.session_state["cartera_export_bytes"] = pdf_bytes
+                st.session_state["cartera_export_name"] = f"NEIX_Cartera_Comercial_{now}.pdf"
+                st.session_state["cartera_export_mime"] = "application/pdf"
+            except Exception as e:
+                st.warning(f"No pude generar el PDF: {e}")
+
+    with b2:
+        if st.button("Excel", use_container_width=True, key="cartera_btn_xlsx"):
+            try:
+                now = dt.datetime.now().strftime("%Y%m%d_%H%M")
+                xlsx_bytes = build_excel_bytes(
+                    cartera_df=export_cartera,
+                    flows_df=flows_view,  # excel puede ir con view
+                    resumen=resumen,
+                    capital_usd=float(capital),
+                )
+                st.session_state["cartera_export_kind"] = "xlsx"
+                st.session_state["cartera_export_bytes"] = xlsx_bytes
+                st.session_state["cartera_export_name"] = f"NEIX_Cartera_Comercial_{now}.xlsx"
+                st.session_state["cartera_export_mime"] = (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            except Exception as e:
+                st.warning(f"No pude generar el Excel: {e}")
+
+    # misma fila, mismo ancho: aparece el botón de descarga debajo (full width)
+    kind = st.session_state.get("cartera_export_kind")
+    data = st.session_state.get("cartera_export_bytes")
+    fname = st.session_state.get("cartera_export_name")
+    mime = st.session_state.get("cartera_export_mime")
+
+    if kind and data and fname and mime:
+        label = "Descargar PDF" if kind == "pdf" else "Descargar Excel"
+        st.download_button(
+            label,
+            data=data,
+            file_name=fname,
+            mime=mime,
+            use_container_width=True,
+            key=f"cartera_dl_{kind}_{fname}",
+        )
+
+
 def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
@@ -1217,7 +1385,7 @@ def render(back_to_home=None):
 
     _spacer(18)
 
-    # Flujos
+    # Flujos (UI)
     st.markdown("### Flujo de fondos")
     if flows_pivot is None or flows_pivot.empty:
         st.info("No hay flujos futuros para mostrar.")
@@ -1236,85 +1404,16 @@ def render(back_to_home=None):
 
     _spacer(14)
 
-    # =========================
-    # Export bytes (se generan al calcular cartera)
-    # =========================
+    # Export dataset (sin columnas no deseadas)
     export_cartera = show.drop(columns=["Ticker precio"], errors="ignore").copy()
-    export_flows = flows_view.copy()
+    export_cartera = export_cartera.drop(columns=["Duration", "MD"], errors="ignore")
 
-    # Firma para evitar recalcular bytes si no cambió la cartera/capital
-    sig = (
-        tuple(export_cartera["Ticker"].astype(str).tolist()) if "Ticker" in export_cartera.columns else (),
-        tuple(np.round(pd.to_numeric(export_cartera["%"], errors="coerce").fillna(0).to_numpy(), 6))
-        if "%" in export_cartera.columns
-        else (),
-        float(capital),
+    _download_controls(
+        export_cartera=export_cartera,
+        flows_view=flows_view,
+        flows_pivot=flows_pivot,  # ✅ PDF usa pivote para agrupar por año
+        resumen=resumen,
+        capital=float(capital),
     )
-
-    if st.session_state.get("cartera_export_sig") != sig:
-        st.session_state["cartera_export_sig"] = sig
-
-        with st.spinner("Preparando exportables..."):
-            # PDF
-            try:
-                st.session_state["cartera_pdf_bytes"] = build_cartera_pdf_bytes(
-                    capital_usd=float(capital),
-                    resumen=resumen,
-                    cartera_show=export_cartera,
-                    flows_show=export_flows,
-                    logo_path=LOGO_PATH,
-                )
-            except Exception as e:
-                st.session_state["cartera_pdf_bytes"] = None
-                st.warning(f"No pude generar el PDF: {e}")
-
-            # Excel
-            try:
-                st.session_state["cartera_xlsx_bytes"] = build_excel_bytes(
-                    cartera_df=export_cartera,
-                    flows_df=export_flows,
-                    resumen=resumen,
-                    capital_usd=float(capital),
-                )
-            except Exception as e:
-                st.session_state["cartera_xlsx_bytes"] = None
-                st.warning(f"No pude generar el Excel: {e}")
-
-    # =========================
-    # Export: 2 botones minimalistas en paralelo (descarga en el primer click)
-    # =========================
-    st.markdown("### Exportar")
-
-    now = dt.datetime.now().strftime("%Y%m%d_%H%M")
-    pdf_bytes = st.session_state.get("cartera_pdf_bytes")
-    xlsx_bytes = st.session_state.get("cartera_xlsx_bytes")
-
-    cpdf, cxls = st.columns(2, gap="small")
-
-    with cpdf:
-        if pdf_bytes:
-            st.download_button(
-                "PDF",
-                data=pdf_bytes,
-                file_name=f"NEIX_Cartera_Comercial_{now}.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-                key="dl_pdf",
-            )
-        else:
-            st.button("PDF", use_container_width=True, disabled=True)
-
-    with cxls:
-        if xlsx_bytes:
-            st.download_button(
-                "Excel",
-                data=xlsx_bytes,
-                file_name=f"NEIX_Cartera_Comercial_{now}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="dl_xlsx",
-            )
-        else:
-            st.button("Excel", use_container_width=True, disabled=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
