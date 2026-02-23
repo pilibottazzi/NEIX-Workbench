@@ -1,3 +1,4 @@
+```python
 # tools/cartera.py
 from __future__ import annotations
 
@@ -63,6 +64,7 @@ PESOS_TO_USD_OVERRIDES: Dict[str, str] = {
     # Otros
     "BPY26": "BPY6D",
 }
+
 
 # =========================
 # Utils parse num AR
@@ -687,6 +689,9 @@ def _format_cartera_for_pdf(df: pd.DataFrame) -> pd.DataFrame:
         }
     )
 
+    # asegurar no existan columnas no deseadas
+    d = d.drop(columns=["Duration", "MD"], errors="ignore")
+
     if "USD" in d.columns:
         d["USD"] = d["USD"].apply(fmt_money_pdf)
 
@@ -922,11 +927,20 @@ def build_excel_bytes(
     resumen: Dict[str, float],
     capital_usd: float,
 ) -> bytes:
-    """Export .xlsx con Resumen / Cartera / Flujos."""
+    """Export .xlsx con Resumen / Cartera / Flujos. (sin Duration/MD)"""
     buff = io.BytesIO()
 
-    cartera_x = cartera_df.copy()
-    flows_x = flows_df.copy() if flows_df is not None else pd.DataFrame()
+    cartera_x = cartera_df.copy().drop(columns=["Duration", "MD"], errors="ignore")
+
+    # flows_df en UI suele venir con índice Ticker -> lo llevamos a columna
+    if flows_df is None or flows_df.empty:
+        flows_x = pd.DataFrame({"info": ["(sin flujos futuros)"]})
+    else:
+        flows_x = flows_df.copy()
+        if flows_x.index.name is not None or not isinstance(flows_x.index, pd.RangeIndex):
+            flows_x = flows_x.reset_index().rename(columns={"index": "Ticker"})
+        if "Ticker" not in flows_x.columns:
+            flows_x.insert(0, "Ticker", flows_df.index.astype(str).tolist())
 
     resumen_df = pd.DataFrame(
         {
@@ -938,11 +952,9 @@ def build_excel_bytes(
     with pd.ExcelWriter(buff, engine="openpyxl") as writer:
         resumen_df.to_excel(writer, index=False, sheet_name="Resumen")
         cartera_x.to_excel(writer, index=False, sheet_name="Cartera")
-        if flows_x is None or flows_x.empty:
-            pd.DataFrame({"info": ["(sin flujos futuros)"]}).to_excel(writer, index=False, sheet_name="Flujos")
-        else:
-            flows_x.to_excel(writer, sheet_name="Flujos")
+        flows_x.to_excel(writer, index=False, sheet_name="Flujos")
 
+        # formato mínimo (freeze panes + widths)
         wb = writer.book
         for ws_name in ["Resumen", "Cartera", "Flujos"]:
             if ws_name not in wb.sheetnames:
@@ -973,7 +985,7 @@ def get_prices_cached() -> pd.DataFrame:
 
 
 # =========================
-# UI
+# UI helpers
 # =========================
 def _ui_css():
     st.markdown(
@@ -1000,27 +1012,9 @@ def _ui_css():
   }
   .kpi .lbl{ color: rgba(17,24,39,.60); font-size: 12px; margin-bottom: 6px; }
   .kpi .val{ font-size: 26px; font-weight: 850; color:#111827; letter-spacing: .01em; }
-
-  /* Botones más minimal */
-  div.stButton > button{
-    padding: 0.55rem 0.8rem;
-    border-radius: 14px;
-    font-weight: 800;
-  }
 </style>
 """,
         unsafe_allow_html=True,
-    )
-
-
-def _download_button(label: str, data: bytes, fname: str, mime: str, key: str):
-    st.download_button(
-        label,
-        data=data,
-        file_name=fname,
-        mime=mime,
-        use_container_width=True,
-        key=key,
     )
 
 
@@ -1038,8 +1032,8 @@ def _make_flows_view(flows_pivot: pd.DataFrame) -> pd.DataFrame:
 
 
 def _make_cartera_view(cartera_raw: pd.DataFrame) -> pd.DataFrame:
-    """Para UI: redondeos y tipos."""
-    show = cartera_raw.copy()
+    """Para UI: redondeos y tipos. NO agrega Duration/MD."""
+    show = cartera_raw.copy().drop(columns=["Duration", "MD"], errors="ignore")
     show["%"] = pd.to_numeric(show["%"], errors="coerce").round(2)
     show["USD"] = pd.to_numeric(show["USD"], errors="coerce").round(0)
     show["Precio (USD, VN100)"] = pd.to_numeric(show["Precio (USD, VN100)"], errors="coerce").round(2)
@@ -1049,6 +1043,9 @@ def _make_cartera_view(cartera_raw: pd.DataFrame) -> pd.DataFrame:
     return show
 
 
+# =========================
+# UI main
+# =========================
 def render(back_to_home=None):
     _ui_css()
     st.markdown('<div class="wrap">', unsafe_allow_html=True)
@@ -1241,8 +1238,53 @@ def render(back_to_home=None):
     _spacer(14)
 
     # =========================
-    # Export: 2 download_buttons en paralelo (descarga en el primer click)
+    # Export bytes (se generan al calcular cartera)
     # =========================
+    export_cartera = show.drop(columns=["Ticker precio"], errors="ignore").copy()
+    export_flows = flows_view.copy()
+
+    # Firma para evitar recalcular bytes si no cambió la cartera/capital
+    sig = (
+        tuple(export_cartera["Ticker"].astype(str).tolist()) if "Ticker" in export_cartera.columns else (),
+        tuple(np.round(pd.to_numeric(export_cartera["%"], errors="coerce").fillna(0).to_numpy(), 6))
+        if "%" in export_cartera.columns
+        else (),
+        float(capital),
+    )
+
+    if st.session_state.get("cartera_export_sig") != sig:
+        st.session_state["cartera_export_sig"] = sig
+
+        with st.spinner("Preparando exportables..."):
+            # PDF
+            try:
+                st.session_state["cartera_pdf_bytes"] = build_cartera_pdf_bytes(
+                    capital_usd=float(capital),
+                    resumen=resumen,
+                    cartera_show=export_cartera,
+                    flows_show=export_flows,
+                    logo_path=LOGO_PATH,
+                )
+            except Exception as e:
+                st.session_state["cartera_pdf_bytes"] = None
+                st.warning(f"No pude generar el PDF: {e}")
+
+            # Excel
+            try:
+                st.session_state["cartera_xlsx_bytes"] = build_excel_bytes(
+                    cartera_df=export_cartera,
+                    flows_df=export_flows,
+                    resumen=resumen,
+                    capital_usd=float(capital),
+                )
+            except Exception as e:
+                st.session_state["cartera_xlsx_bytes"] = None
+                st.warning(f"No pude generar el Excel: {e}")
+
+    # =========================
+    # Export: 2 botones minimalistas en paralelo (descarga en el primer click)
+    # =========================
+    st.markdown("### Exportar")
 
     now = dt.datetime.now().strftime("%Y%m%d_%H%M")
     pdf_bytes = st.session_state.get("cartera_pdf_bytes")
@@ -1275,4 +1317,7 @@ def render(back_to_home=None):
             )
         else:
             st.button("Excel", use_container_width=True, disabled=True)
+
     st.markdown("</div>", unsafe_allow_html=True)
+```
+
