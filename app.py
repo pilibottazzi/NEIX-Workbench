@@ -9,11 +9,15 @@ try:
 except Exception:
     from tools.MKT import encuesta  # fallback si sigue como tools/MKT
 
-
 BACKOFFICE_URL = "https://neix-workbench-bo.streamlit.app/"
 BI_BANCA_PRIVADA = "https://lookerstudio.google.com/reporting/75c2a6d0-0086-491f-b112-88fe3d257ef9"
 BI_BANCA_CORP = "https://lookerstudio.google.com/reporting/4f70efa8-2b86-4134-a9cb-9e6f90117f3b"
 BI_MIDDLE = "https://lookerstudio.google.com/reporting/5b834e5f-aeef-4042-ac0f-e1ed3564a010"
+
+# ✅ SharePoint Marketing (carpetas)
+SP_MKT_INSTRUCTIVOS = "https://neixcom.sharepoint.com/sites/NEIXSOCIEDADDEBOLSAS.A-Marketingprueba/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FNEIXSOCIEDADDEBOLSAS%2EA%2DMarketingprueba%2FShared%20Documents%2FMarketing%2FInstructivos&viewid=74e4d9a3%2Dd2c9%2D4f09%2D9bc8%2Deb59e613117f&p=true"
+SP_MKT_MATERIALES = "https://neixcom.sharepoint.com/sites/NEIXSOCIEDADDEBOLSAS.A-Marketingprueba/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FNEIXSOCIEDADDEBOLSAS%2EA%2DMarketingprueba%2FShared%20Documents%2FMarketing%2FMateriales%20de%20Marketing&viewid=74e4d9a3%2Dd2c9%2D4f09%2D9bc8%2Deb59e613117f&p=true"
+SP_MKT_PRESENTACIONES = "https://neixcom.sharepoint.com/sites/NEIXSOCIEDADDEBOLSAS.A-Marketingprueba/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FNEIXSOCIEDADDEBOLSAS%2EA%2DMarketingprueba%2FShared%20Documents%2FMarketing%2FPresentaciones&viewid=74e4d9a3%2Dd2c9%2D4f09%2D9bc8%2Deb59e613117f&p=true"
 
 
 # =========================
@@ -198,10 +202,58 @@ if tool:
             st.stop()
 
         # -------------------------
-        # Marketing
+        # Marketing (Encuesta embebida)
         # -------------------------
         elif tool in ("encuesta", "mkt", "marketing", "mkt_encuesta"):
             encuesta.render(None)
+            st.stop()
+
+        # -------------------------
+        # Marketing (links a SharePoint)
+        # -------------------------
+        elif tool == "mkt_instructivos":
+            st.markdown("<div class='section-title'>Marketing · Instructivos</div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-sub'>Carpeta compartida (SharePoint)</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"""
+                <div class="tool-grid">
+                  <a class="tool-btn" href="{SP_MKT_INSTRUCTIVOS}" target="_blank" rel="noopener noreferrer">
+                    Abrir Instructivos
+                  </a>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.stop()
+
+        elif tool == "mkt_materiales":
+            st.markdown("<div class='section-title'>Marketing · Materiales</div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-sub'>Carpeta compartida (SharePoint)</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"""
+                <div class="tool-grid">
+                  <a class="tool-btn" href="{SP_MKT_MATERIALES}" target="_blank" rel="noopener noreferrer">
+                    Abrir Materiales de Marketing
+                  </a>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.stop()
+
+        elif tool == "mkt_presentaciones":
+            st.markdown("<div class='section-title'>Marketing · Presentaciones</div>", unsafe_allow_html=True)
+            st.markdown("<div class='section-sub'>Carpeta compartida (SharePoint)</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"""
+                <div class="tool-grid">
+                  <a class="tool-btn" href="{SP_MKT_PRESENTACIONES}" target="_blank" rel="noopener noreferrer">
+                    Abrir Presentaciones
+                  </a>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             st.stop()
 
         # -------------------------
@@ -318,12 +370,15 @@ with tabs[3]:
 # MARKETING
 with tabs[4]:
     st.markdown("<div class='section-title'>Marketing</div>", unsafe_allow_html=True)
-    st.markdown("<div class='section-sub'>Encuestas y cargas de marketing</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-sub'>Encuestas y carpetas compartidas</div>", unsafe_allow_html=True)
 
     st.markdown(
-        """
+        f"""
         <div class="tool-grid">
           <a class="tool-btn" href="?tool=encuesta">Encuesta Marketing</a>
+          <a class="tool-btn" href="?tool=mkt_instructivos" target="_self">Instructivos</a>
+          <a class="tool-btn" href="?tool=mkt_materiales" target="_self">Materiales de Marketing</a>
+          <a class="tool-btn" href="?tool=mkt_presentaciones" target="_self">Presentaciones</a>
         </div>
         """,
         unsafe_allow_html=True
