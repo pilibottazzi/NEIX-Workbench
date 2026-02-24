@@ -2,7 +2,13 @@ import streamlit as st
 
 from tools.mesa import cartera, ons, vencimientos, bonos, cartera2
 from tools.comerciales import cauciones_mae, cauciones_byma, alquileres, cn
-from tools.MKT import encuesta as encuesta  
+
+# ✅ Marketing (MKT) — preferible minúscula en cloud (case-sensitive)
+try:
+    from tools.mkt import encuesta  # si renombraste tools/mkt
+except Exception:
+    from tools.MKT import encuesta  # fallback si sigue como tools/MKT
+
 
 BACKOFFICE_URL = "https://neix-workbench-bo.streamlit.app/"
 BI_BANCA_PRIVADA = "https://lookerstudio.google.com/reporting/75c2a6d0-0086-491f-b112-88fe3d257ef9"
@@ -10,7 +16,9 @@ BI_BANCA_CORP = "https://lookerstudio.google.com/reporting/4f70efa8-2b86-4134-a9
 BI_MIDDLE = "https://lookerstudio.google.com/reporting/5b834e5f-aeef-4042-ac0f-e1ed3564a010"
 
 
+# =========================
 # CONFIG
+# =========================
 st.set_page_config(
     page_title="NEIX Workbench",
     page_icon="🧰",
@@ -18,7 +26,9 @@ st.set_page_config(
 )
 
 
+# =========================
 # ESTÉTICA PREMIUM
+# =========================
 st.markdown(
     """
     <style>
@@ -137,60 +147,66 @@ st.markdown(
 )
 
 
-def _run_tool_module(mod):
-    """
-    Ejecuta una tool con compatibilidad:
-    - si tiene render(): render(None)
-    - si tiene main(): main()
-    - si no: intenta ejecutar como script (fallback)
-    """
-    if hasattr(mod, "render") and callable(getattr(mod, "render")):
-        mod.render(None)
-        return
-    if hasattr(mod, "main") and callable(getattr(mod, "main")):
-        mod.main()
-        return
-    # fallback: si el módulo ejecuta UI al import (no recomendado pero posible)
-    if hasattr(mod, "__dict__"):
-        return
-    st.error("La herramienta MKT no expone render() ni main().")
-
-
-# ROUTER (?tool=...)
-tool = (st.query_params.get("tool") or "").lower().strip()
-
-if tool:
+def _header():
     st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
     st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
     st.divider()
 
+
+# =========================
+# ROUTER (?tool=...)
+# =========================
+tool = (st.query_params.get("tool") or "").lower().strip()
+
+if tool:
+    _header()
+
     try:
+        # -------------------------
         # Mesa
+        # -------------------------
         if tool == "bonos":
             bonos.render(None)
+            st.stop()
         elif tool == "ons":
             ons.render(None)
+            st.stop()
         elif tool == "cartera":
             cartera.render(None)
+            st.stop()
         elif tool == "cartera2":
             cartera2.render(None)
+            st.stop()
         elif tool in ("tenencia", "tenencias", "vencimientos"):
             vencimientos.render(None)
+            st.stop()
 
+        # -------------------------
         # Comercial
+        # -------------------------
         elif tool == "cauciones_mae":
             cauciones_mae.render(None)
+            st.stop()
         elif tool == "cn":
             cn.render(None)
+            st.stop()
         elif tool == "cauciones_byma":
             cauciones_byma.render(None)
+            st.stop()
         elif tool == "alquileres":
             alquileres.render(None)
+            st.stop()
 
-        # ✅ MKT
-        elif tool in ("mkt", "marketing", "encuesta", "encuesta_mkt", "encuesta"):
-            _run_tool_module(encuesta)
+        # -------------------------
+        # Marketing
+        # -------------------------
+        elif tool in ("encuesta", "mkt", "marketing", "mkt_encuesta"):
+            encuesta.render(None)
+            st.stop()
 
+        # -------------------------
+        # Operaciones -> solo link externo
+        # -------------------------
         elif tool in ("operaciones", "backoffice"):
             st.markdown(
                 f"""
@@ -204,22 +220,23 @@ if tool:
                 """,
                 unsafe_allow_html=True,
             )
+            st.stop()
 
         else:
             st.error("Herramienta no encontrada")
+            st.stop()
 
     except Exception as e:
         st.error("Error cargando la herramienta.")
         st.exception(e)
+        st.stop()
 
-    st.stop()
 
-
+# =========================
 # HOME
-st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
-st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
+# =========================
+_header()
 
-# ✅ Agregamos tab MKT
 tabs = st.tabs(["Mesa", "Comercial", "Operaciones", "Performance · BI", "Marketing"])
 
 # MESA
@@ -239,7 +256,6 @@ with tabs[0]:
         unsafe_allow_html=True
     )
 
-
 # COMERCIAL
 with tabs[1]:
     st.markdown("<div class='section-title'>Comercial</div>", unsafe_allow_html=True)
@@ -258,7 +274,6 @@ with tabs[1]:
         unsafe_allow_html=True
     )
 
-
 # OPERACIONES (solo link externo)
 with tabs[2]:
     st.markdown("<div class='section-title'>Operaciones</div>", unsafe_allow_html=True)
@@ -274,7 +289,6 @@ with tabs[2]:
         """,
         unsafe_allow_html=True
     )
-
 
 # PERFORMANCE / BI
 with tabs[3]:
@@ -301,8 +315,7 @@ with tabs[3]:
         unsafe_allow_html=True
     )
 
-
-# ✅ MKT
+# MARKETING
 with tabs[4]:
     st.markdown("<div class='section-title'>Marketing</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-sub'>Encuestas y cargas de marketing</div>", unsafe_allow_html=True)
@@ -310,7 +323,7 @@ with tabs[4]:
     st.markdown(
         """
         <div class="tool-grid">
-          <a class="tool-btn" href="?tool=mkt_encuesta">Encuesta Marketing</a>
+          <a class="tool-btn" href="?tool=encuesta">Encuesta Marketing</a>
         </div>
         """,
         unsafe_allow_html=True
