@@ -221,7 +221,7 @@ st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsaf
 st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
 
 # ✅ Agregamos tab MKT
-tabs = st.tabs(["Mesa", "Comercial", "Operaciones", "Performance · BI", "MKT"])
+tabs = st.tabs(["Mesa", "Comercial", "Operaciones", "Performance · BI", "Marketing"])
 
 # MESA
 with tabs[0]:
