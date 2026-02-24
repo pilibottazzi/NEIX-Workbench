@@ -3,12 +3,8 @@ import gspread
 from datetime import datetime
 from google.oauth2.service_account import Credentials
 
-# =========================
-# TU CONFIG
-# =========================
-SERVICE_ACCOUNT_FILE = r"C:\Users\pbottazzi\OneDrive - NEIX S.A\Documentos\pyNeix\Dashboards\clavegoog.json"
 SPREADSHEET_ID = "1or-OBykeL0gb44V26ZJqszi027hLJWAPffKqCeVathc"
-SHEET_MARKETING = "Marketing_"
+SHEET_MARKETING = "Marketing"
 
 CATEGORIAS = [
     "Eventos",
@@ -26,11 +22,7 @@ CATEGORIAS = [
     "Curaduría branding",
 ]
 
-# =========================
-# Helpers
-# =========================
 def ar_to_float_or_none(x: str):
-    """Convierte AR -> float: '1.234,56' => 1234.56 ; '82,3905' => 82.3905"""
     if x is None:
         return None
     s = str(x).strip()
@@ -42,15 +34,14 @@ def ar_to_float_or_none(x: str):
     except ValueError:
         return None
 
-
-def gs_client_from_file():
+def gs_client_from_secrets():
+    creds_info = st.secrets["gcp_service_account"]
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
-    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=scopes)
+    creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
     return gspread.authorize(creds)
-
 
 def ensure_worksheet(sh, name: str, headers: list[str]):
     try:
@@ -63,9 +54,8 @@ def ensure_worksheet(sh, name: str, headers: list[str]):
         ws.append_row(headers, value_input_option="USER_ENTERED")
     return ws
 
-
 def append_marketing_row(ts: str, categoria: str, monto_ars: float, monto_usd, observacion: str):
-    gc = gs_client_from_file()
+    gc = gs_client_from_secrets()
     sh = gc.open_by_key(SPREADSHEET_ID)
 
     headers = ["timestamp", "categoria", "monto_ars", "monto_usd", "observacion"]
@@ -76,28 +66,20 @@ def append_marketing_row(ts: str, categoria: str, monto_ars: float, monto_usd, o
         value_input_option="USER_ENTERED",
     )
 
-
-# =========================
-# UI
-# =========================
 st.set_page_config(page_title="Marketing - Cargar gasto", page_icon="🧾", layout="centered")
-
 st.title("Marketing")
 st.caption("Cargar gasto (año y tipo se completan al bajar a Excel)")
 st.divider()
 
 with st.form("marketing_form", clear_on_submit=True):
     categoria = st.selectbox("categoría *", CATEGORIAS)
-
     monto_ars_raw = st.text_input("monto_ars *", placeholder="Ej: 1200000,50")
     monto_usd_raw = st.text_input("monto_usd", placeholder="Ej: 350,75 (opcional)")
     observacion = st.text_area("observacion *", placeholder="Detalle / comentario", height=120)
-
     submitted = st.form_submit_button("Enviar")
 
 if submitted:
     errores = []
-
     if not categoria:
         errores.append("Completar **categoría**.")
     if not monto_ars_raw.strip():
@@ -107,11 +89,11 @@ if submitted:
 
     monto_ars = ar_to_float_or_none(monto_ars_raw)
     if monto_ars is None:
-        errores.append("**monto_ars** no tiene formato válido (ej: 1200000,50).")
+        errores.append("**monto_ars** inválido (ej: 1200000,50).")
 
     monto_usd = ar_to_float_or_none(monto_usd_raw) if monto_usd_raw.strip() else None
     if monto_usd_raw.strip() and monto_usd is None:
-        errores.append("**monto_usd** no tiene formato válido (ej: 350,75).")
+        errores.append("**monto_usd** inválido (ej: 350,75).")
 
     if errores:
         for e in errores:
@@ -122,5 +104,5 @@ if submitted:
             append_marketing_row(ts, categoria, monto_ars, monto_usd, observacion.strip())
             st.success("Enviado ✅ (guardado en Google Sheets)")
         except Exception as ex:
-            st.error("No pude guardar en Google Sheets. Revisá permisos del Sheet y el JSON.")
+            st.error("No pude guardar en Google Sheets. Revisá permisos del Sheet y Secrets.")
             st.exception(ex)
