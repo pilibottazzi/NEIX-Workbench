@@ -1,12 +1,11 @@
 from __future__ import annotations
-
 import json
 from datetime import datetime
-
 import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 st.write("Secrets keys:", list(st.secrets.keys()))
+
 # =========================
 # CONFIG
 # =========================
