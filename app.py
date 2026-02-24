@@ -188,10 +188,9 @@ if tool:
             alquileres.render(None)
 
         # ✅ MKT
-        elif tool in ("mkt", "marketing", "mkt_encuesta", "encuesta_mkt", "encuesta"):
-            _run_tool_module(mkt_encuesta)
+        elif tool in ("mkt", "marketing", "encuesta", "encuesta_mkt", "encuesta"):
+            _run_tool_module(encuesta)
 
-        # Operaciones -> solo link externo
         elif tool in ("operaciones", "backoffice"):
             st.markdown(
                 f"""
