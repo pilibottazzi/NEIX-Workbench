@@ -44,23 +44,10 @@ def _ar_to_float_or_none(x: str):
 
 
 def _get_creds_info():
-    """
-    Soporta:
-    - st.secrets["gcp_service_account"] como dict (TOML section)
-    - st.secrets["gcp_service_account"] como string JSON (triple quotes)
-    """
     raw = st.secrets.get("gcp_service_account")
-    if raw is None:
+    if raw is None or not isinstance(raw, dict):
         raise RuntimeError("Falta st.secrets['gcp_service_account']")
-
-    if isinstance(raw, str):
-        return json.loads(raw)
-
-    if isinstance(raw, dict):
-        return raw
-
-    raise RuntimeError("Formato inválido en st.secrets['gcp_service_account']")
-
+    return raw
 
 def _gs_client():
     creds_info = _get_creds_info()
