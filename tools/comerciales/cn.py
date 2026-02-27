@@ -1,10 +1,3 @@
-# fix_looker_excel_coma.py
-# ---------------------------------------------------------
-# Script LOCAL (Windows/Mac/Linux con GUI):
-# - Pide el archivo Excel exportado de Looker (selector).
-# - Convierte Neto/Gross a número real.
-# - Guarda una copia *_coma.xlsx con formato numérico.
-# ---------------------------------------------------------
 
 from __future__ import annotations
 
