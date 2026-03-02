@@ -1,29 +1,6 @@
 # tools/comerciales/transactions_analyzer.py
 # =========================================================
 # Movimientos CV — Transactions Analyzer (NEIX Workbench)
-#
-# Fase 1 (simple y controlado):
-#   TAB 1) CASH_MOVEMENT
-#       - SOLO: FEDERAL FUNDS RECEIVED / FEDERAL FUNDS SENT
-#       - (excluye todo lo demás: fees, activity within acct, taxes, dividends, etc.)
-#
-#   TAB 2) ETFs
-#       - SOLO: Security Type == "EXCHANGE TRADED FUNDS"
-#       - Solo trades reales: Buy/Sell = BUY o SELL
-#
-#   TAB 3) STOCKS
-#       - SOLO: Security Type == "COMMON STOCK"
-#       - Solo trades reales: Buy/Sell = BUY o SELL
-#
-# ROBUSTEZ:
-#   - Detecta el header real buscando "Process Date" (aunque haya metadata arriba)
-#   - Si read_excel devuelve dict (múltiples sheets), usa "Transactions" o la primera
-#   - Normaliza números con coma/punto y fechas
-#
-# UI:
-#   - Presentación limpia, sin features “de más”
-#   - Filtros básicos: fecha (Settlement/Process), rango, symbol (para trades)
-# =========================================================
 
 from __future__ import annotations
 
@@ -403,7 +380,7 @@ def render(_ctx=None) -> None:
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3 = st.columns([1.4, 1.0, 0.9])
+    c1, c2 = st.columns([1.4, 1.0])
 
     with c1:
         up = st.file_uploader("Subí el Excel exportado (Transactions)", type=["xlsx", "xls"])
@@ -416,18 +393,6 @@ def render(_ctx=None) -> None:
             help="Usamos esta fecha para el rango 'Desde/Hasta'.",
         )
 
-    with c3:
-        st.markdown(
-            """
-            <div class="ta-card">
-              <b>Reglas (Fase 1)</b><br/>
-              • CASH: FEDERAL FUNDS (IN/OUT)<br/>
-              • ETFs: EXCHANGE TRADED FUNDS (BUY/SELL)<br/>
-              • STOCKS: COMMON STOCK (BUY/SELL)
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
 
     if not up:
         st.info("Subí un Excel para empezar.")
