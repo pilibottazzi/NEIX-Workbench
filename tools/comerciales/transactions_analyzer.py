@@ -1,12 +1,3 @@
-# tools/comerciales/transactions_analyzer.py
-# NEIX Workbench tool (router-compatible): expone render(_ctx=None)
-# Objetivo:
-# 1) Subir Excel "Transactions" (con encabezado no necesariamente en la fila 1)
-# 2) Detectar dónde empieza la tabla (fila donde aparece "Process Date")
-# 3) Normalizar y categorizar en 5 tabs
-# 4) Reconstruir CASH (Base Currency): saldo inicial + movimientos = saldo final
-#    + opción para inferir saldo inicial desde "FEDERAL FUNDS RECEIVED" / cash movements
-
 from __future__ import annotations
 
 import re
