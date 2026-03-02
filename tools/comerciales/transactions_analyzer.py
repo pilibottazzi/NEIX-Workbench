@@ -1,12 +1,3 @@
-# tools/comerciales/transactions_analyzer.py
-# NEIX Workbench tool — versión “limpia” + UI prolija (sin sumar cosas al pedo)
-# Cambios clave vs tu versión:
-# - La pestaña "Transacciones" (Cash) queda como pediste:
-#   Process Date, Settlement Date, Net Amount (Base Currency), Transaction Type, Security Description
-# - En ingresos/egresos de dinero: EXCLUYE "ACTIVITY WITHIN YOUR ACCT"
-# - Presentación: header más prolijo, filtros compactos, KPIs alineados, tablas más “clean”
-# - Sin inventar features extra: dejamos tabs por categoría pero el foco es Cash/Transacciones
-# - Fix definitivo del error de máscara (siempre reset_index antes de filtrar)
 
 from __future__ import annotations
 
