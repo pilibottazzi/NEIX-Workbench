@@ -1,7 +1,7 @@
 import streamlit as st
 
 from tools.mesa import cartera, ons, vencimientos, bonos, cartera2
-from tools.comerciales import cauciones_mae, cauciones_byma, alquileres, cn
+from tools.comerciales import cauciones_mae, cauciones_byma, alquileres, cn, transactions_analyzer
 
 BACKOFFICE_URL = "https://neix-workbench-bo.streamlit.app/"
 BI_BANCA_PRIVADA = "https://lookerstudio.google.com/reporting/75c2a6d0-0086-491f-b112-88fe3d257ef9"
@@ -194,6 +194,9 @@ if tool:
         elif tool == "alquileres":
             alquileres.render(None)
             st.stop()
+        elif tool == "transactions_analyzer":
+             transactions_analyzer.render(None)
+            st.stop()
 
 
         # -------------------------
@@ -309,6 +312,7 @@ with tabs[1]:
           <a class="tool-btn" href="?tool=alquileres">Alquileres</a>
           <a class="tool-btn" href="?tool=tenencia">Tenencia</a>
           <a class="tool-btn" href="?tool=cn">CN</a>
+          <a class="tool-btn" href="?tool=transactions_analyzer">Movimientos CV</a>
         </div>
         """,
         unsafe_allow_html=True
