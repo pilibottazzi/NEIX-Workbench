@@ -1,166 +1,374 @@
 # tools/comerciales/transactions_analyzer.py
-# Versión simplificada: SOLO CASH_MOVEMENTS + TRADE
-# Enfocada en entender flujo de caja correctamente.
-
 from __future__ import annotations
+
+import io
+import re
+from dataclasses import dataclass
+from typing import Optional, Tuple, List
+
+import numpy as np
 import pandas as pd
 import streamlit as st
-import re
-import datetime as dt
 
 
-# =========================
-# Helpers
-# =========================
-def _norm(s: str) -> str:
-    s = str(s).strip().lower()
-    s = s.replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u").replace("ñ","n")
-    s = re.sub(r"[^a-z0-9]+", "", s)
-    return s
+# =========================================================
+# UI config (simple, prolijo, sin ruido)
+# =========================================================
+TITLE = "Movimientos CV — Transactions Analyzer"
+SUBTITLE = (
+    "Subí el Excel exportado (Transactions). "
+    "Arrancamos simple: CASH_MOVEMENT (solo Federal Funds) y TRADE."
+)
+
+# Columnas objetivo (las que vos pediste)
+COL_PROCESS_DATE = "Process Date"
+COL_SETTLEMENT_DATE = "Settlement Date"
+COL_NET_BASE = "Net Amount (Base Currency)"
+COL_TX_TYPE = "Transaction Type"
+COL_SEC_DESC = "Security Description"
+
+# Para TRADE (mínimo útil)
+COL_SYMBOL = "SYMBOL"
+COL_BUYSELL = "Buy/Sell"
+COL_QTY = "Quantity"
+COL_PRICE = "Price (Transaction Currency)"
+
+# Reglas iniciales (ordenadas para ir ampliando)
+CASH_TYPE_ALLOWLIST = {
+    "FEDERAL FUNDS RECEIVED",
+}
+CASH_TYPE_EXCLUDE = {
+    "ACTIVITY WITHIN YOUR ACCT",  # lo sacamos del análisis de cash (por ahora)
+    # fees/impuestos/etc se tratarán después en otras categorías
+}
 
 
-def _find_header_row(df_raw: pd.DataFrame):
+# =========================================================
+# Helpers: parsing robusto
+# =========================================================
+def _norm(s: object) -> str:
+    if s is None:
+        return ""
+    return str(s).strip()
+
+def _norm_upper(s: object) -> str:
+    return _norm(s).upper()
+
+def _to_float(x: object) -> float:
     """
-    Busca la fila donde aparece 'Process Date'
-    porque el Excel exportado NO empieza en la fila 1.
+    Convierte números estilo US/EU/mixto.
+    - Soporta "189,525.00" (US) y "189.525,00" (EU) y números puros.
+    - Si no puede, devuelve np.nan.
     """
-    for i in range(min(len(df_raw), 200)):
-        row = df_raw.iloc[i].astype(str).tolist()
-        normed = [_norm(x) for x in row]
-        if "processdate" in normed:
+    if x is None:
+        return np.nan
+    if isinstance(x, (int, float, np.number)) and not pd.isna(x):
+        return float(x)
+
+    s = str(x).strip()
+    if s == "" or s.lower() == "nan":
+        return np.nan
+
+    # dejar solo dígitos, separadores y signo
+    s = re.sub(r"[^0-9\.,\-]", "", s)
+
+    if s.count(",") > 0 and s.count(".") > 0:
+        # Si viene "189,525.00" => commas miles, dot decimal
+        # Si viene "189.525,00" => dot miles, comma decimal
+        # Decidimos por el último separador: el último suele ser decimal
+        last_comma = s.rfind(",")
+        last_dot = s.rfind(".")
+        if last_dot > last_comma:
+            # decimal = dot
+            s = s.replace(",", "")
+        else:
+            # decimal = comma
+            s = s.replace(".", "")
+            s = s.replace(",", ".")
+    else:
+        # Solo uno de los dos
+        # Si hay una sola coma y parece decimal => reemplazar por punto
+        if s.count(",") == 1 and s.count(".") == 0:
+            s = s.replace(",", ".")
+        # Si hay puntos, asumimos que el último punto es decimal si tiene 2 dígitos,
+        # si no, igual dejamos que float() intente.
+        # (si fueran miles con puntos, float lo toma mal, pero suele venir con coma+dot mezclado)
+
+    try:
+        return float(s)
+    except Exception:
+        return np.nan
+
+def _to_datetime(x: object) -> pd.Timestamp:
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return pd.NaT
+    # pandas suele parsear bien
+    return pd.to_datetime(x, errors="coerce")
+
+def _find_header_row(df_raw: pd.DataFrame, needle: str = "Process Date") -> Optional[int]:
+    """
+    Busca la fila donde aparece el header real.
+    Escanea todas las celdas como texto y encuentra la primera fila que contenga 'Process Date'.
+    """
+    target = needle.strip().lower()
+    for i in range(len(df_raw)):
+        row = df_raw.iloc[i].astype(str).str.strip().str.lower()
+        if (row == target).any():
             return i
     return None
 
-
-def _load_transactions(file) -> pd.DataFrame:
-    df_raw = pd.read_excel(file, header=None)
-
-    header_row = _find_header_row(df_raw)
-    if header_row is None:
-        st.error("No encontré la fila donde empieza la tabla (Process Date).")
-        st.stop()
-
+def _build_table_from_header(df_raw: pd.DataFrame, header_row: int) -> pd.DataFrame:
     headers = df_raw.iloc[header_row].tolist()
-    df = df_raw.iloc[header_row+1:].copy()
-    df.columns = headers
+    df = df_raw.iloc[header_row + 1 :].copy()
+    df.columns = [str(h).strip() for h in headers]
     df = df.dropna(how="all")
-    df = df.reset_index(drop=True)
-
+    # limpia columnas "Unnamed"
+    df = df.loc[:, [c for c in df.columns if not str(c).startswith("Unnamed")]]
     return df
 
+def _pick_existing_cols(df: pd.DataFrame, wanted: List[str]) -> List[str]:
+    existing = []
+    for c in wanted:
+        if c in df.columns:
+            existing.append(c)
+    return existing
 
-def _parse_dates(df: pd.DataFrame):
-    for col in ["Process Date", "Settlement Date"]:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
-    return df
 
+# =========================================================
+# Loader
+# =========================================================
+@st.cache_data(show_spinner=False)
+def load_transactions_excel(file_bytes: bytes) -> Tuple[pd.DataFrame, dict]:
+    """
+    Devuelve:
+      - df_full: tabla ya con headers correctos
+      - meta: info (header_row, sheet_name, etc.)
+    """
+    meta: dict = {}
 
-def _parse_numbers(df: pd.DataFrame):
-    if "Net Amount (Base Currency)" in df.columns:
-        df["Net Amount (Base Currency)"] = (
-            df["Net Amount (Base Currency)"]
-            .astype(str)
-            .str.replace(".", "", regex=False)
-            .str.replace(",", ".", regex=False)
+    xls = pd.ExcelFile(io.BytesIO(file_bytes))
+
+    # Priorizamos una hoja que contenga "Transactions" en el nombre, si existe
+    sheet_name = None
+    for s in xls.sheet_names:
+        if "trans" in s.lower():
+            sheet_name = s
+            break
+    if sheet_name is None:
+        sheet_name = xls.sheet_names[0]
+
+    meta["sheet_name"] = sheet_name
+
+    df_raw = pd.read_excel(xls, sheet_name=sheet_name, header=None, dtype=object)
+    header_row = _find_header_row(df_raw, needle=COL_PROCESS_DATE)
+    if header_row is None:
+        # fallback: si no encuentra, intenta con "Settlement Date"
+        header_row = _find_header_row(df_raw, needle=COL_SETTLEMENT_DATE)
+
+    if header_row is None:
+        raise ValueError(
+            "No pude encontrar la fila de encabezados (no encontré 'Process Date' ni 'Settlement Date'). "
+            "Revisá que el Excel sea el export de Transactions."
         )
-        df["Net Amount (Base Currency)"] = pd.to_numeric(
-            df["Net Amount (Base Currency)"], errors="coerce"
-        )
+
+    meta["header_row"] = int(header_row)
+    df = _build_table_from_header(df_raw, header_row=header_row)
+
+    return df, meta
+
+
+# =========================================================
+# Normalización mínima (para empezar ordenadas)
+# =========================================================
+def normalize_minimal(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    # Fechas
+    if COL_PROCESS_DATE in df.columns:
+        df[COL_PROCESS_DATE] = df[COL_PROCESS_DATE].apply(_to_datetime)
+    if COL_SETTLEMENT_DATE in df.columns:
+        df[COL_SETTLEMENT_DATE] = df[COL_SETTLEMENT_DATE].apply(_to_datetime)
+
+    # Monto base
+    if COL_NET_BASE in df.columns:
+        df[COL_NET_BASE] = df[COL_NET_BASE].apply(_to_float)
+
+    # Normalizaciones de texto
+    if COL_TX_TYPE in df.columns:
+        df[COL_TX_TYPE] = df[COL_TX_TYPE].astype(str).str.strip()
+    if COL_SEC_DESC in df.columns:
+        df[COL_SEC_DESC] = df[COL_SEC_DESC].astype(str).str.strip()
+
+    # Campos TRADE (si están)
+    if COL_SYMBOL in df.columns:
+        df[COL_SYMBOL] = df[COL_SYMBOL].astype(str).str.strip().replace({"nan": "", "NaN": ""})
+    if COL_BUYSELL in df.columns:
+        df[COL_BUYSELL] = df[COL_BUYSELL].astype(str).str.strip().replace({"nan": "", "NaN": ""})
+    if COL_QTY in df.columns:
+        df[COL_QTY] = df[COL_QTY].apply(_to_float)
+    if COL_PRICE in df.columns:
+        df[COL_PRICE] = df[COL_PRICE].apply(_to_float)
+
     return df
 
 
-# =========================
-# MAIN
-# =========================
-def render_transactions_analyzer():
+# =========================================================
+# Segmentación inicial
+# =========================================================
+def build_cash_movements(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    CASH_MOVEMENT inicial:
+    - Solo Transaction Type in CASH_TYPE_ALLOWLIST (por ahora: FEDERAL FUNDS RECEIVED)
+    - Excluye ACTIVITY WITHIN YOUR ACCT
+    - Clasifica IN/OUT por signo del Net Amount (Base Currency)
+    """
+    need = [COL_PROCESS_DATE, COL_SETTLEMENT_DATE, COL_NET_BASE, COL_TX_TYPE, COL_SEC_DESC]
+    missing = [c for c in need if c not in df.columns]
+    if missing:
+        raise ValueError(f"Faltan columnas para CASH_MOVEMENT: {missing}")
 
-    st.markdown("## 🧾 Movimientos CV — Cash & Trades")
-    st.caption("Primero entendemos flujo de caja (Cash). Después vemos Trades.")
+    d = df.copy()
 
-    file = st.file_uploader("Subí el Excel exportado (Transactions)", type=["xlsx","xls"])
+    d["_tx_type_u"] = d[COL_TX_TYPE].map(_norm_upper)
+    d = d[~d["_tx_type_u"].isin({t.upper() for t in CASH_TYPE_EXCLUDE})]
 
-    if not file:
-        st.info("Subí el Excel para comenzar.")
+    d = d[d["_tx_type_u"].isin({t.upper() for t in CASH_TYPE_ALLOWLIST})].copy()
+
+    # Dirección por signo
+    d["direction"] = np.where(d[COL_NET_BASE] >= 0, "IN", "OUT")
+
+    # Orden y columnas finales (las que pediste)
+    out = d[
+        [COL_PROCESS_DATE, COL_SETTLEMENT_DATE, COL_NET_BASE, COL_TX_TYPE, COL_SEC_DESC, "direction"]
+    ].copy()
+
+    out = out.sort_values(by=[COL_SETTLEMENT_DATE, COL_PROCESS_DATE], ascending=True, na_position="last")
+    out = out.reset_index(drop=True)
+    return out
+
+
+def build_trades(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    TRADE inicial (simple, sin sobre-interpretar):
+    - Toma filas donde haya Buy/Sell o SYMBOL o Quantity > 0
+    - Muestra columnas básicas
+    """
+    cols = _pick_existing_cols(
+        df,
+        [COL_PROCESS_DATE, COL_SETTLEMENT_DATE, COL_SYMBOL, COL_BUYSELL, COL_QTY, COL_PRICE, COL_NET_BASE, COL_SEC_DESC, COL_TX_TYPE],
+    )
+    if not cols:
+        raise ValueError("No encuentro columnas para armar TRADE (SYMBOL / Buy/Sell / Quantity).")
+
+    d = df.copy()
+
+    # Heurística de trade
+    has_bs = (COL_BUYSELL in d.columns) & (d[COL_BUYSELL].astype(str).str.strip() != "")
+    has_sym = (COL_SYMBOL in d.columns) & (d[COL_SYMBOL].astype(str).str.strip() != "") & (~d[COL_SYMBOL].astype(str).str.lower().eq("nan"))
+    has_qty = (COL_QTY in d.columns) & (pd.to_numeric(d[COL_QTY], errors="coerce").fillna(0).abs() > 0)
+
+    m = has_bs | has_sym | has_qty
+    d = d.loc[m, cols].copy()
+
+    # Orden
+    if COL_SETTLEMENT_DATE in d.columns:
+        d = d.sort_values(by=[COL_SETTLEMENT_DATE, COL_PROCESS_DATE], ascending=True, na_position="last")
+    d = d.reset_index(drop=True)
+    return d
+
+
+# =========================================================
+# Render
+# =========================================================
+def render(_=None):
+    st.markdown(f"## 🧾 {TITLE}")
+    st.caption(SUBTITLE)
+
+    uploaded = st.file_uploader(
+        "Subí el Excel exportado (Transactions)",
+        type=["xlsx", "xls"],
+        accept_multiple_files=False,
+    )
+
+    if not uploaded:
+        st.info("Subí un Excel para empezar.")
         return
 
-    df = _load_transactions(file)
-    df = _parse_dates(df)
-    df = _parse_numbers(df)
+    try:
+        file_bytes = uploaded.getvalue()
+        df_full, meta = load_transactions_excel(file_bytes)
+        df_full = normalize_minimal(df_full)
 
-    tabs = st.tabs(["CASH_MOVEMENTS", "TRADE"])
+    except Exception as e:
+        st.error("No pude leer el archivo. Revisá que sea el export de Pershing (Transactions).")
+        st.exception(e)
+        return
 
-    # =========================================
-    # TAB 1: CASH_MOVEMENTS
-    # =========================================
-    with tabs[0]:
+    # Top meta (chiquito)
+    with st.expander("Ver detalles de lectura (debug)", expanded=False):
+        st.write(meta)
+        st.write("Columnas detectadas:", list(df_full.columns))
 
-        st.subheader("Ingresos y egresos de dinero")
+    tab_cash, tab_trade = st.tabs(["CASH_MOVEMENT", "TRADE"])
 
-        # Excluir activity within
-        cash_df = df.copy()
-        cash_df = cash_df[
-            ~cash_df["Transaction Type"].str.upper().eq("ACTIVITY WITHIN YOUR ACCT")
-        ]
+    # -------------------------
+    # CASH_MOVEMENT
+    # -------------------------
+    with tab_cash:
+        st.markdown("### CASH_MOVEMENT (in/out) — *solo Federal Funds*")
+        st.caption(
+            "Por ahora: solo `FEDERAL FUNDS RECEIVED`. "
+            "`ACTIVITY WITHIN YOUR ACCT` queda afuera. Fees/impuestos los vemos después."
+        )
 
-        # Solo movimientos en currency
-        cash_df = cash_df[
-            cash_df["Security Description"].str.upper().str.contains("CURRENCY", na=False)
-        ]
+        try:
+            cash = build_cash_movements(df_full)
+        except Exception as e:
+            st.error("No pude construir CASH_MOVEMENT.")
+            st.exception(e)
+            return
 
-        cash_df = cash_df.sort_values("Settlement Date")
+        total = float(np.nansum(cash[COL_NET_BASE].values)) if len(cash) else 0.0
+        n = int(len(cash))
 
-        # Cuadrito limpio
-        show_cols = [
-            "Process Date",
-            "Settlement Date",
-            "Net Amount (Base Currency)",
-            "Transaction Type",
-            "Security Description",
-        ]
-
-        cash_df = cash_df[show_cols].reset_index(drop=True)
-
-        # KPIs
-        total = cash_df["Net Amount (Base Currency)"].sum()
-
-        col1, col2 = st.columns(2)
-        col1.metric("Movimientos netos (Cash)", f"{total:,.2f}")
-        col2.metric("Cantidad movimientos", len(cash_df))
+        c1, c2, c3 = st.columns([1.2, 1, 1])
+        c1.metric("Total (Net Amount Base)", f"{total:,.2f}")
+        c2.metric("Movimientos", f"{n:,}")
+        c3.metric("Rango fechas", f"{cash[COL_SETTLEMENT_DATE].min().date() if n else '-'} → {cash[COL_SETTLEMENT_DATE].max().date() if n else '-'}")
 
         st.divider()
 
+        # Tabla (solo columnas clave, ordenadas)
+        show_cols = [COL_PROCESS_DATE, COL_SETTLEMENT_DATE, COL_NET_BASE, COL_TX_TYPE, COL_SEC_DESC, "direction"]
         st.dataframe(
-            cash_df,
+            cash[show_cols],
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
         )
 
-    # =========================================
-    # TAB 2: TRADE
-    # =========================================
-    with tabs[1]:
+    # -------------------------
+    # TRADE
+    # -------------------------
+    with tab_trade:
+        st.markdown("### TRADE (operaciones)")
+        st.caption("Vista inicial simple para validar que estamos leyendo bien. Luego lo refinamos.")
 
-        st.subheader("Compras y ventas de activos")
+        try:
+            trades = build_trades(df_full)
+        except Exception as e:
+            st.error("No pude construir TRADE.")
+            st.exception(e)
+            return
 
-        trade_df = df.copy()
+        n = int(len(trades))
+        total = float(np.nansum(trades[COL_NET_BASE].values)) if (COL_NET_BASE in trades.columns and n) else 0.0
 
-        # Detectamos trades por BUY / SELL
-        trade_df = trade_df[
-            trade_df["Buy/Sell"].isin(["BUY", "SELL"])
-        ]
+        c1, c2 = st.columns([1.2, 1])
+        c1.metric("Movimientos", f"{n:,}")
+        if COL_NET_BASE in trades.columns:
+            c2.metric("Total (Net Amount Base)", f"{total:,.2f}")
+        else:
+            c2.metric("Total (Net Amount Base)", "—")
 
-        trade_df = trade_df.sort_values("Settlement Date")
-
-        st.metric("Cantidad trades", len(trade_df))
-
-        st.dataframe(
-            trade_df,
-            use_container_width=True,
-            hide_index=True
-        )
-
-
-# Wrapper obligatorio del Workbench
-def render(_ctx=None):
-    render_transactions_analyzer()
+        st.divider()
+        st.dataframe(trades, use_container_width=True, hide_index=True)
