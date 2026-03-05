@@ -1,17 +1,52 @@
-# tools/db_operaciones_cleaner.py
+# tools/tenencias_to_db.py
 from __future__ import annotations
 
 import re
+import calendar
+import datetime as dt
 from io import BytesIO
-from typing import Dict, List, Optional
+from typing import Optional, Tuple, Dict, List
 
 import pandas as pd
 import streamlit as st
 
 
-# =========================
-# Helpers
-# =========================
+# ============
+# Parse meta
+# ============
+MONTHS_ES = {
+    "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
+    "jul": 7, "ago": 8, "sep": 9, "set": 9, "oct": 10, "nov": 11, "dic": 12
+}
+
+def parse_sheet_meta(sheet_name: str) -> Optional[Tuple[str, dt.date]]:
+    """
+    Espera nombres tipo: '904 Ene-26', '904 dic-25', etc.
+    Devuelve (comitente, fecha_fin_mes)
+    """
+    s = sheet_name.strip()
+    m_com = re.match(r"^\s*(\d+)\s+(.+?)\s*$", s)
+    if not m_com:
+        return None
+    comitente = m_com.group(1)
+    rest = m_com.group(2).strip()
+
+    m = re.search(r"(?i)\b(ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic)\b\W*(\d{2}|\d{4})\b", rest)
+    if not m:
+        return None
+    mon = MONTHS_ES[m.group(1).lower()]
+    y_raw = m.group(2)
+    year = int(y_raw)
+    if year < 100:
+        year = 2000 + year
+
+    last_day = calendar.monthrange(year, mon)[1]
+    return comitente, dt.date(year, mon, last_day)
+
+
+# =================
+# Normalizadores
+# =================
 def _safe_str(x) -> str:
     if x is None:
         return ""
@@ -22,18 +57,12 @@ def _safe_str(x) -> str:
         pass
     return str(x)
 
-def _norm(s: str) -> str:
-    s = _safe_str(s).strip().lower()
-    s = s.replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u").replace("ñ","n")
-    s = re.sub(r"\s+", " ", s)
-    s = s.replace(".", "").replace("°","").replace("º","")
-    return s
-
 def _to_float(x) -> float:
     s = _safe_str(x).strip()
-    if s in ("", "-", "–"):
-        return float("nan")
-    s = s.replace("$", "").replace(" ", "")
+    if s == "":
+        return 0.0
+    s = s.replace("%", "").strip()
+    # 1.234,56 -> 1234.56
     if "," in s and "." in s:
         s = s.replace(".", "").replace(",", ".")
     else:
@@ -41,283 +70,184 @@ def _to_float(x) -> float:
     try:
         return float(s)
     except Exception:
-        return float("nan")
+        return 0.0
 
-def _to_date(x):
-    try:
-        return pd.to_datetime(x, dayfirst=True, errors="coerce")
-    except Exception:
-        return pd.NaT
-
-def _contains(col_norm: str, needles: List[str]) -> bool:
-    return any(n in col_norm for n in needles)
-
-
-# =========================
-# Excel reading robust
-# =========================
-def detect_header_row(xls: pd.ExcelFile, sheet_name: str, max_scan_rows: int = 40) -> int:
-    tmp = pd.read_excel(xls, sheet_name=sheet_name, header=None, nrows=max_scan_rows)
-    best_row, best_score = 0, -1
-
-    wanted = [
-        "especie", "referencia", "tipo operacion", "fecha operacion",
-        "fecha liquidacion", "nro de operacion", "cantidad", "moneda", "precio", "importe"
-    ]
-
-    for i in range(len(tmp)):
-        row_vals = [_norm(v) for v in tmp.iloc[i].tolist()]
-        score = 0
-        for w in wanted:
-            if any(w == rv for rv in row_vals):
-                score += 3
-            elif any(w in rv for rv in row_vals):
-                score += 1
-        if score > best_score:
-            best_score, best_row = score, i
-
-    return best_row
-
-def read_sheet_smart(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
-    try:
-        h = detect_header_row(xls, sheet_name)
-        df = pd.read_excel(xls, sheet_name=sheet_name, header=h)
-        if len(df.columns) and all(_norm(c).startswith("unnamed") for c in df.columns):
-            df = pd.read_excel(xls, sheet_name=sheet_name, header=0)
-        return df
-    except Exception:
-        return pd.read_excel(xls, sheet_name=sheet_name, header=0)
-
-def pick_columns_fuzzy(df: pd.DataFrame) -> Dict[str, Optional[str]]:
-    cols_norm = {c: _norm(c) for c in df.columns}
-
-    def find(needles: List[str], exact: Optional[str] = None) -> Optional[str]:
-        if exact:
-            ex = _norm(exact)
-            for c, cn in cols_norm.items():
-                if cn == ex:
-                    return c
-        for c, cn in cols_norm.items():
-            if _contains(cn, needles):
+def _find_col(df: pd.DataFrame, wanted: List[str]) -> Optional[str]:
+    cols = {c: _safe_str(c).strip().lower() for c in df.columns}
+    for w in wanted:
+        w2 = w.strip().lower()
+        for c, cl in cols.items():
+            if cl == w2:
                 return c
-        return None
+    return None
 
-    return {
-        "especie": find(["especie"], exact="especie"),
-        "referencia": find(["referencia"], exact="referencia"),
-        "tipo_operacion": find(["tipo operacion", "tipooperacion", "tipo"], exact="tipo operacion"),
-        "fecha_operacion": find(["fecha operacion", "fechaoperacion"], exact="fecha operacion"),
-        "fecha_liquidacion": find(["fecha liquidacion", "fechaliquidacion"], exact="fecha liquidacion"),
-        "nro_operacion": find(["nro de operacion", "nro operacion", "numero de operacion", "nro"], exact="nro de operacion"),
-        "cantidad": find(["cantidad"], exact="cantidad"),
-        "moneda": find(["moneda"], exact="moneda"),
-        "precio": find(["precio"], exact="precio"),
-        "importe": find(["importe"], exact="importe"),
-    }
 
-def standardize_df(df: pd.DataFrame) -> pd.DataFrame:
-    m = pick_columns_fuzzy(df)
+# =========================
+# Clasificación por bloque
+# =========================
+TOTAL_TO_CLASS = {
+    "TOTAL ACCIONES": "Acciones",
+    "TOTAL TITULOS PUBLICOS": "Titulos Publicos",
+    # si el día de mañana aparece esto, ya queda listo:
+    "TOTAL TITULOS PÚBLICOS": "Titulos Publicos",
+    "TOTAL FCI": "FCI",
+    "TOTAL OBLIGACIONES NEGOCIABLES": "ON",
+}
 
-    out = pd.DataFrame()
-    out["Especie"] = df[m["especie"]] if m["especie"] else ""
-    out["Referencia"] = df[m["referencia"]] if m["referencia"] else ""
-    out["TipoOperacion"] = df[m["tipo_operacion"]] if m["tipo_operacion"] else ""
-    out["FechaOperacion"] = df[m["fecha_operacion"]].map(_to_date) if m["fecha_operacion"] else pd.NaT
-    out["FechaLiquidacion"] = df[m["fecha_liquidacion"]].map(_to_date) if m["fecha_liquidacion"] else pd.NaT
-    out["NroOperacion"] = df[m["nro_operacion"]] if m["nro_operacion"] else ""
-    out["Cantidad"] = df[m["cantidad"]].map(_to_float) if m["cantidad"] else float("nan")
-    out["Moneda"] = df[m["moneda"]] if m["moneda"] else ""
-    out["Precio"] = df[m["precio"]].map(_to_float) if m["precio"] else float("nan")
-    out["Importe"] = df[m["importe"]].map(_to_float) if m["importe"] else float("nan")
+STOP_ROWS = {
+    "TOTAL POSICION",
+}
 
-    for c in ["Especie", "Referencia", "TipoOperacion", "Moneda", "NroOperacion"]:
-        out[c] = out[c].map(_safe_str).str.strip()
+EXCLUDE_PREFIX = ("TOTAL ",)  # excluimos todas las filas TOTAL* (pero las usamos como “marcadores”)
 
-    out = out[~(
-        out["Especie"].eq("") &
-        out["Referencia"].eq("") &
-        out["TipoOperacion"].eq("") &
-        out["Moneda"].eq("") &
-        out["NroOperacion"].eq("") &
-        out["Importe"].isna()
-    )].copy()
+def tenencias_sheet_to_rows(xls: pd.ExcelFile, sheet: str, comitente: str, fecha_cierre: dt.date) -> pd.DataFrame:
+    raw = pd.read_excel(xls, sheet_name=sheet)
 
-    return out
+    col_especie = _find_col(raw, ["Especie"]) or raw.columns[0]
+    col_cant = _find_col(raw, ["Cantidad"])
+    col_precio = _find_col(raw, ["Precio"])
+    col_importe = _find_col(raw, ["Importe"])
+    col_part = _find_col(raw, ["Part.", "Part"])
 
-def add_quality_flags(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out["Importe_faltante"] = out["Importe"].isna()
-    out["Precio_faltante"] = out["Precio"].isna()
-    out["Cantidad_faltante"] = out["Cantidad"].isna()
-    out["Importe_calculable"] = out["Importe_faltante"] & (~out["Cantidad"].isna()) & (~out["Precio"].isna())
-    out["Importe_sugerido"] = out["Cantidad"] * out["Precio"]
+    df = pd.DataFrame({
+        "especie": raw[col_especie].map(_safe_str).str.strip(),
+        "cantidad": raw[col_cant].map(_to_float) if col_cant else 0.0,
+        "precio": raw[col_precio].map(_to_float) if col_precio else 0.0,
+        "importe": raw[col_importe].map(_to_float) if col_importe else 0.0,
+        "part": raw[col_part].map(_to_float) if col_part else 0.0,
+    })
 
-    out["Quality"] = "OK"
-    out.loc[out["Importe_faltante"], "Quality"] = "FALTA_IMPORTE"
-    out.loc[out["Importe_calculable"], "Quality"] = "FALTA_IMPORTE_PERO_CALCULABLE"
-    return out
+    df = df[df["especie"].ne("")]
 
-def group_sum(df: pd.DataFrame, by: List[str]) -> pd.DataFrame:
-    if df.empty:
-        return pd.DataFrame(columns=by + ["Importe"])
-    g = df.groupby(by, as_index=False)["Importe"].sum()
-    return g.sort_values("Importe", ascending=False)
+//    # Si hay filas totalmente vacías las sacamos
+    df = df[~((df["cantidad"] == 0) & (df["precio"] == 0) & (df["importe"] == 0) & (df["part"] == 0) & (df["especie"] == ""))]
 
-def to_excel_bytes(clean: pd.DataFrame, missing: pd.DataFrame, resumen: Dict[str, pd.DataFrame]) -> bytes:
+    # Clasificación por bloque: vamos recorriendo en orden
+    current_class = "SinClasificar"
+    clases = []
+    for esp in df["especie"].tolist():
+        esp_u = esp.upper().strip()
+
+        # cortar si llega a total posición (si existiese)
+        if esp_u in STOP_ROWS:
+            break
+
+        # si es una fila TOTAL..., cambia el bloque (marcador)
+        if esp_u in TOTAL_TO_CLASS:
+            current_class = TOTAL_TO_CLASS[esp_u]
+            clases.append("__MARKER__")
+            continue
+
+        # si es otra fila total (TOTAL CUENTA CORRIENTE, TOTAL..., etc.) -> marcador genérico
+        if esp_u.startswith("TOTAL "):
+            clases.append("__MARKER__")
+            continue
+
+        # instrumentos “especiales” (si querés tratarlos aparte)
+        if esp_u in ("DOLAR MEP", "PESOS"):
+            clases.append("Moneda")
+            continue
+
+        clases.append(current_class)
+
+    df = df.iloc[:len(clases)].copy()
+    df["clase"] = clases
+
+    # nos quedamos solo con filas de instrumentos reales (no marcadores)
+    df = df[df["clase"].ne("__MARKER__")].copy()
+
+    # agregar columnas base-datos
+    df.insert(0, "comitente", comitente)
+    df.insert(1, "fecha_cierre", fecha_cierre)
+
+    # orden final
+    df = df[["comitente", "fecha_cierre", "clase", "especie", "cantidad", "precio", "importe", "part"]]
+    return df
+
+
+def to_excel_bytes(df: pd.DataFrame, sheets: Dict[str, pd.DataFrame]) -> bytes:
     bio = BytesIO()
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-        clean.to_excel(writer, sheet_name="Limpia", index=False)
-        missing.to_excel(writer, sheet_name="Faltantes", index=False)
-        for name, sdf in resumen.items():
+        df.to_excel(writer, sheet_name="tenencias_db", index=False)
+        for name, sdf in sheets.items():
             sdf.to_excel(writer, sheet_name=name[:31], index=False)
     return bio.getvalue()
 
 
 # =========================
-# Public entrypoint (Workbench)
+# Streamlit
 # =========================
-def render_db_operaciones_cleaner() -> None:
-    """
-    Llamá a esta función desde tu router/menu del Workbench.
-    No usa set_page_config para no pisar la app principal.
-    """
-    st.header("DB Operaciones – Limpieza y análisis")
-    st.caption("Detecta importes faltantes, resume por categorías y exporta Excel (limpia + faltantes).")
+st.set_page_config(page_title="Tenencias → Base de datos", layout="wide")
+st.title("Tenencias valorizadas → Base de datos (comitente/especie)")
+st.caption("Convierte el Excel (una hoja por comitente+mes) en una tabla tipo base de datos.")
 
-    up = st.file_uploader("Subí el Excel", type=["xlsx", "xls"], key="dbop_uploader")
-    if not up:
-        st.info("Subí un Excel para empezar.")
-        return
+uploaded = st.file_uploader("Subí el Excel de tenencias", type=["xlsx", "xls"])
+if not uploaded:
+    st.stop()
 
-    xls = pd.ExcelFile(up)
-    sheet = st.selectbox("Hoja", options=["(todas)"] + xls.sheet_names, index=0, key="dbop_sheet")
+xls = pd.ExcelFile(uploaded)
 
-    dfs = []
-    if sheet == "(todas)":
-        for sh in xls.sheet_names:
-            df0 = read_sheet_smart(xls, sh)
-            df0["__sheet__"] = sh
-            dfs.append(df0)
-    else:
-        df0 = read_sheet_smart(xls, sheet)
-        df0["__sheet__"] = sheet
-        dfs.append(df0)
+meta = []
+for sh in xls.sheet_names:
+    m = parse_sheet_meta(sh)
+    if m:
+        com, fecha = m
+        meta.append({"sheet": sh, "comitente": com, "fecha_cierre": fecha})
 
-    raw = pd.concat(dfs, ignore_index=True)
+meta_df = pd.DataFrame(meta)
+if meta_df.empty:
+    st.error("No pude interpretar nombres de hojas. Ej: '904 Ene-26', '904 Dic-25'.")
+    st.stop()
 
-    std = standardize_df(raw)
-    std.insert(0, "OrigenHoja", raw["__sheet__"].values[: len(std)])  # defensivo
-    std = add_quality_flags(std)
+meta_df = meta_df.sort_values(["comitente", "fecha_cierre"])
+st.subheader("Hojas detectadas")
+st.dataframe(meta_df, use_container_width=True, hide_index=True)
 
-    st.subheader("Controles de limpieza")
-    c1, c2, c3 = st.columns([1, 1, 1])
-    with c1:
-        incluir_moneda_vacia = st.checkbox("Incluir filas Moneda vacía", value=True, key="dbop_moneda")
-    with c2:
-        excluir_sin_especie = st.checkbox("Excluir filas sin Especie", value=True, key="dbop_especie")
-    with c3:
-        imputar_importe = st.checkbox("Imputar Importe si es calculable (Cantidad×Precio)", value=False, key="dbop_imputar")
+comitentes = sorted(meta_df["comitente"].unique())
+sel_com = st.multiselect("Comitentes a procesar", comitentes, default=comitentes)
 
-    work = std.copy()
-    if not incluir_moneda_vacia:
-        work = work[work["Moneda"].ne("")]
-    if excluir_sin_especie:
-        work = work[work["Especie"].ne("")]
+only_latest = st.checkbox("Solo último mes por comitente", value=False)
 
-    if imputar_importe:
-        mask = work["Importe_calculable"]
-        work.loc[mask, "Importe"] = work.loc[mask, "Importe_sugerido"]
-        work = add_quality_flags(work)
+if st.button("Procesar", type="primary"):
+    work = meta_df[meta_df["comitente"].isin(sel_com)].copy()
+    if only_latest:
+        work = work.sort_values(["comitente", "fecha_cierre"]).groupby("comitente", as_index=False).tail(1)
 
-    faltantes = work[work["Importe_faltante"]].copy()
-    limpia = work[~work["Importe_faltante"]].copy()
+    out_rows = []
+    for r in work.itertuples(index=False):
+        try:
+            df_rows = tenencias_sheet_to_rows(xls, r.sheet, r.comitente, r.fecha_cierre)
+            out_rows.append(df_rows)
+        except Exception as e:
+            st.warning(f"Error en hoja {r.sheet}: {e}")
 
-    total_importe = float(limpia["Importe"].sum()) if len(limpia) else 0.0
-    cant_total = len(work)
-    cant_falt = len(faltantes)
-    pct_falt = (cant_falt / cant_total * 100) if cant_total else 0.0
+    if not out_rows:
+        st.error("No se generó ninguna fila.")
+        st.stop()
 
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Filas totales", f"{cant_total:,}")
-    k2.metric("Filas sin Importe", f"{cant_falt:,}")
-    k3.metric("% sin Importe", f"{pct_falt:,.2f}%")
-    k4.metric("Suma Importe (solo limpias)", f"{total_importe:,.2f}")
+    db = pd.concat(out_rows, ignore_index=True)
 
-    if cant_falt:
-        st.warning("Hay filas SIN Importe. Revisá la pestaña Faltantes y exportá.")
-    else:
-        st.success("No hay filas sin Importe 🎉")
+    st.success(f"Listo: {len(db):,} filas (instrumentos)")
 
-    res_tipo = group_sum(limpia, ["TipoOperacion"])
-    res_mon = group_sum(limpia, ["Moneda"])
-    res_especie = group_sum(limpia, ["Especie"])
-    res_ref = group_sum(limpia, ["Referencia"])
-
-    tabs = st.tabs(["Resumen", "Limpia", "Faltantes", "Diagnóstico", "Raw Preview"])
-
-    with tabs[0]:
-        a, b = st.columns(2)
-        with a:
-            st.subheader("Importe por Tipo Operación")
-            st.dataframe(res_tipo, use_container_width=True, hide_index=True)
-        with b:
-            st.subheader("Importe por Moneda")
-            st.dataframe(res_mon, use_container_width=True, hide_index=True)
-
-        c, d = st.columns(2)
-        with c:
-            st.subheader("Top Especies por Importe")
-            st.dataframe(res_especie.head(50), use_container_width=True, hide_index=True)
-        with d:
-            st.subheader("Top Referencias por Importe")
-            st.dataframe(res_ref.head(50), use_container_width=True, hide_index=True)
-
-    with tabs[1]:
-        st.subheader("Base limpia (con Importe)")
-        st.dataframe(limpia.sort_values("FechaOperacion", ascending=False), use_container_width=True, hide_index=True)
-
-    with tabs[2]:
-        st.subheader("Filas con Importe faltante")
-        show_cols = [
-            "OrigenHoja","Especie","Referencia","TipoOperacion","FechaOperacion","FechaLiquidacion",
-            "NroOperacion","Cantidad","Moneda","Precio","Importe","Quality","Importe_calculable","Importe_sugerido"
-        ]
-        st.dataframe(faltantes[show_cols], use_container_width=True, hide_index=True)
-
-    with tabs[3]:
-        st.subheader("Chequeos útiles")
-        calc = work[work["Importe_calculable"]].copy()
-        st.write("**Faltantes calculables (Cantidad×Precio):**", len(calc))
-        st.dataframe(calc.head(200), use_container_width=True, hide_index=True)
-
-        mv = work[work["Moneda"].eq("")].copy()
-        st.write("**Moneda vacía:**", len(mv))
-        st.dataframe(mv.head(200), use_container_width=True, hide_index=True)
-
-        fn = work[work["FechaOperacion"].isna() | work["FechaLiquidacion"].isna()].copy()
-        st.write("**Fecha nula:**", len(fn))
-        st.dataframe(fn.head(200), use_container_width=True, hide_index=True)
-
-    with tabs[4]:
-        st.subheader("Raw preview (para debug)")
-        st.dataframe(raw.head(50), use_container_width=True, hide_index=True)
-
-    st.subheader("Exportar")
-    excel_bytes = to_excel_bytes(
-        limpia,
-        faltantes,
-        {
-            "Resumen_TipoOp": res_tipo,
-            "Resumen_Moneda": res_mon,
-            "Resumen_Especie": res_especie,
-            "Resumen_Referencia": res_ref,
-        }
+    # Resumen por comitente/clase
+    resumen = (
+        db.groupby(["comitente", "fecha_cierre", "clase"], as_index=False)
+          .agg(importe=("importe", "sum"), part=("part", "sum"), instrumentos=("especie", "count"))
+          .sort_values(["comitente", "fecha_cierre", "importe"], ascending=[True, True, False])
     )
 
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Base (tenencias_db)")
+        st.dataframe(db, use_container_width=True, hide_index=True)
+    with c2:
+        st.subheader("Resumen por clase")
+        st.dataframe(resumen, use_container_width=True, hide_index=True)
+
+    excel_bytes = to_excel_bytes(db, {"resumen_clase": resumen})
     st.download_button(
-        "Descargar Excel (Limpia + Faltantes + Resúmenes)",
+        "Descargar Excel (base + resumen)",
         data=excel_bytes,
-        file_name="db_operaciones_limpieza.xlsx",
+        file_name="tenencias_base_datos.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="dbop_download",
     )
