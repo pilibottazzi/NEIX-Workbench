@@ -1,4 +1,4 @@
-# tools/transactions_analyze.py
+# tools/tenencias_to_db.py
 from __future__ import annotations
 
 import re
@@ -34,7 +34,10 @@ def parse_sheet_meta(sheet_name: str) -> Optional[Tuple[str, dt.date]]:
     comitente = m_com.group(1)
     rest = m_com.group(2).strip()
 
-    m = re.search(r"(?i)\b(ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic)\b\W*(\d{2}|\d{4})\b", rest)
+    m = re.search(
+        r"(?i)\b(ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic)\b\W*(\d{2}|\d{4})\b",
+        rest
+    )
     if not m:
         return None
 
@@ -133,19 +136,32 @@ def read_sheet_smart(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
 
 
 # =========================
-# 4) Clasificación por bloque (TOTAL...)
+# 4) Clasificación REAL (hacia atrás)
 # =========================
-TOTAL_TO_CLASS = {
+TOTAL_LABELS = {
     "TOTAL ACCIONES": "Acciones",
     "TOTAL TITULOS PUBLICOS": "Titulos Publicos",
     "TOTAL TITULOS PÚBLICOS": "Titulos Publicos",
     "TOTAL OBLIGACIONES NEGOCIABLES": "ON",
     "TOTAL FCI": "FCI",
+    "TOTAL CUENTA CORRIENTE": "Cuenta Corriente",
 }
 
 STOP_ROWS = {"TOTAL POSICION"}  # si aparece
 
-def tenencias_sheet_to_rows(xls: pd.ExcelFile, sheet: str, comitente: str, fecha_cierre: dt.date) -> pd.DataFrame:
+
+def tenencias_sheet_to_rows(
+    xls: pd.ExcelFile,
+    sheet: str,
+    comitente: str,
+    fecha_cierre: dt.date
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Devuelve:
+      - instrumentos_db: filas de instrumentos (sin filas TOTAL)
+      - totales_db: filas TOTAL (TOTAL ACCIONES, TOTAL CUENTA CORRIENTE, etc.)
+    Clasifica “hacia atrás” siguiendo el Excel.
+    """
     raw = read_sheet_smart(xls, sheet)
 
     col_especie = _find_col(raw, ["Especie"]) or raw.columns[0]
@@ -162,39 +178,53 @@ def tenencias_sheet_to_rows(xls: pd.ExcelFile, sheet: str, comitente: str, fecha
         "part": raw[col_part].map(_to_float) if col_part else float("nan"),
     })
 
-    # quedarnos con filas con especie (aunque sea TOTAL...)
     df = df[df["especie"].ne("")].copy()
 
-    current_class = "SinClasificar"
-    out_rows = []
+    pending_rows: List[Dict] = []
+    out_instruments: List[Dict] = []
+    out_totals: List[Dict] = []
+
+    def flush_pending_as(clase: str) -> None:
+        nonlocal pending_rows, out_instruments
+        if not pending_rows:
+            return
+        for r in pending_rows:
+            r["clase"] = clase
+            out_instruments.append(r)
+        pending_rows = []
 
     for _, row in df.iterrows():
         esp = _safe_str(row["especie"]).strip()
         esp_u = esp.upper().strip()
 
-        # cortar si llega a TOTAL POSICION
         if esp_u in STOP_ROWS:
             break
 
-        # Marcadores de bloque
-        if esp_u in TOTAL_TO_CLASS:
-            current_class = TOTAL_TO_CLASS[esp_u]
+        # si es TOTAL mapeado -> clasificar bloque anterior + guardar total
+        if esp_u in TOTAL_LABELS:
+            clase_total = TOTAL_LABELS[esp_u]
+            flush_pending_as(clase_total)
+
+            out_totals.append({
+                "comitente": comitente,
+                "fecha_cierre": fecha_cierre,
+                "total_tipo": clase_total,
+                "label": esp_u,
+                "importe_total": row["importe"],
+                "part_total": row["part"],
+            })
             continue
 
-        # cualquier TOTAL ... se ignora como data
+        # cualquier TOTAL (no mapeado) corta bloque, pero no se guarda
         if esp_u.startswith("TOTAL "):
+            flush_pending_as("SinClasificar")
             continue
 
-        # monedas/resúmenes
-        if esp_u in ("DOLAR MEP", "PESOS"):
-            clase = "Moneda"
-        else:
-            clase = current_class
-
-        out_rows.append({
+        # fila normal -> acumular
+        pending_rows.append({
             "comitente": comitente,
             "fecha_cierre": fecha_cierre,
-            "clase": clase,
+            "clase": "SinClasificar",  # se define al flush
             "especie": esp,
             "cantidad": row["cantidad"],
             "precio": row["precio"],
@@ -202,12 +232,38 @@ def tenencias_sheet_to_rows(xls: pd.ExcelFile, sheet: str, comitente: str, fecha
             "part": row["part"],
         })
 
-    out = pd.DataFrame(out_rows)
-    if out.empty:
-        return out
+    # si quedó algo sin TOTAL al final
+    flush_pending_as("SinClasificar")
 
-    # limpieza final: si importe es NaN pero cantidad y precio están, dejamos NaN (no inventamos)
+    instrumentos_db = pd.DataFrame(out_instruments)
+    totales_db = pd.DataFrame(out_totals)
+    return instrumentos_db, totales_db
+
+
+def make_total_cc_anual(totales_db: pd.DataFrame) -> pd.DataFrame:
+    """
+    Tabla anual: TOTAL CUENTA CORRIENTE por comitente y año.
+    """
+    if totales_db.empty:
+        return pd.DataFrame(columns=["comitente", "anio", "importe_total_cc"])
+
+    t = totales_db.copy()
+    t["anio"] = pd.to_datetime(t["fecha_cierre"]).dt.year
+
+    cc = t[t["total_tipo"].eq("Cuenta Corriente")].copy()
+    out = (
+        cc.groupby(["comitente", "anio"], as_index=False)
+          .agg(importe_total_cc=("importe_total", "sum"))
+          .sort_values(["comitente", "anio"])
+    )
     return out
+
+
+def group_sum(df: pd.DataFrame, by: List[str]) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=by + ["importe"])
+    g = df.groupby(by, as_index=False).agg(importe=("importe", "sum"))
+    return g.sort_values("importe", ascending=False)
 
 
 def to_excel_bytes(base: pd.DataFrame, sheets: Dict[str, pd.DataFrame]) -> bytes:
@@ -222,13 +278,9 @@ def to_excel_bytes(base: pd.DataFrame, sheets: Dict[str, pd.DataFrame]) -> bytes
 # =========================
 # 5) Entry point Workbench
 # =========================
-def render() -> None:
-    """
-    Llamar desde el router del Workbench.
-    No usar set_page_config acá.
-    """
+def render_tenencias_to_db() -> None:
     st.header("Tenencias valorizadas → Base tipo DB")
-    st.caption("Convierte un Excel (una hoja por comitente+mes) en una tabla: comitente / fecha_cierre / especie / importes.")
+    st.caption("Convierte un Excel (una hoja por comitente+mes) en una tabla tipo base de datos + totales y total CC anual.")
 
     uploaded = st.file_uploader("Subí el Excel de tenencias", type=["xlsx", "xls"], key="ten_up")
     if not uploaded:
@@ -272,16 +324,19 @@ def render() -> None:
     if only_latest:
         work = work.sort_values(["comitente", "fecha_cierre"]).groupby("comitente", as_index=False).tail(1)
 
-    out_rows = []
+    out_instruments = []
+    out_totals = []
     errores = []
 
     for r in work.itertuples(index=False):
         try:
-            df_rows = tenencias_sheet_to_rows(xls, r.sheet, r.comitente, r.fecha_cierre)
-            if df_rows is None or df_rows.empty:
+            inst_db, tot_db = tenencias_sheet_to_rows(xls, r.sheet, r.comitente, r.fecha_cierre)
+            if inst_db is None or inst_db.empty:
                 errores.append(f"{r.sheet}: sin filas útiles (revisar formato)")
             else:
-                out_rows.append(df_rows)
+                out_instruments.append(inst_db)
+            if tot_db is not None and not tot_db.empty:
+                out_totals.append(tot_db)
         except Exception as e:
             errores.append(f"{r.sheet}: {e}")
 
@@ -292,13 +347,16 @@ def render() -> None:
         if len(errores) > 15:
             st.write(f"… y {len(errores)-15} más.")
 
-    if not out_rows:
+    if not out_instruments:
         st.error("No se generaron filas. Probá con un comitente específico para debug.")
         return
 
-    db = pd.concat(out_rows, ignore_index=True)
+    db = pd.concat(out_instruments, ignore_index=True)
+    totales = pd.concat(out_totals, ignore_index=True) if out_totals else pd.DataFrame(
+        columns=["comitente", "fecha_cierre", "total_tipo", "label", "importe_total", "part_total"]
+    )
 
-    # Resumen por comitente/fecha/clase
+    # Resúmenes
     resumen_clase = (
         db.groupby(["comitente", "fecha_cierre", "clase"], as_index=False)
           .agg(
@@ -309,24 +367,42 @@ def render() -> None:
           .sort_values(["comitente", "fecha_cierre", "importe"], ascending=[True, True, False])
     )
 
-    st.success(f"Listo: {len(db):,} filas (instrumentos).")
+    total_cc_anual = make_total_cc_anual(totales)
 
-    t1, t2, t3 = st.tabs(["Base", "Resumen por clase", "Control"])
+    st.success(f"Listo: {len(db):,} filas (instrumentos). Totales detectados: {len(totales):,}")
+
+    t1, t2, t3, t4 = st.tabs(["Base", "Resumen por clase", "Totales", "TOTAL CC anual"])
     with t1:
         st.dataframe(db, use_container_width=True, hide_index=True)
     with t2:
         st.dataframe(resumen_clase, use_container_width=True, hide_index=True)
     with t3:
-        # chequeos útiles
-        falt_importe = db[db["importe"].isna()].copy()
-        st.write("Filas con Importe vacío:", len(falt_importe))
-        st.dataframe(falt_importe.head(200), use_container_width=True, hide_index=True)
+        st.dataframe(totales, use_container_width=True, hide_index=True)
+    with t4:
+        st.dataframe(total_cc_anual, use_container_width=True, hide_index=True)
 
-    excel_bytes = to_excel_bytes(db, {"resumen_clase": resumen_clase})
+    # Export
+    excel_bytes = to_excel_bytes(
+        db,
+        {
+            "resumen_clase": resumen_clase,
+            "totales_db": totales,
+            "TOTAL_CC_ANUAL": total_cc_anual,
+        }
+    )
+
     st.download_button(
-        "Descargar Excel (base + resumen)",
+        "Descargar Excel (base + resúmenes + totales)",
         data=excel_bytes,
         file_name="tenencias_base_datos.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="ten_dl",
     )
+
+
+# =========================
+# 6) Workbench expected entrypoint
+# =========================
+def render():
+    """Entry point estándar para NEIX Workbench."""
+    return render_tenencias_to_db()
