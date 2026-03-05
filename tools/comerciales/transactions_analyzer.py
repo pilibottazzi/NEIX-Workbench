@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import re
 from io import BytesIO
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
 
 
 # =========================
-# Normalización / parsing
+# Helpers
 # =========================
 def _safe_str(x) -> str:
     if x is None:
@@ -22,26 +22,19 @@ def _safe_str(x) -> str:
         pass
     return str(x)
 
-def _norm_colname(s: str) -> str:
+def _norm(s: str) -> str:
     s = _safe_str(s).strip().lower()
     s = s.replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u").replace("ñ","n")
     s = re.sub(r"\s+", " ", s)
-    s = s.replace(".", "").replace("°", "").replace("º", "")
+    s = s.replace(".", "").replace("°","").replace("º","")
     return s
 
 def _to_float(x) -> float:
-    """
-    Convierte a float:
-    - '-' / '' -> NaN
-    - '1.234,56' -> 1234.56
-    - '1234,56' -> 1234.56
-    - '1234.56' -> 1234.56
-    """
     s = _safe_str(x).strip()
-    if s == "" or s == "-":
+    if s in ("", "-", "–"):
         return float("nan")
     s = s.replace("$", "").replace(" ", "")
-    # miles/decimales
+    # 1.234,56 -> 1234.56
     if "," in s and "." in s:
         s = s.replace(".", "").replace(",", ".")
     else:
@@ -52,41 +45,91 @@ def _to_float(x) -> float:
         return float("nan")
 
 def _to_date(x):
-    # Excel puede venir como datetime, string dd/mm/yy, etc.
     try:
         return pd.to_datetime(x, dayfirst=True, errors="coerce")
     except Exception:
         return pd.NaT
 
-def pick_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
-    """
-    Mapea columnas de tu base a nombres estándar.
-    """
-    cols = {c: _norm_colname(c) for c in df.columns}
+def _contains(col_norm: str, needles: List[str]) -> bool:
+    return any(n in col_norm for n in needles)
 
-    def find(*candidates: str) -> Optional[str]:
-        for cand in candidates:
-            cand = _norm_colname(cand)
-            for orig, norm in cols.items():
-                if norm == cand:
-                    return orig
+def detect_header_row(xls: pd.ExcelFile, sheet_name: str, max_scan_rows: int = 40) -> int:
+    """
+    Lee la hoja sin header y busca la fila donde aparecen keywords tipo:
+    'Especie', 'Tipo Operación', 'Fecha Operación', 'Importe', etc.
+    Devuelve el índice de fila (0-based) para usar como header=...
+    """
+    tmp = pd.read_excel(xls, sheet_name=sheet_name, header=None, nrows=max_scan_rows)
+    best_row = 0
+    best_score = -1
+
+    wanted = [
+        "especie", "referencia", "tipo operacion", "fecha operacion",
+        "fecha liquidacion", "nro de operacion", "cantidad", "moneda", "precio", "importe"
+    ]
+
+    for i in range(len(tmp)):
+        row_vals = [_norm(v) for v in tmp.iloc[i].tolist()]
+        score = 0
+        for w in wanted:
+            if any(w == rv for rv in row_vals):
+                score += 3
+            elif any(w in rv for rv in row_vals):
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_row = i
+
+    return best_row
+
+def read_sheet_smart(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
+    """
+    Relee con header detectado. Si falla, cae a header=0.
+    """
+    try:
+        h = detect_header_row(xls, sheet_name)
+        df = pd.read_excel(xls, sheet_name=sheet_name, header=h)
+        # si quedó todo Unnamed, fallback
+        if all(_norm(c).startswith("unnamed") for c in df.columns):
+            df = pd.read_excel(xls, sheet_name=sheet_name, header=0)
+        return df
+    except Exception:
+        return pd.read_excel(xls, sheet_name=sheet_name, header=0)
+
+def pick_columns_fuzzy(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+    """
+    Match tolerante (contiene) para columnas.
+    """
+    cols_norm = {c: _norm(c) for c in df.columns}
+
+    def find(needles: List[str], exact: Optional[str] = None) -> Optional[str]:
+        # 1) exacto si aplica
+        if exact:
+            ex = _norm(exact)
+            for c, cn in cols_norm.items():
+                if cn == ex:
+                    return c
+        # 2) contiene
+        for c, cn in cols_norm.items():
+            if _contains(cn, needles):
+                return c
         return None
 
     return {
-        "especie": find("Especie"),
-        "referencia": find("Referencia"),
-        "tipo_operacion": find("Tipo Operación", "Tipo Operacion"),
-        "fecha_operacion": find("Fecha Operacion", "Fecha Operación"),
-        "fecha_liquidacion": find("Fecha Liquidacion", "Fecha Liquidación"),
-        "nro_operacion": find("Nro de operación", "Nro de operacion", "Nro operación", "Nro operacion"),
-        "cantidad": find("Cantidad"),
-        "moneda": find("Moneda"),
-        "precio": find("Precio"),
-        "importe": find("Importe"),
+        "especie": find(["especie"], exact="especie"),
+        "referencia": find(["referencia"], exact="referencia"),
+        "tipo_operacion": find(["tipo operacion", "tipooperacion", "tipo"], exact="tipo operacion"),
+        "fecha_operacion": find(["fecha operacion", "fechaoperacion"], exact="fecha operacion"),
+        "fecha_liquidacion": find(["fecha liquidacion", "fechaliquidacion"], exact="fecha liquidacion"),
+        "nro_operacion": find(["nro de operacion", "nro operacion", "numero de operacion", "nro"], exact="nro de operacion"),
+        "cantidad": find(["cantidad"], exact="cantidad"),
+        "moneda": find(["moneda"], exact="moneda"),
+        "precio": find(["precio"], exact="precio"),
+        "importe": find(["importe"], exact="importe"),
     }
 
 def standardize_df(df: pd.DataFrame) -> pd.DataFrame:
-    m = pick_columns(df)
+    m = pick_columns_fuzzy(df)
 
     out = pd.DataFrame()
     out["Especie"] = df[m["especie"]] if m["especie"] else ""
@@ -100,12 +143,20 @@ def standardize_df(df: pd.DataFrame) -> pd.DataFrame:
     out["Precio"] = df[m["precio"]].map(_to_float) if m["precio"] else float("nan")
     out["Importe"] = df[m["importe"]].map(_to_float) if m["importe"] else float("nan")
 
-    # limpieza de strings
     for c in ["Especie", "Referencia", "TipoOperacion", "Moneda", "NroOperacion"]:
         out[c] = out[c].map(_safe_str).str.strip()
 
-    return out
+    # borra filas 100% vacías
+    out = out[~(
+        out["Especie"].eq("") &
+        out["Referencia"].eq("") &
+        out["TipoOperacion"].eq("") &
+        out["Moneda"].eq("") &
+        out["NroOperacion"].eq("") &
+        out["Importe"].isna()
+    )].copy()
 
+    return out
 
 def add_quality_flags(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -114,36 +165,39 @@ def add_quality_flags(df: pd.DataFrame) -> pd.DataFrame:
     out["Precio_faltante"] = out["Precio"].isna()
     out["Cantidad_faltante"] = out["Cantidad"].isna()
 
-    # Importe calculable si tengo cantidad y precio, pero importe falta
     out["Importe_calculable"] = out["Importe_faltante"] & (~out["Cantidad"].isna()) & (~out["Precio"].isna())
     out["Importe_sugerido"] = out["Cantidad"] * out["Precio"]
 
-    # “calidad” simple
     out["Quality"] = "OK"
     out.loc[out["Importe_faltante"], "Quality"] = "FALTA_IMPORTE"
     out.loc[out["Importe_calculable"], "Quality"] = "FALTA_IMPORTE_PERO_CALCULABLE"
 
     return out
 
+def group_sum(df: pd.DataFrame, by: List[str]) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=by + ["Importe"])
+    g = df.groupby(by, as_index=False)["Importe"].sum()
+    return g.sort_values("Importe", ascending=False)
 
 def to_excel_bytes(clean: pd.DataFrame, missing: pd.DataFrame, resumen: Dict[str, pd.DataFrame]) -> bytes:
     bio = BytesIO()
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
         clean.to_excel(writer, sheet_name="Limpia", index=False)
         missing.to_excel(writer, sheet_name="Faltantes", index=False)
-        for name, df in resumen.items():
-            df.to_excel(writer, sheet_name=name[:31], index=False)
+        for name, sdf in resumen.items():
+            sdf.to_excel(writer, sheet_name=name[:31], index=False)
     return bio.getvalue()
 
 
 # =========================
-# Streamlit UI
+# Streamlit
 # =========================
 st.set_page_config(page_title="DB Operaciones – Limpieza & Explorer", layout="wide")
 st.title("DB Operaciones – Limpieza y análisis")
-st.caption("Objetivo: detectar importes faltantes, limpiar y entender totales por categoría.")
+st.caption("Detecta importes faltantes, resume por categorías y exporta Excel (limpia + faltantes).")
 
-up = st.file_uploader("Subí el Excel (operaciones/débitos)", type=["xlsx", "xls"])
+up = st.file_uploader("Subí el Excel", type=["xlsx", "xls"])
 if not up:
     st.stop()
 
@@ -153,51 +207,48 @@ sheet = st.selectbox("Hoja", options=["(todas)"] + xls.sheet_names, index=0)
 dfs = []
 if sheet == "(todas)":
     for sh in xls.sheet_names:
-        df0 = pd.read_excel(xls, sheet_name=sh)
+        df0 = read_sheet_smart(xls, sh)
         df0["__sheet__"] = sh
         dfs.append(df0)
 else:
-    df0 = pd.read_excel(xls, sheet_name=sheet)
+    df0 = read_sheet_smart(xls, sheet)
     df0["__sheet__"] = sheet
     dfs.append(df0)
 
 raw = pd.concat(dfs, ignore_index=True)
 
 std = standardize_df(raw)
-std.insert(0, "OrigenHoja", raw["__sheet__"].values)
+std.insert(0, "OrigenHoja", raw["__sheet__"].values[: len(std)])  # defensivo
 std = add_quality_flags(std)
 
-# Opciones de limpieza
+# Controles
 st.subheader("Controles de limpieza")
-
 c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
 with c1:
-    incluir_moneda = st.checkbox("Incluir filas Moneda vacía", value=True)
+    incluir_moneda_vacia = st.checkbox("Incluir filas Moneda vacía", value=True)
 with c2:
-    solo_con_especie = st.checkbox("Excluir filas sin Especie", value=True)
+    excluir_sin_especie = st.checkbox("Excluir filas sin Especie", value=True)
 with c3:
-    imputar = st.checkbox("Imputar Importe cuando sea calculable (Cantidad×Precio)", value=False)
+    imputar_importe = st.checkbox("Imputar Importe si es calculable (Cantidad×Precio)", value=False)
 with c4:
-    st.write("")
+    st.caption("Tip: activá imputación si querés completar los '-' cuando haya Cantidad y Precio.")
 
 work = std.copy()
-if not incluir_moneda:
+if not incluir_moneda_vacia:
     work = work[work["Moneda"].ne("")]
-if solo_con_especie:
+if excluir_sin_especie:
     work = work[work["Especie"].ne("")]
 
-# imputación
-if imputar:
+if imputar_importe:
     mask = work["Importe_calculable"]
     work.loc[mask, "Importe"] = work.loc[mask, "Importe_sugerido"]
-    work = add_quality_flags(work)  # recomputar flags
+    work = add_quality_flags(work)
 
-# Separar faltantes
 faltantes = work[work["Importe_faltante"]].copy()
 limpia = work[~work["Importe_faltante"]].copy()
 
 # KPIs
-total_importe = limpia["Importe"].sum() if len(limpia) else 0.0
+total_importe = float(limpia["Importe"].sum()) if len(limpia) else 0.0
 cant_total = len(work)
 cant_falt = len(faltantes)
 pct_falt = (cant_falt / cant_total * 100) if cant_total else 0.0
@@ -209,47 +260,40 @@ k3.metric("% sin Importe", f"{pct_falt:,.2f}%")
 k4.metric("Suma Importe (solo limpias)", f"{total_importe:,.2f}")
 
 if cant_falt:
-    st.warning("Hay filas SIN Importe. Abajo tenés el listado y podés exportar para corregir.")
+    st.warning("Hay filas SIN Importe. Abajo tenés el detalle y podés exportar para corregir.")
 else:
     st.success("No hay filas sin Importe 🎉")
 
 # Resúmenes
-def group_sum(df: pd.DataFrame, by: List[str]) -> pd.DataFrame:
-    if df.empty:
-        return pd.DataFrame(columns=by + ["Importe"])
-    g = df.groupby(by, as_index=False)["Importe"].sum()
-    return g.sort_values("Importe", ascending=False)
-
 res_tipo = group_sum(limpia, ["TipoOperacion"])
 res_mon = group_sum(limpia, ["Moneda"])
 res_especie = group_sum(limpia, ["Especie"])
 res_ref = group_sum(limpia, ["Referencia"])
 
-# Layout
-tab1, tab2, tab3, tab4 = st.tabs(["Resumen", "Limpia", "Faltantes", "Diagnóstico"])
+tabs = st.tabs(["Resumen", "Limpia", "Faltantes", "Diagnóstico", "Raw Preview"])
 
-with tab1:
-    cA, cB = st.columns(2)
-    with cA:
+with tabs[0]:
+    a, b = st.columns(2)
+    with a:
         st.subheader("Importe por Tipo Operación")
         st.dataframe(res_tipo, use_container_width=True, hide_index=True)
-    with cB:
+    with b:
         st.subheader("Importe por Moneda")
         st.dataframe(res_mon, use_container_width=True, hide_index=True)
 
-    cC, cD = st.columns(2)
-    with cC:
+    c, d = st.columns(2)
+    with c:
         st.subheader("Top Especies por Importe")
-        st.dataframe(res_especie.head(30), use_container_width=True, hide_index=True)
-    with cD:
+        st.dataframe(res_especie.head(50), use_container_width=True, hide_index=True)
+    with d:
         st.subheader("Top Referencias por Importe")
-        st.dataframe(res_ref.head(30), use_container_width=True, hide_index=True)
+        st.dataframe(res_ref.head(50), use_container_width=True, hide_index=True)
 
-with tab2:
+with tabs[1]:
     st.subheader("Base limpia (con Importe)")
     st.dataframe(limpia.sort_values("FechaOperacion", ascending=False), use_container_width=True, hide_index=True)
 
-with tab3:
+with tabs[2]:
     st.subheader("Filas con Importe faltante")
     show_cols = [
         "OrigenHoja","Especie","Referencia","TipoOperacion","FechaOperacion","FechaLiquidacion",
@@ -257,30 +301,31 @@ with tab3:
     ]
     st.dataframe(faltantes[show_cols], use_container_width=True, hide_index=True)
 
-with tab4:
+with tabs[3]:
     st.subheader("Chequeos útiles")
-    # 1) faltantes calculables
     calc = work[work["Importe_calculable"]].copy()
-    st.write("**Faltantes que sí se pueden calcular (Cantidad×Precio):**", len(calc))
-    st.dataframe(calc[show_cols].head(200), use_container_width=True, hide_index=True)
+    st.write("**Faltantes calculables (Cantidad×Precio):**", len(calc))
+    st.dataframe(calc.head(200), use_container_width=True, hide_index=True)
 
-    # 2) filas con moneda vacía
     mv = work[work["Moneda"].eq("")].copy()
-    st.write("**Filas con Moneda vacía:**", len(mv))
-    st.dataframe(mv[show_cols].head(200), use_container_width=True, hide_index=True)
+    st.write("**Moneda vacía:**", len(mv))
+    st.dataframe(mv.head(200), use_container_width=True, hide_index=True)
 
-    # 3) fechas nulas
     fn = work[work["FechaOperacion"].isna() | work["FechaLiquidacion"].isna()].copy()
-    st.write("**Filas con Fecha nula (operación o liquidación):**", len(fn))
-    st.dataframe(fn[show_cols].head(200), use_container_width=True, hide_index=True)
+    st.write("**Fecha nula (operación o liquidación):**", len(fn))
+    st.dataframe(fn.head(200), use_container_width=True, hide_index=True)
+
+with tabs[4]:
+    st.subheader("Raw preview (para debug)")
+    st.dataframe(raw.head(50), use_container_width=True, hide_index=True)
+    st.caption("Si acá ves encabezados raros o corridos, el detector de header lo corrige en la lectura smart.")
 
 # Export
 st.subheader("Exportar")
-
 excel_bytes = to_excel_bytes(
-    clean=limpia,
-    missing=faltantes,
-    resumen={
+    limpia,
+    faltantes,
+    {
         "Resumen_TipoOp": res_tipo,
         "Resumen_Moneda": res_mon,
         "Resumen_Especie": res_especie,
