@@ -1,4 +1,4 @@
-# tools/tenencias_to_db.py
+# tools/transactions_analyze.py
 from __future__ import annotations
 
 import re
@@ -222,7 +222,7 @@ def to_excel_bytes(base: pd.DataFrame, sheets: Dict[str, pd.DataFrame]) -> bytes
 # =========================
 # 5) Entry point Workbench
 # =========================
-def render_tenencias_to_db() -> None:
+def render() -> None:
     """
     Llamar desde el router del Workbench.
     No usar set_page_config acá.
