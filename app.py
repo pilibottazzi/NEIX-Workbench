@@ -195,7 +195,7 @@ if tool:
             alquileres.render(None)
             st.stop()
         elif tool == "transactions_analyzer":
-            transactions_analyzer.render(None)
+            transactions_analyzer.render()
             st.stop()
 
 
