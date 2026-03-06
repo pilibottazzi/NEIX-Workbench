@@ -159,14 +159,9 @@ st.markdown(
 
 
 def _header():
-    st.markdown(
-        """
-        <div class="neix-title">N E I X &nbsp;&nbsp;Workbench</div>
-        <div class="neix-caption">Navegación por áreas y proyectos</div>
-        <div class="neix-accent"></div>
-        """,
-        unsafe_allow_html=True
-    )
+    st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
+    st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
+    st.markdown("<div class='neix-line'></div>", unsafe_allow_html=True)
     st.divider()
 
 
