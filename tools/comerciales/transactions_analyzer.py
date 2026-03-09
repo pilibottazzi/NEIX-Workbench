@@ -11,43 +11,71 @@ import streamlit as st
 
 
 # =========================
-# UI (minimal, pro)
+# UI (minimal)
 # =========================
 def _inject_css() -> None:
     st.markdown(
         """
 <style>
-    .block-container { padding-top: 1.2rem; max-width: 1220px; }
-    h1 { margin-bottom: 0.2rem; }
-    .subtle { color: rgba(0,0,0,0.55); font-size: 0.95rem; margin-top: 0.1rem; }
-    .kpi {
-        padding: 12px 14px;
-        border: 1px solid rgba(0,0,0,0.08);
-        border-radius: 14px;
-        background: #fff;
+    .block-container {
+        padding-top: 1.1rem;
+        max-width: 1120px;
     }
-    .kpi .label {
-        color: rgba(0,0,0,0.55);
-        font-size: 0.85rem;
-        margin-bottom: 4px;
-    }
-    .kpi .value {
-        font-size: 1.55rem;
-        font-weight: 700;
+
+    h1 {
+        margin-bottom: 0.15rem;
         letter-spacing: -0.02em;
     }
-    .pill {
-        display:inline-block;
-        padding: 3px 10px;
-        border-radius: 999px;
-        border: 1px solid rgba(0,0,0,0.12);
-        font-size: 0.82rem;
-        color: rgba(0,0,0,0.7);
+
+    h2, h3 {
+        letter-spacing: -0.02em;
     }
+
+    .subtle {
+        color: rgba(0,0,0,0.55);
+        font-size: 0.96rem;
+        margin-top: 0.1rem;
+        margin-bottom: 0.1rem;
+    }
+
+    .kpi {
+        padding: 14px 16px;
+        border: 1px solid rgba(0,0,0,0.07);
+        border-radius: 16px;
+        background: #fff;
+    }
+
+    .kpi .label {
+        color: rgba(0,0,0,0.52);
+        font-size: 0.85rem;
+        margin-bottom: 6px;
+    }
+
+    .kpi .value {
+        font-size: 1.85rem;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        line-height: 1.1;
+    }
+
+    .pill {
+        display: inline-block;
+        padding: 5px 11px;
+        border-radius: 999px;
+        border: 1px solid rgba(0,0,0,0.10);
+        font-size: 0.82rem;
+        color: rgba(0,0,0,0.68);
+        background: #fff;
+    }
+
     .hr {
-        height:1px;
+        height: 1px;
         background: rgba(0,0,0,0.08);
-        margin: 10px 0 12px;
+        margin: 12px 0 14px;
+    }
+
+    .section-space {
+        height: 12px;
     }
 </style>
         """,
@@ -103,10 +131,6 @@ def _norm(s: str) -> str:
 
 
 def _find_header_row(df0: pd.DataFrame) -> int:
-    """
-    Pershing export: arriba hay metadata (Account, Client, etc).
-    Buscamos la fila donde aparezca 'Process Date' y otros headers clave.
-    """
     key = _norm("Process Date")
     candidates = []
 
@@ -143,7 +167,6 @@ def _to_float(x):
 
     s = s.replace(" ", "")
 
-    # soporta "22.733,58" y "22733.58"
     if re.search(r"\d+,\d+$", s) and s.count(",") == 1 and s.count(".") >= 1:
         s = s.replace(".", "").replace(",", ".")
     elif s.count(",") == 1 and s.count(".") == 0:
@@ -167,10 +190,6 @@ def _to_date(x):
 
 
 def _read_pershing_excel(file_bytes: bytes) -> pd.DataFrame:
-    """
-    Lee el Excel y devuelve un DF con columnas canon.
-    IMPORTANTE: evitamos sheet_name=None.
-    """
     xls = pd.ExcelFile(io.BytesIO(file_bytes))
     sheet0 = xls.sheet_names[0]
     df0 = pd.read_excel(xls, sheet_name=sheet0, header=None, dtype=object)
@@ -180,7 +199,7 @@ def _read_pershing_excel(file_bytes: bytes) -> pd.DataFrame:
         raise ValueError("No pude detectar la fila de encabezados (Process Date).")
 
     headers = df0.iloc[hdr].astype(str).tolist()
-    df = df0.iloc[hdr + 1 :].copy()
+    df = df0.iloc[hdr + 1:].copy()
     df.columns = headers
     df = df.dropna(how="all")
 
@@ -234,7 +253,7 @@ def _read_pershing_excel(file_bytes: bytes) -> pd.DataFrame:
 
 
 # =========================
-# Classification (fase actual)
+# Classification
 # =========================
 CASH_TX = {"FEDERAL FUNDS RECEIVED", "FEDERAL FUNDS SENT"}
 INTERNAL_TX = {"ACTIVITY WITHIN YOUR ACCT"}
@@ -320,12 +339,8 @@ STOCK_TYPES = {
 
 
 # =========================
-# Enrichment / monthly base
+# Analysis helpers
 # =========================
-def _month_label(ts: pd.Timestamp) -> str:
-    return ts.strftime("%Y-%m")
-
-
 def _first_non_empty(series: pd.Series) -> str:
     vals = [str(x).strip() for x in series.dropna().tolist() if str(x).strip() not in {"", "-", "nan", "None"}]
     return vals[0] if vals else ""
@@ -392,13 +407,13 @@ def _build_monthly_consolidated(df: pd.DataFrame, date_col: str = "Settlement Da
 
     monthly = base.copy()
 
-    monthly = monthly.join(_group_sum(dfa["analysis_bucket"].eq("Cash In"), "cash_in_base", absolute=False))
+    monthly = monthly.join(_group_sum(dfa["analysis_bucket"].eq("Cash In"), "cash_in_base"))
     monthly = monthly.join(_group_sum(dfa["analysis_bucket"].eq("Cash Out"), "cash_out_base", absolute=True))
     monthly = monthly.join(_group_sum(dfa["analysis_bucket"].eq("Buy"), "buys_base", absolute=True))
-    monthly = monthly.join(_group_sum(dfa["analysis_bucket"].eq("Sell"), "sells_base", absolute=False))
-    monthly = monthly.join(_group_sum(dfa["analysis_bucket"].eq("Dividend"), "dividends_base", absolute=False))
-    monthly = monthly.join(_group_sum(dfa["analysis_bucket"].eq("Tax"), "taxes_base", absolute=False))
-    monthly = monthly.join(_group_sum(dfa["analysis_bucket"].eq("Fee"), "fees_base", absolute=False))
+    monthly = monthly.join(_group_sum(dfa["analysis_bucket"].eq("Sell"), "sells_base"))
+    monthly = monthly.join(_group_sum(dfa["analysis_bucket"].eq("Dividend"), "dividends_base"))
+    monthly = monthly.join(_group_sum(dfa["analysis_bucket"].eq("Tax"), "taxes_base"))
+    monthly = monthly.join(_group_sum(dfa["analysis_bucket"].eq("Fee"), "fees_base"))
 
     monthly = monthly.fillna(0.0)
 
@@ -426,25 +441,19 @@ def _build_monthly_consolidated(df: pd.DataFrame, date_col: str = "Settlement Da
     monthly = monthly.reset_index()
     monthly["month"] = monthly["month_end"].dt.strftime("%Y-%m")
 
-    ordered_cols = [
-        "month",
-        "month_end",
-        "cash_in_base",
-        "cash_out_base",
-        "buys_base",
-        "sells_base",
-        "dividends_base",
-        "taxes_base",
-        "fees_base",
-        "net_external_flow_base",
-        "net_trading_flow_base",
-        "net_income_costs_base",
-        "net_total_flow_base",
-        "trade_count",
-        "unique_symbols",
-        "rows",
-    ]
-    return monthly[ordered_cols].copy()
+    return monthly[
+        [
+            "month",
+            "cash_in_base",
+            "cash_out_base",
+            "buys_base",
+            "sells_base",
+            "dividends_base",
+            "taxes_base",
+            "fees_base",
+            "net_total_flow_base",
+        ]
+    ].copy()
 
 
 def _build_monthly_positions(df: pd.DataFrame, date_col: str = "Settlement Date") -> pd.DataFrame:
@@ -456,32 +465,12 @@ def _build_monthly_positions(df: pd.DataFrame, date_col: str = "Settlement Date"
 
     trades = trades[trades["symbol_key"].astype(str).str.strip().ne("")].copy()
 
-    trades["buy_qty"] = np.where(trades["Buy/Sell"].eq("BUY"), trades["Quantity"].fillna(0.0), 0.0)
-    trades["sell_qty"] = np.where(trades["Buy/Sell"].eq("SELL"), trades["Quantity"].fillna(0.0), 0.0)
-    trades["buy_amount_base"] = np.where(
-        trades["Buy/Sell"].eq("BUY"),
-        trades["Net Amount (Base Currency)"].abs().fillna(0.0),
-        0.0,
-    )
-    trades["sell_amount_base"] = np.where(
-        trades["Buy/Sell"].eq("SELL"),
-        trades["Net Amount (Base Currency)"].fillna(0.0),
-        0.0,
-    )
-
     monthly_symbol = (
         trades.groupby(["month_end", "symbol_key"], dropna=False)
         .agg(
             qty_delta=("signed_qty", "sum"),
-            buy_qty=("buy_qty", "sum"),
-            sell_qty=("sell_qty", "sum"),
-            buy_amount_base=("buy_amount_base", "sum"),
-            sell_amount_base=("sell_amount_base", "sum"),
-            trade_count=("symbol_key", "size"),
             security_description=("Security Description", _first_non_empty),
             security_type=("Security Type", _first_non_empty),
-            isin=("ISIN", _first_non_empty),
-            cusip=("CUSIP", _first_non_empty),
         )
         .reset_index()
     )
@@ -491,8 +480,6 @@ def _build_monthly_positions(df: pd.DataFrame, date_col: str = "Settlement Date"
         .agg(
             security_description=("Security Description", _first_non_empty),
             security_type=("Security Type", _first_non_empty),
-            isin=("ISIN", _first_non_empty),
-            cusip=("CUSIP", _first_non_empty),
         )
         .reset_index()
     )
@@ -510,63 +497,27 @@ def _build_monthly_positions(df: pd.DataFrame, date_col: str = "Settlement Date"
     )
 
     out = grid.merge(
-        monthly_symbol[
-            [
-                "month_end",
-                "symbol_key",
-                "qty_delta",
-                "buy_qty",
-                "sell_qty",
-                "buy_amount_base",
-                "sell_amount_base",
-                "trade_count",
-            ]
-        ],
+        monthly_symbol[["month_end", "symbol_key", "qty_delta"]],
         on=["month_end", "symbol_key"],
         how="left",
     )
 
-    fill_cols = [
-        "qty_delta",
-        "buy_qty",
-        "sell_qty",
-        "buy_amount_base",
-        "sell_amount_base",
-        "trade_count",
-    ]
-    out[fill_cols] = out[fill_cols].fillna(0.0)
-
+    out["qty_delta"] = out["qty_delta"].fillna(0.0)
     out = out.sort_values(["symbol_key", "month_end"]).copy()
     out["closing_qty"] = out.groupby("symbol_key")["qty_delta"].cumsum()
-    out["avg_buy_cost_month"] = np.where(
-        out["buy_qty"] > 0,
-        out["buy_amount_base"] / out["buy_qty"],
-        np.nan,
-    )
 
-    # mostramos meses con posición abierta o con actividad en el mes
-    out = out[(out["closing_qty"].round(10) != 0) | (out["trade_count"] > 0)].copy()
-
+    out = out[out["closing_qty"].round(10) != 0].copy()
     out["month"] = out["month_end"].dt.strftime("%Y-%m")
 
-    ordered_cols = [
-        "month",
-        "month_end",
-        "symbol_key",
-        "security_description",
-        "security_type",
-        "isin",
-        "cusip",
-        "buy_qty",
-        "sell_qty",
-        "qty_delta",
-        "closing_qty",
-        "buy_amount_base",
-        "sell_amount_base",
-        "avg_buy_cost_month",
-        "trade_count",
-    ]
-    return out[ordered_cols].sort_values(["month_end", "symbol_key"]).copy()
+    return out[
+        [
+            "month",
+            "symbol_key",
+            "security_description",
+            "security_type",
+            "closing_qty",
+        ]
+    ].sort_values(["month", "symbol_key"]).copy()
 
 
 # =========================
@@ -599,15 +550,19 @@ def _prepare_download(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8-sig")
 
 
+def _show_df(df: pd.DataFrame, height: int = 420) -> None:
+    st.dataframe(df, use_container_width=True, height=height, hide_index=True)
+
+
 # =========================
-# Main render
+# Main
 # =========================
 def render(_ctx=None) -> None:
     _inject_css()
 
     st.title("Movimientos CV — Transactions Analyzer")
     st.markdown(
-        '<div class="subtle">Lectura, clasificación y análisis mensual base del comitente. Todo en Base Currency (USD) y filtrado por Settlement Date.</div>',
+        '<div class="subtle">Lectura, clasificación y análisis mensual base del comitente. Todo en Base Currency (USD).</div>',
         unsafe_allow_html=True,
     )
 
@@ -615,23 +570,18 @@ def render(_ctx=None) -> None:
 
     up = st.file_uploader("Subí el Excel exportado (Transactions)", type=["xlsx", "xls"])
 
-    ctrl_col1, ctrl_col2 = st.columns([1.0, 1.4])
-
-    with ctrl_col1:
-        st.caption("Fecha para análisis (global)")
-        date_col = "Settlement Date"
-
-    df_raw: Optional[pd.DataFrame] = None
-    if up is not None:
-        try:
-            df_raw = _read_pershing_excel(up.getvalue())
-        except Exception as e:
-            st.error("No pude leer el Excel o detectar correctamente la fila de encabezados.")
-            st.exception(e)
-            return
-    else:
+    if up is None:
         st.info("Subí el Excel para empezar.")
         return
+
+    try:
+        df_raw = _read_pershing_excel(up.getvalue())
+    except Exception as e:
+        st.error("No pude leer el Excel o detectar correctamente la fila de encabezados.")
+        st.exception(e)
+        return
+
+    date_col = "Settlement Date"
 
     if date_col not in df_raw.columns:
         st.error("No encontré 'Settlement Date' en el archivo.")
@@ -646,23 +596,8 @@ def render(_ctx=None) -> None:
         st.warning("El archivo no tiene filas válidas con Settlement Date.")
         return
 
-    min_d = df[date_col].min().date()
-    max_d = df[date_col].max().date()
-
-    with ctrl_col2:
-        st.caption("Desde / Hasta (global)")
-        from_d, to_d = st.date_input(
-            "Rango",
-            value=(min_d, max_d),
-            min_value=min_d,
-            max_value=max_d,
-            label_visibility="collapsed",
-        )
-
-    df = df[(df[date_col].dt.date >= from_d) & (df[date_col].dt.date <= to_d)].copy()
-
     # =========================
-    # Clasificación actual
+    # Clasificación base
     # =========================
     df_cash = df[df.apply(_is_cash_movement, axis=1)].copy()
 
@@ -707,43 +642,35 @@ def render(_ctx=None) -> None:
 
     df_tax = df_tax_all.copy()
 
-    # =========================
-    # Nuevas tablas mensuales
-    # =========================
     monthly_cons = _build_monthly_consolidated(df, date_col=date_col)
     monthly_pos = _build_monthly_positions(df, date_col=date_col)
 
     # =========================
-    # Tabs
+    # TOP: Overview tabs
     # =========================
     tab_over, tab_cash, tab_etf, tab_stock, tab_div, tab_fee, tab_tax = st.tabs(
-        ["Overview", "Cash Movement", "ETFs", "Stocks", "Dividends", "Fees", "Taxes"]
+        ["Overview", "Cash", "ETFs", "Stocks", "Dividends", "Fees", "Taxes"]
     )
 
-    # =========================
-    # Overview
-    # =========================
     with tab_over:
-        c1, c2, c3, c4 = st.columns(4)
-
         cash_in = (
             df_cash[df_cash["Transaction Type"].astype(str).str.upper().eq("FEDERAL FUNDS RECEIVED")]["Net Amount (Base Currency)"].sum()
             if "Net Amount (Base Currency)" in df_cash.columns
             else 0.0
         )
         cash_out = (
-            df_cash[df_cash["Transaction Type"].astype(str).str.upper().eq("FEDERAL FUNDS SENT")]["Net Amount (Base Currency)"].sum()
+            df_cash[df_cash["Transaction Type"].astype(str).str.upper().eq("FEDERAL FUNDS SENT")]["Net Amount (Base Currency)"].abs().sum()
             if "Net Amount (Base Currency)" in df_cash.columns
             else 0.0
         )
-
         etf_trades = len(df_etf)
         stock_trades = len(df_stock)
 
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
-            _kpi("Cash In (Base)", _fmt_money(cash_in))
+            _kpi("Cash In", _fmt_money(cash_in))
         with c2:
-            _kpi("Cash Out (Base)", _fmt_money(abs(cash_out)))
+            _kpi("Cash Out", _fmt_money(cash_out))
         with c3:
             _kpi("ETF Trades", f"{etf_trades:,}")
         with c4:
@@ -751,207 +678,94 @@ def render(_ctx=None) -> None:
 
         st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
         st.markdown(
-            f'<span class="pill">Rango: {from_d} → {to_d}</span> &nbsp; '
             f'<span class="pill">Filas: {len(df):,}</span>',
             unsafe_allow_html=True,
         )
 
-        st.caption("Fase actual: lectura, clasificación y orden mensual base. Todavía sin valuation ni rentabilidad.")
-        st.dataframe(df.head(25), use_container_width=True, height=420)
-
-    # =========================
-    # Cash Movement
-    # =========================
     with tab_cash:
-        st.subheader("Cash Movement")
-        st.caption("Solo FEDERAL FUNDS RECEIVED / FEDERAL FUNDS SENT (excluye ACTIVITY WITHIN YOUR ACCT).")
-
         cols_cash = [
-            "Process Date",
             "Settlement Date",
             "Net Amount (Base Currency)",
             "Transaction Type",
-            "Security Description",
             "Transaction Description",
         ]
         view = _select_columns(df_cash, cols_cash).sort_values("Settlement Date")
-        st.dataframe(view, use_container_width=True, height=520)
+        _show_df(view, height=440)
 
-    # =========================
-    # ETFs
-    # =========================
     with tab_etf:
-        st.subheader("ETFs")
-        st.caption("Security Type = EXCHANGE TRADED FUNDS y solo BUY/SELL reales.")
-
-        cols_long = [
+        cols_etf = [
             "Settlement Date",
-            "Process Date",
-            "Net Amount (Base Currency)",
-            "Transaction Description",
-            "Transaction Type",
+            "SYMBOL",
             "Security Description",
-            "Net Amount (Transaction Currency)",
             "Buy/Sell",
             "Quantity",
-            "Price (Transaction Currency)",
-            "Transaction Currency",
-            "Security Type",
-            "Payee",
-            "Paid For (Name)",
-            "Request Reason",
-            "CUSIP",
-            "FX Rate (To Base)",
-            "ISIN",
-            "SEDOL",
-            "SYMBOL",
-            "Trade Date",
+            "Net Amount (Base Currency)",
         ]
-        view = _select_columns(df_etf, cols_long).sort_values("Settlement Date")
-        st.dataframe(view, use_container_width=True, height=520)
+        view = _select_columns(df_etf, cols_etf).sort_values("Settlement Date")
+        _show_df(view, height=440)
 
-    # =========================
-    # Stocks
-    # =========================
     with tab_stock:
-        st.subheader("Stocks")
-        st.caption("Incluye COMMON STOCK + COMMON STOCK ADR. Por ahora también: OPEN END TAXABLE LOAD FUND + INDEX LINKED CORP BOND.")
-
-        cols_long = [
+        cols_stock = [
             "Settlement Date",
-            "Process Date",
-            "Net Amount (Base Currency)",
-            "Transaction Description",
-            "Transaction Type",
+            "SYMBOL",
             "Security Description",
-            "Net Amount (Transaction Currency)",
             "Buy/Sell",
             "Quantity",
-            "Price (Transaction Currency)",
-            "Transaction Currency",
-            "Security Type",
-            "Payee",
-            "Paid For (Name)",
-            "Request Reason",
-            "CUSIP",
-            "FX Rate (To Base)",
-            "ISIN",
-            "SEDOL",
-            "SYMBOL",
-            "Trade Date",
+            "Net Amount (Base Currency)",
         ]
-        view = _select_columns(df_stock, cols_long).sort_values("Settlement Date")
-        st.dataframe(view, use_container_width=True, height=520)
+        view = _select_columns(df_stock, cols_stock).sort_values("Settlement Date")
+        _show_df(view, height=440)
 
-    # =========================
-    # Dividends
-    # =========================
     with tab_div:
-        st.subheader("Dividends")
-        st.caption("Neto = Dividend (gross) + Dividend tax (negativo). Agregado por Settlement Date y Symbol.")
-
         show_cols = agg_keys + ["Dividend (Gross, Base)", "Dividend Tax (Base)", "Dividend (Net, Base)"]
-        st.dataframe(div_table[show_cols].sort_values(agg_keys), use_container_width=True, height=520)
+        view = div_table[show_cols].sort_values(agg_keys) if not div_table.empty else div_table
+        _show_df(view, height=440)
 
-        with st.expander("Ver filas raw (dividendos)"):
-            st.dataframe(
-                _select_columns(
-                    df_div_gross,
-                    [
-                        "Settlement Date",
-                        "SYMBOL",
-                        "Net Amount (Base Currency)",
-                        "Transaction Type",
-                        "Security Description",
-                        "Transaction Description",
-                        "Transaction code",
-                    ],
-                ).sort_values(["Settlement Date", "SYMBOL"]),
-                use_container_width=True,
-                height=420,
-            )
-
-        with st.expander("Ver filas raw (taxes asociados / candidatos)"):
-            st.dataframe(
-                _select_columns(
-                    df_tax_div,
-                    [
-                        "Settlement Date",
-                        "SYMBOL",
-                        "Net Amount (Base Currency)",
-                        "Transaction Type",
-                        "Security Description",
-                        "Transaction Description",
-                        "Transaction code",
-                    ],
-                ).sort_values(["Settlement Date", "SYMBOL"]),
-                use_container_width=True,
-                height=420,
-            )
-
-    # =========================
-    # Fees
-    # =========================
     with tab_fee:
-        st.subheader("Fees")
-        st.caption("Fees/costs (clasificación simple). No incluye Cash Movement, Taxes ni Dividends.")
-
         cols_fee = [
             "Settlement Date",
-            "Process Date",
             "Net Amount (Base Currency)",
             "Transaction Type",
             "Transaction Description",
-            "Security Description",
-            "Transaction code",
-            "Commission",
         ]
         view = _select_columns(df_fee, cols_fee).sort_values("Settlement Date")
-        st.dataframe(view, use_container_width=True, height=520)
+        _show_df(view, height=440)
 
-    # =========================
-    # Taxes
-    # =========================
     with tab_tax:
-        st.subheader("Taxes")
-        st.caption("Taxes (incluye NRA / foreign tax withheld / etc).")
-
         cols_tax = [
             "Settlement Date",
-            "Process Date",
             "Net Amount (Base Currency)",
             "Transaction Type",
             "Transaction Description",
-            "Security Description",
-            "Transaction code",
         ]
         view = _select_columns(df_tax, cols_tax).sort_values("Settlement Date")
-        st.dataframe(view, use_container_width=True, height=520)
+        _show_df(view, height=440)
 
     # =========================
-    # BLOQUE NUEVO — MONTHLY ANALYSIS
+    # MONTHLY ANALYSIS
     # =========================
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
     st.header("Monthly Analysis")
-    st.caption("Base mensual consolidada y posición teórica a cierre de cada mes. Todavía sin valuation ni rentabilidad.")
+    st.markdown(
+        '<div class="subtle">Vista mensual simple y ordenada del comitente.</div>',
+        unsafe_allow_html=True,
+    )
 
     if monthly_cons.empty:
-        st.warning("No pude construir la tabla mensual consolidada.")
+        st.warning("No pude construir la tabla mensual.")
         return
 
-    months_available = monthly_cons["month"].tolist()
-    default_month = months_available[-1] if months_available else None
+    filter_cols = st.columns([1.0, 1.0, 3.0])
 
-    f1, f2 = st.columns([1.0, 1.2])
-
-    with f1:
+    with filter_cols[0]:
+        months_available = monthly_cons["month"].tolist()
         selected_month = st.selectbox(
-            "Mes a analizar",
+            "Mes",
             options=months_available,
             index=len(months_available) - 1 if months_available else 0,
         )
 
-    with f2:
+    with filter_cols[1]:
         if not monthly_pos.empty:
             security_types = ["Todos"] + sorted(
                 [x for x in monthly_pos["security_type"].dropna().astype(str).unique().tolist() if x.strip() != ""]
@@ -960,116 +774,108 @@ def render(_ctx=None) -> None:
             security_types = ["Todos"]
 
         selected_sec_type = st.selectbox(
-            "Security Type",
+            "Tipo",
             options=security_types,
             index=0,
         )
 
-    tab_m1, tab_m2, tab_m3 = st.tabs(
-        ["Resumen mensual", "Posición a cierre", "Detalle del mes"]
-    )
+    tab_m1, tab_m2, tab_m3 = st.tabs(["Resumen mensual", "Posición a cierre", "Detalle del mes"])
 
-    # -------------------------
-    # Resumen mensual
-    # -------------------------
     with tab_m1:
-        last_row = monthly_cons[monthly_cons["month"].eq(selected_month)].copy()
+        row = monthly_cons[monthly_cons["month"].eq(selected_month)].copy()
 
-        if not last_row.empty:
-            r = last_row.iloc[0]
-
-            k1, k2, k3, k4 = st.columns(4)
-            with k1:
+        if not row.empty:
+            r = row.iloc[0]
+            c1, c2, c3 = st.columns(3)
+            with c1:
                 _kpi("Cash In", _fmt_money(r["cash_in_base"]))
-            with k2:
+            with c2:
                 _kpi("Cash Out", _fmt_money(r["cash_out_base"]))
-            with k3:
-                _kpi("Net Trading Flow", _fmt_money(r["net_trading_flow_base"]))
-            with k4:
-                _kpi("Net Total Flow", _fmt_money(r["net_total_flow_base"]))
+            with c3:
+                _kpi("Net Flow", _fmt_money(r["net_total_flow_base"]))
 
-        st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
-        st.dataframe(monthly_cons, use_container_width=True, height=420)
+        st.markdown('<div class="section-space"></div>', unsafe_allow_html=True)
 
-        st.download_button(
-            "Descargar tabla mensual consolidada (CSV)",
-            data=_prepare_download(monthly_cons),
-            file_name="monthly_consolidated.csv",
-            mime="text/csv",
+        summary_view = monthly_cons.rename(
+            columns={
+                "month": "Month",
+                "cash_in_base": "Cash In",
+                "cash_out_base": "Cash Out",
+                "buys_base": "Buys",
+                "sells_base": "Sells",
+                "dividends_base": "Dividends",
+                "taxes_base": "Taxes",
+                "fees_base": "Fees",
+                "net_total_flow_base": "Net Flow",
+            }
         )
 
-    # -------------------------
-    # Posición a cierre
-    # -------------------------
+        _show_df(summary_view, height=360)
+
     with tab_m2:
-        st.subheader("Posición teórica al cierre del mes")
-        st.caption("Se reconstruye acumulando BUY y SELL por símbolo. No incluye todavía precio de cierre ni market value.")
+        st.subheader("Posición a cierre")
+        st.caption("Solo cantidad acumulada al cierre por símbolo.")
 
         if monthly_pos.empty:
-            st.info("No encontré trades reales para construir posición mensual.")
+            st.info("No encontré trades reales para construir la posición.")
         else:
             pos_view = monthly_pos[monthly_pos["month"].eq(selected_month)].copy()
 
             if selected_sec_type != "Todos":
                 pos_view = pos_view[pos_view["security_type"].astype(str).eq(selected_sec_type)].copy()
 
-            pos_view = pos_view.sort_values(["closing_qty", "symbol_key"], ascending=[False, True])
-
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                _kpi("Símbolos abiertos", f"{pos_view['symbol_key'].nunique():,}")
-            with c2:
-                _kpi("Trades del mes", f"{int(pos_view['trade_count'].sum()):,}")
-            with c3:
-                _kpi("Qty neta (suma)", f"{pos_view['closing_qty'].sum():,.4f}")
-
-            st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
-            st.dataframe(pos_view, use_container_width=True, height=460)
-
-            st.download_button(
-                f"Descargar posición cierre {selected_month} (CSV)",
-                data=_prepare_download(pos_view),
-                file_name=f"monthly_position_{selected_month}.csv",
-                mime="text/csv",
+            pos_view = pos_view.rename(
+                columns={
+                    "month": "Month",
+                    "symbol_key": "Symbol",
+                    "security_description": "Description",
+                    "security_type": "Type",
+                    "closing_qty": "Closing Qty",
+                }
             )
 
-    # -------------------------
-    # Detalle del mes
-    # -------------------------
-    with tab_m3:
-        st.subheader("Detalle del mes seleccionado")
+            pos_view = pos_view[["Symbol", "Description", "Type", "Closing Qty"]].sort_values(
+                ["Closing Qty", "Symbol"],
+                ascending=[False, True],
+            )
 
-        dfa = _prepare_analysis_df(df, date_col=date_col)
-        detail_month = dfa[dfa["month"].eq(selected_month)].copy()
+            c1, c2 = st.columns(2)
+            with c1:
+                _kpi("Símbolos", f"{pos_view['Symbol'].nunique():,}")
+            with c2:
+                _kpi("Closing Qty Total", f"{pos_view['Closing Qty'].sum():,.4f}")
+
+            st.markdown('<div class="section-space"></div>', unsafe_allow_html=True)
+            _show_df(pos_view, height=460)
+
+    with tab_m3:
+        detail_month = _prepare_analysis_df(df, date_col=date_col)
+        detail_month = detail_month[detail_month["month"].eq(selected_month)].copy()
 
         if selected_sec_type != "Todos" and not detail_month.empty:
             detail_month = detail_month[detail_month["Security Type"].astype(str).eq(selected_sec_type)].copy()
 
         cols_detail = [
             "Settlement Date",
-            "Process Date",
             "analysis_bucket",
             "symbol_key",
             "Security Description",
-            "Security Type",
-            "Transaction Type",
-            "Transaction Description",
             "Buy/Sell",
             "Quantity",
             "Net Amount (Base Currency)",
-            "Price (Transaction Currency)",
-            "Transaction Currency",
-            "Commission",
-            "ISIN",
-            "CUSIP",
         ]
         detail_view = _select_columns(detail_month, cols_detail).sort_values(["Settlement Date", "symbol_key"])
 
-        st.dataframe(detail_view, use_container_width=True, height=520)
-
-        st.download_button(
-            f"Descargar detalle {selected_month} (CSV)",
-            data=_prepare_download(detail_view),
-            file_name=f"monthly_detail_{selected_month}.csv",
-            mime="text/csv",
+        detail_view = detail_view.rename(
+            columns={
+                "Settlement Date": "Settlement Date",
+                "analysis_bucket": "Type",
+                "symbol_key": "Symbol",
+                "Security Description": "Description",
+                "Buy/Sell": "Buy/Sell",
+                "Quantity": "Qty",
+                "Net Amount (Base Currency)": "Base Amount",
+            }
         )
+
+        _show_df(detail_view, height=460)
