@@ -1,537 +1,642 @@
-# tools/tenencias_to_db.py
+# tools/comerciales/transactions_analyzer.py
 from __future__ import annotations
-
+ 
+import io
 import re
-import calendar
-import datetime as dt
-from io import BytesIO
-from typing import Optional, Tuple, Dict, List
-
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+ 
 import pandas as pd
 import streamlit as st
-
-
+ 
+ 
 # =========================
-# 1) Meta desde nombre hoja
+# UI (minimal, pro)
 # =========================
-MONTHS_ES = {
-    "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
-    "jul": 7, "ago": 8, "sep": 9, "set": 9, "oct": 10, "nov": 11, "dic": 12
-}
-
-def parse_sheet_meta(sheet_name: str) -> Optional[Tuple[str, dt.date]]:
-    """
-    Espera nombres tipo: '904 Ene-26', '904 dic-25', '904 Ene 26', etc.
-    Devuelve (comitente, fecha_fin_mes).
-    """
-    s = sheet_name.strip()
-
-    # comitente al inicio
-    m_com = re.match(r"^\s*(\d{3,4})\s+(.+?)\s*$", s)
-    if not m_com:
-        return None
-
-    comitente = m_com.group(1)
-    rest = m_com.group(2).strip()
-
-    m = re.search(
-        r"(?i)\b(ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic)\b\W*(\d{2}|\d{4})\b",
-        rest
+def _inject_css() -> None:
+    st.markdown(
+        """
+<style>
+          .block-container { padding-top: 1.2rem; max-width: 1180px; }
+          h1 { margin-bottom: 0.2rem; }
+          .subtle { color: rgba(0,0,0,0.55); font-size: 0.95rem; margin-top: 0.1rem; }
+          .kpi { padding: 12px 14px; border: 1px solid rgba(0,0,0,0.08); border-radius: 14px; background: #fff; }
+          .kpi .label { color: rgba(0,0,0,0.55); font-size: 0.85rem; margin-bottom: 4px; }
+          .kpi .value { font-size: 1.55rem; font-weight: 700; letter-spacing: -0.02em; }
+          .pill { display:inline-block; padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(0,0,0,0.12); font-size: 0.82rem; color: rgba(0,0,0,0.7); }
+          .hr { height:1px; background: rgba(0,0,0,0.08); margin: 10px 0 12px; }
+</style>
+        """,
+        unsafe_allow_html=True,
     )
-    if not m:
-        return None
-
-    mon = MONTHS_ES[m.group(1).lower()]
-    year = int(m.group(2))
-    if year < 100:
-        year = 2000 + year
-
-    last_day = calendar.monthrange(year, mon)[1]
-    return comitente, dt.date(year, mon, last_day)
-
-
+ 
+ 
 # =========================
-# 2) Normalización
+# Parsing helpers
 # =========================
-def _safe_str(x) -> str:
-    if x is None:
-        return ""
-    try:
-        if pd.isna(x):
-            return ""
-    except Exception:
-        pass
-    return str(x)
-
+CANON_COLS = [
+    "Process Date",
+    "Security Identifier",
+    "Settlement Date",
+    "Net Amount (Base Currency)",
+    "Transaction Description",
+    "Transaction Type",
+    "Security Description",
+    "Net Amount (Transaction Currency)",
+    "Buy/Sell",
+    "Quantity",
+    "Price (Transaction Currency)",
+    "Transaction Currency",
+    "Security Type",
+    "Payee",
+    "Paid For (Name)",
+    "Request Reason",
+    "CUSIP",
+    "FX Rate (To Base)",
+    "ISIN",
+    "SEDOL",
+    "SYMBOL",
+    "Trade Date",
+    "Transaction code",
+    "Withdrawal/Deposit Type",
+    "Request ID #",
+    "Commission",
+]
+ 
+ 
 def _norm(s: str) -> str:
-    s = _safe_str(s).strip().lower()
-    s = s.replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u").replace("ñ","n")
+    s = str(s or "").strip().lower()
+    s = (
+        s.replace("á", "a")
+        .replace("é", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ú", "u")
+        .replace("ñ", "n")
+    )
     s = re.sub(r"\s+", " ", s)
     return s
-
-def _to_float(x) -> float:
-    s = _safe_str(x).strip()
-    if s in ("", "-", "–"):
-        return float("nan")
-    s = s.replace("%", "").replace("$", "").replace(" ", "")
-    # 1.234,56 -> 1234.56
-    if "," in s and "." in s:
+ 
+ 
+def _find_header_row(df0: pd.DataFrame) -> int:
+    """
+    Pershing export: arriba hay metadata (Account, Client, etc).
+    Buscamos la fila donde aparezca 'Process Date' y otros headers clave.
+    """
+    key = _norm("Process Date")
+    candidates = []
+    for i in range(min(len(df0), 80)):  # suficiente para headers + metadata
+        row = df0.iloc[i].astype(str).map(_norm).tolist()
+        if key in row:
+            score = 0
+            for must in ["settlement date", "transaction type", "security type", "net amount (base currency)"]:
+                if _norm(must) in row:
+                    score += 1
+            candidates.append((score, i))
+    if not candidates:
+        return -1
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+ 
+ 
+def _to_float(x):
+    if pd.isna(x):
+        return None
+    if isinstance(x, (int, float)):
+        return float(x)
+    s = str(x).strip()
+    if s == "" or s == "-":
+        return None
+    # soporta "22.733,58" y "22733.58"
+    s = s.replace(" ", "")
+    if re.search(r"\d+,\d+$", s) and s.count(",") == 1 and s.count(".") >= 1:
+        # 22.733.580,97 -> 22733580.97
         s = s.replace(".", "").replace(",", ".")
-    else:
+    elif s.count(",") == 1 and s.count(".") == 0:
+        # 123,45 -> 123.45
         s = s.replace(",", ".")
+    else:
+        # 1234.56 o 1234
+        s = s.replace(",", "")
     try:
         return float(s)
     except Exception:
-        return float("nan")
-
-def _find_col(df: pd.DataFrame, wanted: List[str]) -> Optional[str]:
-    cols = {c: _norm(c) for c in df.columns}
-    wanted_norm = [_norm(w) for w in wanted]
-    for w in wanted_norm:
-        for c, cn in cols.items():
-            if cn == w:
-                return c
-    return None
-
-
-# =========================
-# 3) Lectura robusta de hoja
-# =========================
-def detect_header_row_df(tmp: pd.DataFrame, max_scan_rows: int = 30) -> int:
-    """
-    tmp: DataFrame leído con header=None.
-    Busca fila donde aparezcan Especie/Cantidad/Precio/Importe/Part.
-    """
-    wanted = ["especie", "cantidad", "precio", "importe", "part", "part."]
-    best_i, best_score = 0, -1
-
-    n = min(max_scan_rows, len(tmp))
-    for i in range(n):
-        row = [_norm(v) for v in tmp.iloc[i].tolist()]
-        score = 0
-        for w in wanted:
-            if any(w == rv for rv in row):
-                score += 3
-            elif any(w in rv for rv in row):
-                score += 1
-        if score > best_score:
-            best_score, best_i = score, i
-
-    return best_i
-
-def read_sheet_smart(xls: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
-    """
-    Lee hoja de tenencias aunque tenga filas arriba / header corrido.
-    """
+        return None
+ 
+ 
+def _to_date(x):
+    if pd.isna(x):
+        return pd.NaT
     try:
-        tmp = pd.read_excel(xls, sheet_name=sheet_name, header=None, nrows=40)
-        h = detect_header_row_df(tmp)
-        df = pd.read_excel(xls, sheet_name=sheet_name, header=h)
-        # si quedó todo Unnamed, fallback a header=0
-        if len(df.columns) and all(_norm(c).startswith("unnamed") for c in df.columns):
-            df = pd.read_excel(xls, sheet_name=sheet_name, header=0)
-        return df
+        return pd.to_datetime(x, errors="coerce").date()
     except Exception:
-        return pd.read_excel(xls, sheet_name=sheet_name, header=0)
-
-
-# =========================
-# 4) Clasificación REAL (hacia atrás, siguiendo el Excel)
-# =========================
-TOTAL_LABELS = {
-    "TOTAL ACCIONES": "Acciones",
-    "TOTAL TITULOS PUBLICOS": "Titulos Publicos",
-    "TOTAL TITULOS PÚBLICOS": "Titulos Publicos",
-    "TOTAL OBLIGACIONES NEGOCIABLES": "ON",
-    "TOTAL FCI": "FCI",
-    "TOTAL CUENTA CORRIENTE": "Cuenta Corriente",
-}
-STOP_ROWS = {"TOTAL POSICION"}  # si aparece
-
-
-def tenencias_sheet_to_rows(
-    xls: pd.ExcelFile,
-    sheet: str,
-    comitente: str,
-    fecha_cierre: dt.date
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        return pd.NaT
+ 
+ 
+def _read_pershing_excel(file_bytes: bytes) -> pd.DataFrame:
     """
-    Devuelve:
-      - instrumentos_db: filas de instrumentos (sin filas TOTAL)
-      - totales_db: filas TOTAL (TOTAL ACCIONES, TOTAL CUENTA CORRIENTE, etc.)
-    Clasifica “hacia atrás” siguiendo el Excel:
-      [instrumentos ...]  -> (aparece TOTAL X) => esos instrumentos son clase X
+    Lee el Excel y devuelve un DF con columnas canon.
+    IMPORTANTE: evitamos sheet_name=None (que devuelve dict), para no repetir tu error.
     """
-    raw = read_sheet_smart(xls, sheet)
-
-    col_especie = _find_col(raw, ["Especie"]) or raw.columns[0]
-    col_cant = _find_col(raw, ["Cantidad"])
-    col_precio = _find_col(raw, ["Precio"])
-    col_importe = _find_col(raw, ["Importe"])
-    col_part = _find_col(raw, ["Part.", "Part"])
-
-    df = pd.DataFrame({
-        "especie": raw[col_especie].map(_safe_str).str.strip(),
-        "cantidad": raw[col_cant].map(_to_float) if col_cant else float("nan"),
-        "precio": raw[col_precio].map(_to_float) if col_precio else float("nan"),
-        "importe": raw[col_importe].map(_to_float) if col_importe else float("nan"),
-        "part": raw[col_part].map(_to_float) if col_part else float("nan"),
-    })
-
-    df = df[df["especie"].ne("")].copy()
-
-    pending_rows: List[Dict] = []
-    out_instruments: List[Dict] = []
-    out_totals: List[Dict] = []
-
-    def flush_pending_as(clase: str) -> None:
-        nonlocal pending_rows, out_instruments
-        if not pending_rows:
-            return
-        for r in pending_rows:
-            r["clase"] = clase
-            out_instruments.append(r)
-        pending_rows = []
-
-    for _, row in df.iterrows():
-        esp = _safe_str(row["especie"]).strip()
-        esp_u = esp.upper().strip()
-
-        if esp_u in STOP_ROWS:
-            break
-
-        # TOTAL mapeado: clasifica hacia atrás + guarda total
-        if esp_u in TOTAL_LABELS:
-            clase_total = TOTAL_LABELS[esp_u]
-            flush_pending_as(clase_total)
-
-            out_totals.append({
-                "comitente": comitente,
-                "fecha_cierre": fecha_cierre,
-                "total_tipo": clase_total,     # Acciones / Titulos Publicos / Cuenta Corriente / ...
-                "label": esp_u,                # texto exacto
-                "importe_total": row["importe"],
-                "part_total": row["part"],
-            })
-            continue
-
-        # TOTAL no mapeado: corta bloque, no guarda
-        if esp_u.startswith("TOTAL "):
-            flush_pending_as("SinClasificar")
-            continue
-
-        # fila normal -> acumular
-        pending_rows.append({
-            "comitente": comitente,
-            "fecha_cierre": fecha_cierre,
-            "clase": "SinClasificar",  # se define al flush
-            "especie": esp,
-            "cantidad": row["cantidad"],
-            "precio": row["precio"],
-            "importe": row["importe"],
-            "part": row["part"],
-        })
-
-    # si quedó algo sin TOTAL al final, va a SinClasificar
-    flush_pending_as("SinClasificar")
-
-    instrumentos_db = pd.DataFrame(out_instruments)
-    totales_db = pd.DataFrame(out_totals)
-    return instrumentos_db, totales_db
-
-
+    xls = pd.ExcelFile(io.BytesIO(file_bytes))
+    sheet0 = xls.sheet_names[0]
+    df0 = pd.read_excel(xls, sheet_name=sheet0, header=None, dtype=object)
+ 
+    hdr = _find_header_row(df0)
+    if hdr < 0:
+        raise ValueError("No pude detectar la fila de encabezados (Process Date).")
+ 
+    headers = df0.iloc[hdr].astype(str).tolist()
+    df = df0.iloc[hdr + 1 :].copy()
+    df.columns = headers
+    df = df.dropna(how="all")
+ 
+    # Renombrado suave: si vienen headers con espacios raros, igual los mapeamos
+    col_map: Dict[str, str] = {}
+    for c in df.columns:
+        cn = _norm(c)
+        for canon in CANON_COLS:
+            if cn == _norm(canon):
+                col_map[c] = canon
+                break
+    df = df.rename(columns=col_map)
+ 
+    # Nos quedamos solo con columnas que existan
+    keep = [c for c in CANON_COLS if c in df.columns]
+    df = df[keep].copy()
+ 
+    # Tipos
+    if "Settlement Date" in df.columns:
+        df["Settlement Date"] = df["Settlement Date"].apply(_to_date)
+    if "Process Date" in df.columns:
+        df["Process Date"] = df["Process Date"].apply(_to_date)
+    if "Trade Date" in df.columns:
+        # muchas veces viene texto, lo dejamos como string; si se puede parsear, ok
+        df["Trade Date"] = df["Trade Date"].astype(str).where(df["Trade Date"].notna(), "")
+ 
+    # Montos / cantidades
+    for num_col in [
+        "Net Amount (Base Currency)",
+        "Net Amount (Transaction Currency)",
+        "Quantity",
+        "Price (Transaction Currency)",
+        "Commission",
+        "FX Rate (To Base)",
+    ]:
+        if num_col in df.columns:
+            df[num_col] = df[num_col].apply(_to_float)
+ 
+    # Normalizaciones base
+    if "SYMBOL" in df.columns:
+        df["SYMBOL"] = df["SYMBOL"].astype(str).str.strip()
+        df.loc[df["SYMBOL"].isin(["nan", "None"]), "SYMBOL"] = ""
+ 
+    if "Security Type" in df.columns:
+        df["Security Type"] = df["Security Type"].astype(str).str.strip().str.upper()
+ 
+    if "Transaction Type" in df.columns:
+        df["Transaction Type"] = df["Transaction Type"].astype(str).str.strip()
+ 
+    if "Buy/Sell" in df.columns:
+        df["Buy/Sell"] = df["Buy/Sell"].astype(str).str.strip().str.upper()
+        df.loc[~df["Buy/Sell"].isin(["BUY", "SELL"]), "Buy/Sell"] = ""
+ 
+    return df
+ 
+ 
 # =========================
-# 5) Comparación Mes vs Mes (anterior vs nuevo)
+# Classification (FASE 1/2)
 # =========================
-def _snapshot_totales_por_comitente_fecha(db: pd.DataFrame) -> pd.DataFrame:
-    """
-    Snapshot total por comitente y fecha_cierre.
-    """
-    if db.empty:
-        return pd.DataFrame(columns=["comitente", "fecha_cierre", "total"])
-    d = db.copy()
-    d["fecha_cierre"] = pd.to_datetime(d["fecha_cierre"])
-    snap = (
-        d.groupby(["comitente", "fecha_cierre"], as_index=False)
-         .agg(total=("importe", "sum"))
-         .sort_values(["comitente", "fecha_cierre"])
+CASH_TX = {"FEDERAL FUNDS RECEIVED", "FEDERAL FUNDS SENT"}
+INTERNAL_TX = {"ACTIVITY WITHIN YOUR ACCT"}  # por ahora lo excluimos de cash movement
+ 
+DIV_TX_MARKERS = [
+    "CASH DIVIDEND RECEIVED",
+    "FOREIGN SECURITY DIVIDEND RECEIVED",
+]
+TAX_MARKERS = [
+    "NON-RESIDENT ALIEN TAX",
+    "FOREIGN TAX WITHHELD",
+]
+FEE_MARKERS = [
+    "FEE",
+    "ADVISORY",
+    "CUSTODY",
+    "SUBSCRIPTION",
+    "INT.",
+    "INTEREST",
+    "ASSET BASED FEE",
+]
+ 
+ 
+def _is_cash_movement(row: pd.Series) -> bool:
+    tx = str(row.get("Transaction Type", "")).upper()
+    if tx in INTERNAL_TX:
+        return False
+    return tx in CASH_TX
+ 
+ 
+def _is_dividend(row: pd.Series) -> bool:
+    tx = str(row.get("Transaction Type", "")).upper()
+    return any(m in tx for m in DIV_TX_MARKERS)
+ 
+ 
+def _is_tax(row: pd.Series) -> bool:
+    tx = str(row.get("Transaction Type", "")).upper()
+    code = str(row.get("Transaction code", "")).upper()
+    desc = str(row.get("Transaction Description", "")).upper()
+ 
+    if any(m in tx for m in TAX_MARKERS):
+        return True
+    # códigos típicos que aparecen en tus ejemplos (NRA / FGN / FGF)
+    if code in {"NRA", "FGN", "FGF"}:
+        return True
+    # fallback: si dice TAX en el tipo
+    if "TAX" in tx:
+        return True
+    # a veces la descripción lo marca
+    if "TAX WITHHELD" in desc:
+        return True
+    return False
+ 
+ 
+def _is_fee(row: pd.Series) -> bool:
+    tx = str(row.get("Transaction Type", "")).upper()
+    desc = str(row.get("Transaction Description", "")).upper()
+    code = str(row.get("Transaction code", "")).upper()
+    comm = row.get("Commission", None)
+    if isinstance(comm, (int, float)) and comm and comm > 0:
+        return True
+    if "FEE" in tx or "FEE" in desc:
+        return True
+    if code in {"PDS", "NTF", "INM", "PCT", "/FG"}:
+        return True
+    if any(m in tx for m in FEE_MARKERS):
+        return True
+    return False
+ 
+ 
+def _is_trade_real(row: pd.Series) -> bool:
+    bs = str(row.get("Buy/Sell", "")).upper().strip()
+    return bs in {"BUY", "SELL"}
+ 
+ 
+ETF_TYPES = {"EXCHANGE TRADED FUNDS"}
+STOCK_TYPES = {"COMMON STOCK", "COMMON STOCK ADR", "OPEN END TAXABLE LOAD FUND", "INDEX LINKED CORP BOND"}
+ 
+ 
+# =========================
+# Display helpers
+# =========================
+def _fmt_money(x: Optional[float]) -> str:
+    if x is None or pd.isna(x):
+        return "-"
+    return f"{x:,.2f}"
+ 
+ 
+def _kpi(label: str, value: str) -> None:
+    st.markdown(
+        f"""
+<div class="kpi">
+<div class="label">{label}</div>
+<div class="value">{value}</div>
+</div>
+        """,
+        unsafe_allow_html=True,
     )
-    return snap
-
-def make_mes_a_mes(
-    db: pd.DataFrame,
-    fecha_prev: dt.date,
-    fecha_new: dt.date
-) -> pd.DataFrame:
-    """
-    Devuelve ganancia/pérdida por comitente entre dos cierres:
-      diff = total(fecha_new) - total(fecha_prev)
-    """
-    snap = _snapshot_totales_por_comitente_fecha(db)
-
-    if snap.empty:
-        return pd.DataFrame(columns=["comitente", "total_prev", "total_new", "diferencia"])
-
-    fp = pd.to_datetime(fecha_prev)
-    fn = pd.to_datetime(fecha_new)
-
-    prev = snap[snap["fecha_cierre"].eq(fp)].copy().rename(columns={"total": "total_prev"})
-    new  = snap[snap["fecha_cierre"].eq(fn)].copy().rename(columns={"total": "total_new"})
-
-    out = prev.merge(new[["comitente", "total_new"]], on="comitente", how="outer")
-    out["total_prev"] = out["total_prev"].fillna(0.0)
-    out["total_new"] = out["total_new"].fillna(0.0)
-    out["diferencia"] = out["total_new"] - out["total_prev"]
-
-    out = out.sort_values("diferencia", ascending=False)
-    return out
-
-def make_mes_a_mes_detalle(
-    db: pd.DataFrame,
-    fecha_prev: dt.date,
-    fecha_new: dt.date,
-    nivel: str = "especie"  # "especie" o "clase"
-) -> pd.DataFrame:
-    """
-    Detalle por comitente:
-      - nivel="especie": diff por especie
-      - nivel="clase": diff por clase
-    """
-    if db.empty:
-        cols = ["comitente", nivel, "importe_prev", "importe_new", "diferencia"]
-        return pd.DataFrame(columns=cols)
-
-    d = db.copy()
-    d["fecha_cierre"] = pd.to_datetime(d["fecha_cierre"])
-    fp = pd.to_datetime(fecha_prev)
-    fn = pd.to_datetime(fecha_new)
-
-    key_cols = ["comitente", nivel]
-
-    prev = (
-        d[d["fecha_cierre"].eq(fp)]
-        .groupby(key_cols, as_index=False)
-        .agg(importe_prev=("importe", "sum"))
-    )
-    new = (
-        d[d["fecha_cierre"].eq(fn)]
-        .groupby(key_cols, as_index=False)
-        .agg(importe_new=("importe", "sum"))
-    )
-
-    out = prev.merge(new, on=key_cols, how="outer")
-    out["importe_prev"] = out["importe_prev"].fillna(0.0)
-    out["importe_new"] = out["importe_new"].fillna(0.0)
-    out["diferencia"] = out["importe_new"] - out["importe_prev"]
-
-    out = out.sort_values(["comitente", "diferencia"], ascending=[True, False])
-    return out
-
-
-def make_total_cc_anual(totales_db: pd.DataFrame) -> pd.DataFrame:
-    """
-    Tabla anual: TOTAL CUENTA CORRIENTE por comitente y año (por si la querés igual).
-    """
-    if totales_db.empty:
-        return pd.DataFrame(columns=["comitente", "anio", "importe_total_cc"])
-
-    t = totales_db.copy()
-    t["anio"] = pd.to_datetime(t["fecha_cierre"]).dt.year
-
-    cc = t[t["total_tipo"].eq("Cuenta Corriente")].copy()
-    out = (
-        cc.groupby(["comitente", "anio"], as_index=False)
-          .agg(importe_total_cc=("importe_total", "sum"))
-          .sort_values(["comitente", "anio"])
-    )
-    return out
-
-
-def to_excel_bytes(base: pd.DataFrame, sheets: Dict[str, pd.DataFrame]) -> bytes:
-    bio = BytesIO()
-    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-        base.to_excel(writer, sheet_name="tenencias_db", index=False)
-        for name, sdf in sheets.items():
-            sdf.to_excel(writer, sheet_name=name[:31], index=False)
-    return bio.getvalue()
-
-
+ 
+ 
+def _select_columns(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    cols_ok = [c for c in cols if c in df.columns]
+    return df[cols_ok].copy()
+ 
+ 
 # =========================
-# 6) Entry point Workbench
+# Main render
 # =========================
-def render_tenencias_to_db() -> None:
-    st.header("Tenencias valorizadas → Base tipo DB + Mes a Mes")
-    st.caption("Convierte el Excel (hojas: comitente + mes) en una base y calcula variación mes anterior vs mes nuevo.")
-
-    uploaded = st.file_uploader("Subí el Excel de tenencias", type=["xlsx", "xls"], key="ten_up")
-    if not uploaded:
-        st.info("Subí el archivo para comenzar.")
-        return
-
-    xls = pd.ExcelFile(uploaded)
-
-    # detectar hojas con meta
-    meta = []
-    for sh in xls.sheet_names:
-        m = parse_sheet_meta(sh)
-        if m:
-            com, fecha = m
-            meta.append({"sheet": sh, "comitente": com, "fecha_cierre": fecha})
-
-    meta_df = pd.DataFrame(meta)
-    if meta_df.empty:
-        st.error("No pude interpretar nombres de hojas. Ejemplos válidos: '904 Ene-26', '904 Dic-25'.")
-        return
-
-    meta_df = meta_df.sort_values(["comitente", "fecha_cierre"])
-    st.subheader("Hojas detectadas")
-    st.dataframe(meta_df, use_container_width=True, hide_index=True)
-
-    comitentes = sorted(meta_df["comitente"].unique())
-    sel_com = st.multiselect("Comitentes a procesar", comitentes, default=comitentes, key="ten_coms")
-
-    only_latest = st.checkbox("Solo último mes por comitente (para base)", value=False, key="ten_latest")
-
-    colA, colB = st.columns([1, 2])
-    with colA:
-        run = st.button("Procesar", type="primary", key="ten_run")
-    with colB:
-        st.caption("Tip: si hay muchas hojas, probá con 1 comitente para validar lectura y clasificación.")
-
-    if not run:
-        return
-
-    work = meta_df[meta_df["comitente"].isin(sel_com)].copy()
-    if only_latest:
-        work = work.sort_values(["comitente", "fecha_cierre"]).groupby("comitente", as_index=False).tail(1)
-
-    out_instruments = []
-    out_totals = []
-    errores = []
-
-    for r in work.itertuples(index=False):
+def render(_ctx=None) -> None:
+    _inject_css()
+ 
+    st.title("Movimientos CV — Transactions Analyzer")
+    st.markdown(
+        '<div class="subtle">Empezamos simple: cash (ingresos/egresos), ETFs y stocks. Todo en Base Currency (USD) y filtrado por Settlement Date.</div>',
+        unsafe_allow_html=True,
+    )
+ 
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+ 
+    up = st.file_uploader("Subí el Excel exportado (Transactions)", type=["xlsx", "xls"])
+ 
+    # Controles globales (se activan cuando hay data)
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1.2, 1.0, 0.8], vertical_alignment="bottom")
+ 
+    with ctrl_col1:
+        st.caption("Fecha para análisis (global)")
+        date_col = "Settlement Date"  # fijo como pediste
+ 
+    df_raw: Optional[pd.DataFrame] = None
+    if up is not None:
         try:
-            inst_db, tot_db = tenencias_sheet_to_rows(xls, r.sheet, r.comitente, r.fecha_cierre)
-            if inst_db is None or inst_db.empty:
-                errores.append(f"{r.sheet}: sin filas útiles (revisar formato)")
-            else:
-                out_instruments.append(inst_db)
-            if tot_db is not None and not tot_db.empty:
-                out_totals.append(tot_db)
+            df_raw = _read_pershing_excel(up.getvalue())
         except Exception as e:
-            errores.append(f"{r.sheet}: {e}")
-
-    if errores:
-        st.warning("Algunas hojas no pudieron procesarse:")
-        for e in errores[:15]:
-            st.write("•", e)
-        if len(errores) > 15:
-            st.write(f"… y {len(errores)-15} más.")
-
-    if not out_instruments:
-        st.error("No se generaron filas. Probá con un comitente específico para debug.")
-        return
-
-    db = pd.concat(out_instruments, ignore_index=True)
-    totales = pd.concat(out_totals, ignore_index=True) if out_totals else pd.DataFrame(
-        columns=["comitente", "fecha_cierre", "total_tipo", "label", "importe_total", "part_total"]
-    )
-
-    # -----------------
-    # Mes a Mes (prev vs new)
-    # -----------------
-    fechas_disponibles = sorted({pd.to_datetime(x).date() for x in meta_df["fecha_cierre"].tolist()})
-    if len(fechas_disponibles) >= 2:
-        default_prev = fechas_disponibles[-2]
-        default_new = fechas_disponibles[-1]
+            st.error("No pude leer el Excel (o detectar la fila de encabezados).")
+            st.exception(e)
+            return
     else:
-        default_prev = fechas_disponibles[0]
-        default_new = fechas_disponibles[0]
-
-    st.subheader("Comparación Mes a Mes")
-    c1, c2, c3 = st.columns([1, 1, 2])
-    with c1:
-        fecha_prev = st.selectbox("Mes anterior (cierre)", fechas_disponibles, index=max(0, len(fechas_disponibles)-2), key="mm_prev")
-    with c2:
-        fecha_new = st.selectbox("Mes nuevo (cierre)", fechas_disponibles, index=max(0, len(fechas_disponibles)-1), key="mm_new")
-    with c3:
-        nivel_detalle = st.radio("Detalle", ["especie", "clase"], horizontal=True, index=0, key="mm_nivel")
-
-    mm = make_mes_a_mes(db, fecha_prev=fecha_prev, fecha_new=fecha_new)
-    mm_det = make_mes_a_mes_detalle(db, fecha_prev=fecha_prev, fecha_new=fecha_new, nivel=nivel_detalle)
-
-    gan_total = float(mm["diferencia"].sum()) if not mm.empty else 0.0
-    st.metric(f"Variación total (nuevo - anterior) [{fecha_new} vs {fecha_prev}]", f"{gan_total:,.2f}")
-
-    # Resumen por clase (por fecha)
-    resumen_clase = (
-        db.groupby(["comitente", "fecha_cierre", "clase"], as_index=False)
-          .agg(importe=("importe", "sum"), instrumentos=("especie", "count"))
-          .sort_values(["comitente", "fecha_cierre", "importe"], ascending=[True, True, False])
+        st.info("Subí el Excel para empezar.")
+        return
+ 
+    # Validación mínima
+    if date_col not in df_raw.columns:
+        st.error("No encontré 'Settlement Date' en el archivo.")
+        return
+ 
+    df = df_raw.copy()
+    df = df[df[date_col].notna()].copy()
+ 
+    # Rango de fechas global
+    min_d = df[date_col].min()
+    max_d = df[date_col].max()
+ 
+    with ctrl_col2:
+        st.caption("Desde / Hasta (global)")
+        from_d, to_d = st.date_input(
+            "Rango",
+            value=(min_d, max_d),
+            min_value=min_d,
+            max_value=max_d,
+            label_visibility="collapsed",
+        )
+ 
+    # Aplicar filtro global
+    df = df[(df[date_col] >= from_d) & (df[date_col] <= to_d)].copy()
+ 
+    # Tabs (orden fijo)
+    tab_over, tab_cash, tab_etf, tab_stock, tab_div, tab_fee, tab_tax = st.tabs(
+        ["Overview", "Cash Movement", "ETFs", "Stocks", "Dividends", "Fees", "Taxes"]
     )
-
-    # Total CC anual (por si querés seguir esa idea)
-    total_cc_anual = make_total_cc_anual(totales)
-
-    # -----------------
-    # Tabs
-    # -----------------
-    t1, t2, t3, t4, t5, t6 = st.tabs([
-        "Base",
-        "Resumen por clase",
-        "Totales",
-        "Mes a Mes (comitente)",
-        f"Detalle M/M ({nivel_detalle})",
-        "TOTAL CC anual",
-    ])
-
-    with t1:
-        st.dataframe(db, use_container_width=True, hide_index=True)
-
-    with t2:
-        st.dataframe(resumen_clase, use_container_width=True, hide_index=True)
-
-    with t3:
-        st.dataframe(totales, use_container_width=True, hide_index=True)
-
-    with t4:
-        st.subheader("Ganancia/Pérdida por comitente (mes nuevo - mes anterior)")
-        st.dataframe(mm, use_container_width=True, hide_index=True)
-
-    with t5:
-        st.subheader(f"Detalle por {nivel_detalle} (mes nuevo - mes anterior)")
-        # para no explotar la UI si es enorme
-        st.dataframe(mm_det, use_container_width=True, hide_index=True, height=520)
-
-    with t6:
-        st.dataframe(total_cc_anual, use_container_width=True, hide_index=True)
-
-    # -----------------
-    # Export
-    # -----------------
-    excel_bytes = to_excel_bytes(
-        db,
-        {
-            "resumen_clase": resumen_clase,
-            "totales_db": totales,
-            "MM_COMITENTE": mm,
-            f"MM_DET_{nivel_detalle.upper()}": mm_det,
-            "TOTAL_CC_ANUAL": total_cc_anual,
-        }
-    )
-
-    st.download_button(
-        "Descargar Excel (base + resúmenes + mes a mes)",
-        data=excel_bytes,
-        file_name="tenencias_base_datos_mes_a_mes.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="ten_dl",
-    )
-
-
-# =========================
-# 7) Workbench expected entrypoint
-# =========================
-def render():
-    """Entry point estándar para NEIX Workbench."""
-    return render_tenencias_to_db()
+ 
+    # =========================
+    # 1) Cash Movement
+    # =========================
+    df_cash = df[df.apply(_is_cash_movement, axis=1)].copy()
+ 
+    # =========================
+    # 2) ETFs (trades reales)
+    # =========================
+    df_etf = df[
+        (df.get("Security Type", "").astype(str).str.upper().isin(ETF_TYPES))
+& (df.apply(_is_trade_real, axis=1))
+    ].copy()
+ 
+    # =========================
+    # 3) Stocks (incluye ADR + Funds + Bonds por ahora)
+    # =========================
+    df_stock = df[
+        (df.get("Security Type", "").astype(str).str.upper().isin(STOCK_TYPES))
+& (df.apply(_is_trade_real, axis=1))
+    ].copy()
+ 
+    # =========================
+    # 4) Dividends (neto = dividend + tax, agrupado)
+    # =========================
+    df_div_gross = df[df.apply(_is_dividend, axis=1)].copy()
+ 
+    # Tax asociado a dividendos: impuesto que menciona dividend o cae en mismos símbolos/fechas
+    df_tax_all = df[df.apply(_is_tax, axis=1)].copy()
+    if "SYMBOL" in df.columns:
+        df_tax_div = df_tax_all[df_tax_all["SYMBOL"].isin(df_div_gross.get("SYMBOL", pd.Series([])))]
+    else:
+        df_tax_div = df_tax_all.copy()
+ 
+    # Agregado simple (no “inventamos” pairing perfecto: usamos Settlement Date + Symbol)
+    agg_keys = [date_col]
+    if "SYMBOL" in df.columns:
+        agg_keys.append("SYMBOL")
+ 
+    def _sumcol(dfx: pd.DataFrame, col: str) -> pd.Series:
+        if col not in dfx.columns:
+            return pd.Series(dtype=float)
+        return dfx.groupby(agg_keys)[col].sum()
+ 
+    gross = _sumcol(df_div_gross, "Net Amount (Base Currency)").rename("Dividend (Gross, Base)")
+    tax = _sumcol(df_tax_div, "Net Amount (Base Currency)").rename("Dividend Tax (Base)")
+    div_table = pd.concat([gross, tax], axis=1).fillna(0.0)
+    div_table["Dividend (Net, Base)"] = div_table["Dividend (Gross, Base)"] + div_table["Dividend Tax (Base)"]
+    div_table = div_table.reset_index()
+ 
+    # =========================
+    # 5) Fees
+    # =========================
+    df_fee = df[df.apply(_is_fee, axis=1)].copy()
+    # Sacamos los cash movements y taxes para no mezclar
+    df_fee = df_fee[~df_fee.apply(_is_cash_movement, axis=1)]
+    df_fee = df_fee[~df_fee.apply(_is_tax, axis=1)]
+    df_fee = df_fee[~df_fee.apply(_is_dividend, axis=1)]
+ 
+    # =========================
+    # 6) Taxes
+    # =========================
+    df_tax = df_tax_all.copy()
+ 
+    # =========================
+    # Overview
+    # =========================
+    with tab_over:
+        c1, c2, c3, c4 = st.columns(4)
+        cash_in = df_cash[df_cash["Transaction Type"].astype(str).str.upper().eq("FEDERAL FUNDS RECEIVED")][
+            "Net Amount (Base Currency)"
+        ].sum() if "Net Amount (Base Currency)" in df_cash.columns else 0.0
+ 
+        cash_out = df_cash[df_cash["Transaction Type"].astype(str).str.upper().eq("FEDERAL FUNDS SENT")][
+            "Net Amount (Base Currency)"
+        ].sum() if "Net Amount (Base Currency)" in df_cash.columns else 0.0
+ 
+        etf_trades = len(df_etf)
+        stock_trades = len(df_stock)
+ 
+        with c1:
+            _kpi("Cash In (Base)", _fmt_money(cash_in))
+        with c2:
+            _kpi("Cash Out (Base)", _fmt_money(cash_out))
+        with c3:
+            _kpi("ETF Trades", f"{etf_trades:,}")
+        with c4:
+            _kpi("Stock Trades", f"{stock_trades:,}")
+ 
+        st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<span class="pill">Rango: {from_d} → {to_d}</span> &nbsp; '
+            f'<span class="pill">Filas: {len(df):,}</span>',
+            unsafe_allow_html=True,
+        )
+ 
+        st.caption("Nota: todavía estamos en fase de lectura y clasificación. Sin rentabilidad ni cálculos de cartera.")
+        st.dataframe(df.head(25), use_container_width=True, height=420)
+ 
+    # =========================
+    # Cash Movement tab
+    # =========================
+    with tab_cash:
+        st.subheader("Cash Movement")
+        st.caption("Solo FEDERAL FUNDS RECEIVED / FEDERAL FUNDS SENT (excluye ACTIVITY WITHIN YOUR ACCT).")
+ 
+        cols_cash = [
+            "Process Date",
+            "Settlement Date",
+            "Net Amount (Base Currency)",
+            "Transaction Type",
+            "Security Description",
+            "Transaction Description",
+        ]
+        view = _select_columns(df_cash, cols_cash).sort_values("Settlement Date")
+        st.dataframe(view, use_container_width=True, height=520)
+ 
+    # =========================
+    # ETFs tab
+    # =========================
+    with tab_etf:
+        st.subheader("ETFs")
+        st.caption("Security Type = EXCHANGE TRADED FUNDS y solo BUY/SELL reales.")
+ 
+        cols_long = [
+            "Settlement Date",
+            "Process Date",
+            "Net Amount (Base Currency)",
+            "Transaction Description",
+            "Transaction Type",
+            "Security Description",
+            "Net Amount (Transaction Currency)",
+            "Buy/Sell",
+            "Quantity",
+            "Price (Transaction Currency)",
+            "Transaction Currency",
+            "Security Type",
+            "Payee",
+            "Paid For (Name)",
+            "Request Reason",
+            "CUSIP",
+            "FX Rate (To Base)",
+            "ISIN",
+            "SEDOL",
+            "SYMBOL",
+            "Trade Date",
+        ]
+        view = _select_columns(df_etf, cols_long).sort_values("Settlement Date")
+        st.dataframe(view, use_container_width=True, height=520)
+ 
+    # =========================
+    # Stocks tab
+    # =========================
+    with tab_stock:
+        st.subheader("Stocks")
+        st.caption("Incluye COMMON STOCK + COMMON STOCK ADR. (Por ahora también: OPEN END TAXABLE LOAD FUND + INDEX LINKED CORP BOND)")
+ 
+        cols_long = [
+            "Settlement Date",
+            "Process Date",
+            "Net Amount (Base Currency)",
+            "Transaction Description",
+            "Transaction Type",
+            "Security Description",
+            "Net Amount (Transaction Currency)",
+            "Buy/Sell",
+            "Quantity",
+            "Price (Transaction Currency)",
+            "Transaction Currency",
+            "Security Type",
+            "Payee",
+            "Paid For (Name)",
+            "Request Reason",
+            "CUSIP",
+            "FX Rate (To Base)",
+            "ISIN",
+            "SEDOL",
+            "SYMBOL",
+            "Trade Date",
+        ]
+        view = _select_columns(df_stock, cols_long).sort_values("Settlement Date")
+        st.dataframe(view, use_container_width=True, height=520)
+ 
+    # =========================
+    # Dividends tab
+    # =========================
+    with tab_div:
+        st.subheader("Dividends")
+        st.caption("Neto = Dividend (gross) + Dividend tax (negativo). Agregado por Settlement Date y Symbol.")
+ 
+        show_cols = agg_keys + ["Dividend (Gross, Base)", "Dividend Tax (Base)", "Dividend (Net, Base)"]
+        st.dataframe(div_table[show_cols].sort_values(agg_keys), use_container_width=True, height=520)
+ 
+        with st.expander("Ver filas raw (dividendos)"):
+            st.dataframe(
+                _select_columns(
+                    df_div_gross,
+                    [
+                        "Settlement Date",
+                        "SYMBOL",
+                        "Net Amount (Base Currency)",
+                        "Transaction Type",
+                        "Security Description",
+                        "Transaction Description",
+                        "Transaction code",
+                    ],
+                ).sort_values(["Settlement Date", "SYMBOL"]),
+                use_container_width=True,
+                height=420,
+            )
+ 
+        with st.expander("Ver filas raw (taxes asociados / candidatos)"):
+            st.dataframe(
+                _select_columns(
+                    df_tax_div,
+                    [
+                        "Settlement Date",
+                        "SYMBOL",
+                        "Net Amount (Base Currency)",
+                        "Transaction Type",
+                        "Security Description",
+                        "Transaction Description",
+                        "Transaction code",
+                    ],
+                ).sort_values(["Settlement Date", "SYMBOL"]),
+                use_container_width=True,
+                height=420,
+            )
+ 
+    # =========================
+    # Fees tab
+    # =========================
+    with tab_fee:
+        st.subheader("Fees")
+        st.caption("Fees/costs (clasificación simple). No incluye Cash Movement, Taxes ni Dividends.")
+        cols_fee = [
+            "Settlement Date",
+            "Process Date",
+            "Net Amount (Base Currency)",
+            "Transaction Type",
+            "Transaction Description",
+            "Security Description",
+            "Transaction code",
+            "Commission",
+        ]
+        view = _select_columns(df_fee, cols_fee).sort_values("Settlement Date")
+        st.dataframe(view, use_container_width=True, height=520)
+ 
+    # =========================
+    # Taxes tab
+    # =========================
+    with tab_tax:
+        st.subheader("Taxes")
+        st.caption("Taxes (incluye NRA / foreign tax withheld / etc).")
+        cols_tax = [
+            "Settlement Date",
+            "Process Date",
+            "Net Amount (Base Currency)",
+            "Transaction Type",
+            "Transaction Description",
+            "Security Description",
+            "Transaction code",
+        ]
+        view = _select_columns(df_tax, cols_tax).sort_values("Settlement Date")
+        st.dataframe(view, use_container_width=True, height=520)
