@@ -241,7 +241,6 @@ def check_password():
     if st.session_state.logged_in:
         return True
 
-    st.markdown("<div class='login-wrap'>", unsafe_allow_html=True)
     st.markdown("<div class='login-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
     st.markdown("<div class='login-sub'>Ingresá la clave para continuar</div>", unsafe_allow_html=True)
     st.markdown("<div class='login-line'></div>", unsafe_allow_html=True)
