@@ -31,7 +31,7 @@ st.set_page_config(
 # =========================
 # PASSWORD DESDE SECRETS
 # =========================
-APP_PASSWORD = st.secrets["app_password"]
+APP_PASSWORD = st.secrets.get("app_password")
 
 
 # =========================
@@ -40,7 +40,7 @@ APP_PASSWORD = st.secrets["app_password"]
 st.markdown(
     """
     <style>
-    /* ===== Contenedor general ===== */
+    /* ===== Layout general ===== */
     .block-container{
         padding-top: 2.2rem;
         max-width: 1240px;
@@ -48,7 +48,7 @@ st.markdown(
 
     header[data-testid="stHeader"]{
         visibility: hidden;
-        height: 3rem;
+        height: 0rem;
     }
 
     /* ===== Header ===== */
@@ -58,6 +58,7 @@ st.markdown(
         letter-spacing:.14em;
         font-size:1.6rem;
         margin-bottom:4px;
+        color:#111827;
     }
 
     .neix-caption{
@@ -72,7 +73,7 @@ st.markdown(
         height:3px;
         background:#ef4444;
         margin:0 auto 22px auto;
-        border-radius:4px;
+        border-radius:999px;
     }
 
     /* ===== Tabs ===== */
@@ -98,13 +99,13 @@ st.markdown(
     }
 
     .stTabs [aria-selected="true"]{
-        color:#1e3a8a;
+        color:#1e3a8a !important;
         border-bottom:3px solid #ef4444;
     }
 
     /* ===== Section Titles ===== */
     .section-title{
-        font-size:1.35rem;
+        font-size:1.30rem;
         font-weight:800;
         margin-top:6px;
         margin-bottom:2px;
@@ -117,7 +118,7 @@ st.markdown(
         margin-bottom:14px;
     }
 
-    /* ===== Cards ===== */
+    /* ===== Cards / Buttons ===== */
     .tool-grid{
         display:flex;
         gap:14px;
@@ -131,21 +132,21 @@ st.markdown(
         justify-content:center;
         padding:12px 18px;
         min-height:52px;
+        min-width:240px;
         border-radius:14px;
         border:1px solid rgba(0,0,0,0.08);
         background:white;
         text-decoration:none !important;
         color:#1e3a8a !important;
         font-weight:700;
-        min-width:240px;
         box-shadow:0 2px 10px rgba(0,0,0,0.04);
-        transition: all .10s ease;
+        transition:all .12s ease;
     }
 
     .tool-btn:hover{
-        transform: translateY(-1px);
+        transform:translateY(-1px);
         box-shadow:0 8px 22px rgba(0,0,0,0.08);
-        border-color: rgba(239,68,68,.35);
+        border-color:rgba(239,68,68,.35);
         color:#1e3a8a !important;
     }
 
@@ -156,26 +157,27 @@ st.markdown(
     }
 
     .tool-btn-primary:hover{
-        filter:brightness(.96);
+        filter:brightness(.97);
         box-shadow:0 10px 26px rgba(239,68,68,.18);
+        color:white !important;
     }
 
     /* ===== Login ===== */
     .login-wrap{
-        max-width:420px;
-        margin:90px auto 0 auto;
-        padding:34px 32px 28px 32px;
+        max-width:380px;
+        margin:100px auto 0 auto;
+        padding:30px 28px 24px 28px;
         border-radius:18px;
         border:1px solid rgba(0,0,0,0.08);
         background:white;
-        box-shadow:0 10px 30px rgba(0,0,0,0.06);
+        box-shadow:0 10px 26px rgba(0,0,0,0.05);
     }
 
     .login-title{
         text-align:center;
         font-weight:900;
         letter-spacing:.12em;
-        font-size:1.35rem;
+        font-size:1.25rem;
         margin-bottom:6px;
         color:#111827;
     }
@@ -183,30 +185,44 @@ st.markdown(
     .login-sub{
         text-align:center;
         color:#6b7280;
-        font-size:.95rem;
-        margin-bottom:18px;
+        font-size:.92rem;
+        margin-bottom:14px;
     }
 
     .login-line{
-        width:56px;
+        width:52px;
         height:3px;
         background:#ef4444;
-        margin:0 auto 22px auto;
-        border-radius:4px;
+        margin:0 auto 18px auto;
+        border-radius:999px;
     }
 
     .login-footer{
         text-align:center;
         color:#94a3b8;
-        font-size:.82rem;
+        font-size:.80rem;
         margin-top:10px;
+    }
+
+    /* ===== Inputs ===== */
+    div[data-testid="stTextInput"] input{
+        border-radius:12px;
     }
 
     div[data-testid="stButton"] > button{
         width:100%;
+        min-height:44px;
         border-radius:12px;
         font-weight:700;
-        min-height:44px;
+        border:1px solid rgba(0,0,0,0.08);
+    }
+
+    /* ===== Logout ===== */
+    .logout-wrap{
+        display:flex;
+        justify-content:flex-end;
+        align-items:flex-start;
+        padding-top:8px;
     }
     </style>
     """,
@@ -218,44 +234,58 @@ st.markdown(
 # HELPERS
 # =========================
 def _header():
-    col1, col2 = st.columns([10, 1])
+    col1, col2 = st.columns([12, 1])
 
     with col1:
         st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
         st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
         st.markdown("<div class='neix-line'></div>", unsafe_allow_html=True)
-        st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:18px;'></div>", unsafe_allow_html=True)
 
     with col2:
         if st.session_state.get("logged_in", False):
-            st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-            if st.button("Salir"):
+            st.markdown("<div class='logout-wrap'>", unsafe_allow_html=True)
+            if st.button("Salir", key="logout_btn"):
                 st.session_state.logged_in = False
                 st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
 
 def check_password():
+    if not APP_PASSWORD:
+        st.error("No se encontró 'app_password' en st.secrets.")
+        st.stop()
+
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
 
     if st.session_state.logged_in:
         return True
 
-    st.markdown("<div class='login-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
-    st.markdown("<div class='login-sub'>Ingresá la clave para continuar</div>", unsafe_allow_html=True)
-    st.markdown("<div class='login-line'></div>", unsafe_allow_html=True)
+    left, center, right = st.columns([1, 1.15, 1])
 
-    password = st.text_input("Clave", type="password", placeholder="Ingrese la clave")
+    with center:
+        st.markdown("<div class='login-wrap'>", unsafe_allow_html=True)
+        st.markdown("<div class='login-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-sub'>Ingresá la clave para continuar</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-line'></div>", unsafe_allow_html=True)
 
-    if st.button("Ingresar"):
-        if password == APP_PASSWORD:
-            st.session_state.logged_in = True
-            st.rerun()
-        else:
-            st.error("Clave incorrecta")
+        password = st.text_input(
+            "Clave",
+            type="password",
+            placeholder="Ingrese la clave",
+            label_visibility="collapsed"
+        )
 
-    st.markdown("<div class='login-footer'>Acceso interno</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+        if st.button("Ingresar", key="login_btn"):
+            if password == APP_PASSWORD:
+                st.session_state.logged_in = True
+                st.rerun()
+            else:
+                st.error("Clave incorrecta")
+
+        st.markdown("<div class='login-footer'>Acceso interno</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     return False
 
