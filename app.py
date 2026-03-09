@@ -3,6 +3,10 @@ import streamlit as st
 from tools.mesa import cartera, ons, vencimientos, bonos, cartera2
 from tools.comerciales import cauciones_mae, cauciones_byma, alquileres, cn, transactions_analyzer
 
+
+# =========================
+# URLS
+# =========================
 BACKOFFICE_URL = "https://neix-workbench-bo.streamlit.app/"
 BI_BANCA_PRIVADA = "https://lookerstudio.google.com/reporting/75c2a6d0-0086-491f-b112-88fe3d257ef9"
 BI_BANCA_CORP = "https://lookerstudio.google.com/reporting/4f70efa8-2b86-4134-a9cb-9e6f90117f3b"
@@ -22,6 +26,12 @@ st.set_page_config(
     page_icon="🧰",
     layout="wide"
 )
+
+
+# =========================
+# PASSWORD DESDE SECRETS
+# =========================
+APP_PASSWORD = st.secrets["app_password"]
 
 
 # =========================
@@ -57,7 +67,6 @@ st.markdown(
         margin-bottom:10px;
     }
 
-    /* Línea roja bajo el título */
     .neix-line{
         width:60px;
         height:3px;
@@ -126,7 +135,7 @@ st.markdown(
         border:1px solid rgba(0,0,0,0.08);
         background:white;
         text-decoration:none !important;
-        color:#1e3a8a !important;   /* 🔵 Azul corporativo */
+        color:#1e3a8a !important;
         font-weight:700;
         min-width:240px;
         box-shadow:0 2px 10px rgba(0,0,0,0.04);
@@ -140,7 +149,6 @@ st.markdown(
         color:#1e3a8a !important;
     }
 
-    /* Botón rojo destacado */
     .tool-btn-primary{
         background:#ef4444 !important;
         color:white !important;
@@ -152,17 +160,113 @@ st.markdown(
         box-shadow:0 10px 26px rgba(239,68,68,.18);
     }
 
+    /* ===== Login ===== */
+    .login-wrap{
+        max-width:420px;
+        margin:90px auto 0 auto;
+        padding:34px 32px 28px 32px;
+        border-radius:18px;
+        border:1px solid rgba(0,0,0,0.08);
+        background:white;
+        box-shadow:0 10px 30px rgba(0,0,0,0.06);
+    }
+
+    .login-title{
+        text-align:center;
+        font-weight:900;
+        letter-spacing:.12em;
+        font-size:1.35rem;
+        margin-bottom:6px;
+        color:#111827;
+    }
+
+    .login-sub{
+        text-align:center;
+        color:#6b7280;
+        font-size:.95rem;
+        margin-bottom:18px;
+    }
+
+    .login-line{
+        width:56px;
+        height:3px;
+        background:#ef4444;
+        margin:0 auto 22px auto;
+        border-radius:4px;
+    }
+
+    .login-footer{
+        text-align:center;
+        color:#94a3b8;
+        font-size:.82rem;
+        margin-top:10px;
+    }
+
+    div[data-testid="stButton"] > button{
+        width:100%;
+        border-radius:12px;
+        font-weight:700;
+        min-height:44px;
+    }
     </style>
     """,
     unsafe_allow_html=True
 )
 
 
+# =========================
+# HELPERS
+# =========================
 def _header():
-    st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
-    st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
-    st.markdown("<div class='neix-line'></div>", unsafe_allow_html=True)
-    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    col1, col2 = st.columns([10, 1])
+
+    with col1:
+        st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
+        st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
+        st.markdown("<div class='neix-line'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+
+    with col2:
+        if st.session_state.get("logged_in", False):
+            st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+            if st.button("Salir"):
+                st.session_state.logged_in = False
+                st.rerun()
+
+
+def check_password():
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+
+    if st.session_state.logged_in:
+        return True
+
+    st.markdown("<div class='login-wrap'>", unsafe_allow_html=True)
+    st.markdown("<div class='login-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
+    st.markdown("<div class='login-sub'>Ingresá la clave para continuar</div>", unsafe_allow_html=True)
+    st.markdown("<div class='login-line'></div>", unsafe_allow_html=True)
+
+    password = st.text_input("Clave", type="password", placeholder="Ingrese la clave")
+
+    if st.button("Ingresar"):
+        if password == APP_PASSWORD:
+            st.session_state.logged_in = True
+            st.rerun()
+        else:
+            st.error("Clave incorrecta")
+
+    st.markdown("<div class='login-footer'>Acceso interno</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    return False
+
+
+# =========================
+# LOGIN
+# =========================
+if not check_password():
+    st.stop()
+
 
 # =========================
 # ROUTER (?tool=...)
