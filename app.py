@@ -193,31 +193,18 @@ st.markdown(
 # HELPERS
 # =========================
 def _header():
-    col1, col2 = st.columns([10, 1])
-
-    with col1:
-        st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
-        st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
-        st.markdown("<div class='neix-line'></div>", unsafe_allow_html=True)
-        st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
-
-    with col2:
-        if st.session_state.get("logged_in", False):
-            st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-            if st.button("Salir", key="logout_btn"):
-                st.session_state.logged_in = False
-                st.query_params.clear()
-                st.rerun()
+    st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
+    st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
+    st.markdown("<div class='neix-line'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 
 
 def go_tool(tool_name: str):
     st.query_params["tool"] = tool_name
-    st.rerun()
 
 
 def clear_tool():
     st.query_params.clear()
-    st.rerun()
 
 
 def render_internal_cards(items, cols_per_row=3, key_prefix="nav"):
@@ -269,7 +256,12 @@ def check_password():
     st.markdown("<div class='login-sub'>Ingresá la clave para continuar</div>", unsafe_allow_html=True)
     st.markdown("<div class='login-line'></div>", unsafe_allow_html=True)
 
-    password = st.text_input("Clave", type="password", placeholder="Ingrese la clave", key="login_password")
+    password = st.text_input(
+        "Clave",
+        type="password",
+        placeholder="Ingrese la clave",
+        key="login_password"
+    )
 
     if st.button("Ingresar", key="login_btn"):
         if password == APP_PASSWORD:
@@ -303,6 +295,7 @@ if tool:
     with col_back:
         if st.button("← Volver", key="volver_home"):
             clear_tool()
+            st.rerun()
 
     st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
