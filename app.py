@@ -35,12 +35,18 @@ APP_PASSWORD = st.secrets["app_password"]
 
 
 # =========================
+# ESTADO INICIAL
+# =========================
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+
+# =========================
 # ESTÉTICA
 # =========================
 st.markdown(
     """
     <style>
-    /* ===== Contenedor general ===== */
     .block-container{
         padding-top: 2.2rem;
         max-width: 1240px;
@@ -51,13 +57,14 @@ st.markdown(
         height: 3rem;
     }
 
-    /* ===== Header ===== */
+    /* Header */
     .neix-title{
         text-align:center;
         font-weight:900;
         letter-spacing:.14em;
         font-size:1.6rem;
         margin-bottom:4px;
+        color:#111827;
     }
 
     .neix-caption{
@@ -75,7 +82,7 @@ st.markdown(
         border-radius:4px;
     }
 
-    /* ===== Tabs ===== */
+    /* Tabs */
     .stTabs [data-baseweb="tab-list"]{
         justify-content:flex-start;
         gap:8px;
@@ -102,7 +109,7 @@ st.markdown(
         border-bottom:3px solid #ef4444;
     }
 
-    /* ===== Section Titles ===== */
+    /* Titles */
     .section-title{
         font-size:1.35rem;
         font-weight:800;
@@ -117,50 +124,7 @@ st.markdown(
         margin-bottom:14px;
     }
 
-    /* ===== Cards ===== */
-    .tool-grid{
-        display:flex;
-        gap:14px;
-        flex-wrap:wrap;
-        margin-top:6px;
-    }
-
-    .tool-btn{
-        display:flex;
-        align-items:center;
-        justify-content:center;
-        padding:12px 18px;
-        min-height:52px;
-        border-radius:14px;
-        border:1px solid rgba(0,0,0,0.08);
-        background:white;
-        text-decoration:none !important;
-        color:#1e3a8a !important;
-        font-weight:700;
-        min-width:240px;
-        box-shadow:0 2px 10px rgba(0,0,0,0.04);
-        transition: all .10s ease;
-    }
-
-    .tool-btn:hover{
-        transform: translateY(-1px);
-        box-shadow:0 8px 22px rgba(0,0,0,0.08);
-        border-color: rgba(239,68,68,.35);
-        color:#1e3a8a !important;
-    }
-
-    .tool-btn-primary{
-        background:#ef4444 !important;
-        color:white !important;
-        border-color:transparent !important;
-    }
-
-    .tool-btn-primary:hover{
-        filter:brightness(.96);
-        box-shadow:0 10px 26px rgba(239,68,68,.18);
-    }
-
-    /* ===== Login ===== */
+    /* Login */
     .login-wrap{
         max-width:420px;
         margin:90px auto 0 auto;
@@ -207,6 +171,17 @@ st.markdown(
         border-radius:12px;
         font-weight:700;
         min-height:44px;
+        border:1px solid rgba(0,0,0,0.08);
+    }
+
+    div[data-testid="stLinkButton"] a{
+        width:100%;
+        border-radius:12px !important;
+        font-weight:700 !important;
+        min-height:44px !important;
+        display:flex !important;
+        align-items:center !important;
+        justify-content:center !important;
     }
     </style>
     """,
@@ -229,15 +204,63 @@ def _header():
     with col2:
         if st.session_state.get("logged_in", False):
             st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-            if st.button("Salir"):
+            if st.button("Salir", key="logout_btn"):
                 st.session_state.logged_in = False
+                st.query_params.clear()
                 st.rerun()
 
 
-def check_password():
-    if "logged_in" not in st.session_state:
-        st.session_state.logged_in = False
+def go_tool(tool_name: str):
+    st.query_params["tool"] = tool_name
+    st.rerun()
 
+
+def clear_tool():
+    st.query_params.clear()
+    st.rerun()
+
+
+def render_internal_cards(items, cols_per_row=3, key_prefix="nav"):
+    """
+    items: list of tuples -> (label, tool_name)
+    """
+    for row_start in range(0, len(items), cols_per_row):
+        row = items[row_start: row_start + cols_per_row]
+        cols = st.columns(cols_per_row)
+
+        for i in range(cols_per_row):
+            with cols[i]:
+                if i < len(row):
+                    label, tool_name = row[i]
+                    st.button(
+                        label,
+                        key=f"{key_prefix}_{tool_name}",
+                        use_container_width=True,
+                        on_click=go_tool,
+                        args=(tool_name,),
+                    )
+                else:
+                    st.empty()
+
+
+def render_external_cards(items, cols_per_row=3):
+    """
+    items: list of tuples -> (label, url)
+    """
+    for row_start in range(0, len(items), cols_per_row):
+        row = items[row_start: row_start + cols_per_row]
+        cols = st.columns(cols_per_row)
+
+        for i in range(cols_per_row):
+            with cols[i]:
+                if i < len(row):
+                    label, url = row[i]
+                    st.link_button(label, url, use_container_width=True)
+                else:
+                    st.empty()
+
+
+def check_password():
     if st.session_state.logged_in:
         return True
 
@@ -246,9 +269,9 @@ def check_password():
     st.markdown("<div class='login-sub'>Ingresá la clave para continuar</div>", unsafe_allow_html=True)
     st.markdown("<div class='login-line'></div>", unsafe_allow_html=True)
 
-    password = st.text_input("Clave", type="password", placeholder="Ingrese la clave")
+    password = st.text_input("Clave", type="password", placeholder="Ingrese la clave", key="login_password")
 
-    if st.button("Ingresar"):
+    if st.button("Ingresar", key="login_btn"):
         if password == APP_PASSWORD:
             st.session_state.logged_in = True
             st.rerun()
@@ -275,6 +298,13 @@ tool = (st.query_params.get("tool") or "").lower().strip()
 
 if tool:
     _header()
+
+    col_back, _ = st.columns([2, 10])
+    with col_back:
+        if st.button("← Volver", key="volver_home"):
+            clear_tool()
+
+    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
     try:
         # -------------------------
@@ -329,46 +359,19 @@ if tool:
         elif tool == "mkt_instructivos":
             st.markdown("<div class='section-title'>Marketing · Instructivos</div>", unsafe_allow_html=True)
             st.markdown("<div class='section-sub'>Carpeta compartida en SharePoint</div>", unsafe_allow_html=True)
-            st.markdown(
-                f"""
-                <div class="tool-grid">
-                    <a class="tool-btn" href="{SP_MKT_INSTRUCTIVOS}" target="_blank" rel="noopener noreferrer">
-                        Abrir Instructivos
-                    </a>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            st.link_button("Abrir Instructivos", SP_MKT_INSTRUCTIVOS, use_container_width=False)
             st.stop()
 
         elif tool == "mkt_materiales":
             st.markdown("<div class='section-title'>Marketing · Materiales</div>", unsafe_allow_html=True)
             st.markdown("<div class='section-sub'>Carpeta compartida en SharePoint</div>", unsafe_allow_html=True)
-            st.markdown(
-                f"""
-                <div class="tool-grid">
-                    <a class="tool-btn" href="{SP_MKT_MATERIALES}" target="_blank" rel="noopener noreferrer">
-                        Abrir Materiales de Marketing
-                    </a>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            st.link_button("Abrir Materiales de Marketing", SP_MKT_MATERIALES, use_container_width=False)
             st.stop()
 
         elif tool == "mkt_presentaciones":
             st.markdown("<div class='section-title'>Marketing · Presentaciones</div>", unsafe_allow_html=True)
             st.markdown("<div class='section-sub'>Carpeta compartida en SharePoint</div>", unsafe_allow_html=True)
-            st.markdown(
-                f"""
-                <div class="tool-grid">
-                    <a class="tool-btn" href="{SP_MKT_PRESENTACIONES}" target="_blank" rel="noopener noreferrer">
-                        Abrir Presentaciones
-                    </a>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            st.link_button("Abrir Presentaciones", SP_MKT_PRESENTACIONES, use_container_width=False)
             st.stop()
 
         # -------------------------
@@ -377,16 +380,7 @@ if tool:
         elif tool in ("operaciones", "backoffice"):
             st.markdown("<div class='section-title'>Operaciones</div>", unsafe_allow_html=True)
             st.markdown("<div class='section-sub'>Backoffice se abre en una web externa</div>", unsafe_allow_html=True)
-            st.markdown(
-                f"""
-                <div class="tool-grid">
-                    <a class="tool-btn tool-btn-primary" href="{BACKOFFICE_URL}" target="_blank" rel="noopener noreferrer">
-                        Abrir Backoffice
-                    </a>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            st.link_button("Abrir Backoffice", BACKOFFICE_URL, use_container_width=False)
             st.stop()
 
         else:
@@ -414,18 +408,17 @@ with tabs[0]:
     st.markdown("<div class='section-title'>Comercial</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-sub'>Seguimiento y herramientas comerciales</div>", unsafe_allow_html=True)
 
-    st.markdown(
-        """
-        <div class="tool-grid">
-            <a class="tool-btn" href="?tool=cauciones_mae">Cauciones MAE</a>
-            <a class="tool-btn" href="?tool=cauciones_byma">Cauciones BYMA</a>
-            <a class="tool-btn" href="?tool=alquileres">Alquileres</a>
-            <a class="tool-btn" href="?tool=tenencia">Tenencia</a>
-            <a class="tool-btn" href="?tool=cn">CN</a>
-            <a class="tool-btn" href="?tool=transactions_analyzer">Movimientos CV</a>
-        </div>
-        """,
-        unsafe_allow_html=True
+    render_internal_cards(
+        [
+            ("Cauciones MAE", "cauciones_mae"),
+            ("Cauciones BYMA", "cauciones_byma"),
+            ("Alquileres", "alquileres"),
+            ("Tenencia", "tenencia"),
+            ("CN", "cn"),
+            ("Movimientos CV", "transactions_analyzer"),
+        ],
+        cols_per_row=3,
+        key_prefix="comercial"
     )
 
 
@@ -436,15 +429,11 @@ with tabs[1]:
     st.markdown("<div class='section-title'>Operaciones</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-sub'>Acceso al entorno externo de Backoffice</div>", unsafe_allow_html=True)
 
-    st.markdown(
-        f"""
-        <div class="tool-grid">
-            <a class="tool-btn tool-btn-primary" href="{BACKOFFICE_URL}" target="_blank" rel="noopener noreferrer">
-                Abrir Backoffice
-            </a>
-        </div>
-        """,
-        unsafe_allow_html=True
+    render_external_cards(
+        [
+            ("Abrir Backoffice", BACKOFFICE_URL),
+        ],
+        cols_per_row=3
     )
 
 
@@ -455,16 +444,15 @@ with tabs[2]:
     st.markdown("<div class='section-title'>Mesa</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-sub'>Bonos, ONs y carteras</div>", unsafe_allow_html=True)
 
-    st.markdown(
-        """
-        <div class="tool-grid">
-            <a class="tool-btn" href="?tool=bonos">Bonos</a>
-            <a class="tool-btn" href="?tool=ons">Obligaciones Negociables</a>
-            <a class="tool-btn" href="?tool=cartera">Carteras (rendimiento)</a>
-            <a class="tool-btn" href="?tool=cartera2">Carteras (ARG)</a>
-        </div>
-        """,
-        unsafe_allow_html=True
+    render_internal_cards(
+        [
+            ("Bonos", "bonos"),
+            ("Obligaciones Negociables", "ons"),
+            ("Carteras (rendimiento)", "cartera"),
+            ("Carteras (ARG)", "cartera2"),
+        ],
+        cols_per_row=3,
+        key_prefix="mesa"
     )
 
 
@@ -475,21 +463,13 @@ with tabs[3]:
     st.markdown("<div class='section-title'>Performance · BI</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-sub'>Dashboards de performance y seguimiento por área</div>", unsafe_allow_html=True)
 
-    st.markdown(
-        f"""
-        <div class="tool-grid">
-            <a class="tool-btn" href="{BI_BANCA_PRIVADA}" target="_blank" rel="noopener noreferrer">
-                Banca Privada
-            </a>
-            <a class="tool-btn" href="{BI_BANCA_CORP}" target="_blank" rel="noopener noreferrer">
-                Banca Corporativa
-            </a>
-            <a class="tool-btn" href="{BI_MIDDLE}" target="_blank" rel="noopener noreferrer">
-                Middle Office
-            </a>
-        </div>
-        """,
-        unsafe_allow_html=True
+    render_external_cards(
+        [
+            ("Banca Privada", BI_BANCA_PRIVADA),
+            ("Banca Corporativa", BI_BANCA_CORP),
+            ("Middle Office", BI_MIDDLE),
+        ],
+        cols_per_row=3
     )
 
 
@@ -500,13 +480,12 @@ with tabs[4]:
     st.markdown("<div class='section-title'>Marketing</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-sub'>Acceso a carpetas e instructivos compartidos</div>", unsafe_allow_html=True)
 
-    st.markdown(
-        """
-        <div class="tool-grid">
-            <a class="tool-btn" href="?tool=mkt_instructivos" target="_self">Instructivos</a>
-            <a class="tool-btn" href="?tool=mkt_materiales" target="_self">Materiales de Marketing</a>
-            <a class="tool-btn" href="?tool=mkt_presentaciones" target="_self">Presentaciones</a>
-        </div>
-        """,
-        unsafe_allow_html=True
+    render_internal_cards(
+        [
+            ("Instructivos", "mkt_instructivos"),
+            ("Materiales de Marketing", "mkt_materiales"),
+            ("Presentaciones", "mkt_presentaciones"),
+        ],
+        cols_per_row=3,
+        key_prefix="marketing"
     )
