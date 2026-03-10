@@ -47,22 +47,35 @@ if "logged_in" not in st.session_state:
 st.markdown(
     """
     <style>
+    /* ===== Layout general ===== */
     .block-container{
-        padding-top: 2.2rem;
+        padding-top: 1.1rem;
         max-width: 1240px;
     }
 
     header[data-testid="stHeader"]{
-        visibility: hidden;
-        height: 3rem;
+        display: none !important;
     }
 
-    /* Header */
+    div[data-testid="stToolbar"]{
+        display: none !important;
+    }
+
+    #MainMenu{
+        visibility: hidden;
+    }
+
+    footer{
+        visibility: hidden;
+    }
+
+    /* ===== Header ===== */
     .neix-title{
         text-align:center;
         font-weight:900;
         letter-spacing:.14em;
         font-size:1.6rem;
+        margin-top:0;
         margin-bottom:4px;
         color:#111827;
     }
@@ -78,17 +91,17 @@ st.markdown(
         width:60px;
         height:3px;
         background:#ef4444;
-        margin:0 auto 22px auto;
+        margin:0 auto 18px auto;
         border-radius:4px;
     }
 
-    /* Tabs */
+    /* ===== Tabs ===== */
     .stTabs [data-baseweb="tab-list"]{
         justify-content:flex-start;
         gap:8px;
         border-bottom:1px solid rgba(0,0,0,0.08);
         padding-left:2px;
-        margin-top:4px;
+        margin-top:2px;
     }
 
     .stTabs [data-baseweb="tab"]{
@@ -109,7 +122,7 @@ st.markdown(
         border-bottom:3px solid #ef4444;
     }
 
-    /* Titles */
+    /* ===== Titles ===== */
     .section-title{
         font-size:1.35rem;
         font-weight:800;
@@ -124,10 +137,10 @@ st.markdown(
         margin-bottom:14px;
     }
 
-    /* Login */
+    /* ===== Login ===== */
     .login-wrap{
         max-width:420px;
-        margin:90px auto 0 auto;
+        margin:70px auto 0 auto;
         padding:34px 32px 28px 32px;
         border-radius:18px;
         border:1px solid rgba(0,0,0,0.08);
@@ -166,12 +179,21 @@ st.markdown(
         margin-top:10px;
     }
 
+    /* ===== Buttons ===== */
     div[data-testid="stButton"] > button{
         width:100%;
         border-radius:12px;
         font-weight:700;
         min-height:44px;
         border:1px solid rgba(0,0,0,0.08);
+        background:white;
+        color:#0f172a;
+        box-shadow:0 2px 8px rgba(0,0,0,0.03);
+    }
+
+    div[data-testid="stButton"] > button:hover{
+        border-color:rgba(239,68,68,.35);
+        color:#1e3a8a;
     }
 
     div[data-testid="stLinkButton"] a{
@@ -183,6 +205,30 @@ st.markdown(
         align-items:center !important;
         justify-content:center !important;
     }
+
+    /* ===== Botón principal rojo ===== */
+    .primary-link{
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        width:100%;
+        min-height:48px;
+        border-radius:14px;
+        background:#ef4444;
+        color:white !important;
+        text-decoration:none !important;
+        font-weight:800;
+        box-shadow:0 8px 22px rgba(239,68,68,.18);
+    }
+
+    .primary-link:hover{
+        filter:brightness(.97);
+    }
+
+    /* ===== Espaciados ===== */
+    .top-gap{
+        height:6px;
+    }
     </style>
     """,
     unsafe_allow_html=True
@@ -193,10 +239,11 @@ st.markdown(
 # HELPERS
 # =========================
 def _header():
+    st.markdown("<div class='top-gap'></div>", unsafe_allow_html=True)
     st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
     st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
     st.markdown("<div class='neix-line'></div>", unsafe_allow_html=True)
-    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
 
 def go_tool(tool_name: str):
@@ -208,12 +255,9 @@ def clear_tool():
 
 
 def render_internal_cards(items, cols_per_row=3, key_prefix="nav"):
-    """
-    items: list of tuples -> (label, tool_name)
-    """
     for row_start in range(0, len(items), cols_per_row):
         row = items[row_start: row_start + cols_per_row]
-        cols = st.columns(cols_per_row)
+        cols = st.columns(cols_per_row, gap="medium")
 
         for i in range(cols_per_row):
             with cols[i]:
@@ -231,12 +275,9 @@ def render_internal_cards(items, cols_per_row=3, key_prefix="nav"):
 
 
 def render_external_cards(items, cols_per_row=3):
-    """
-    items: list of tuples -> (label, url)
-    """
     for row_start in range(0, len(items), cols_per_row):
         row = items[row_start: row_start + cols_per_row]
-        cols = st.columns(cols_per_row)
+        cols = st.columns(cols_per_row, gap="medium")
 
         for i in range(cols_per_row):
             with cols[i]:
@@ -373,7 +414,10 @@ if tool:
         elif tool in ("operaciones", "backoffice"):
             st.markdown("<div class='section-title'>Operaciones</div>", unsafe_allow_html=True)
             st.markdown("<div class='section-sub'>Backoffice se abre en una web externa</div>", unsafe_allow_html=True)
-            st.link_button("Abrir Backoffice", BACKOFFICE_URL, use_container_width=False)
+            st.markdown(
+                f'<a class="primary-link" href="{BACKOFFICE_URL}" target="_blank">Abrir Backoffice</a>',
+                unsafe_allow_html=True
+            )
             st.stop()
 
         else:
@@ -422,11 +466,13 @@ with tabs[1]:
     st.markdown("<div class='section-title'>Operaciones</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-sub'>Acceso al entorno externo de Backoffice</div>", unsafe_allow_html=True)
 
-    render_external_cards(
-        [
-            ("Abrir Backoffice", BACKOFFICE_URL),
-        ],
-        cols_per_row=3
+    st.markdown(
+        f"""
+        <div style="max-width:420px;">
+            <a class="primary-link" href="{BACKOFFICE_URL}" target="_blank">Abrir Backoffice</a>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
 
