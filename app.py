@@ -1,7 +1,14 @@
 import streamlit as st
 
 from tools.mesa import cartera, ons, vencimientos, bonos, cartera2
-from tools.comerciales import cauciones_mae, cauciones_byma, alquileres, cn, transactions_analyzer
+from tools.comerciales import (
+    cauciones_mae,
+    cauciones_byma,
+    alquileres,
+    cn,
+    transactions_analyzer,
+    filtro_especies_exterior,
+)
 
 
 # =========================
@@ -24,7 +31,7 @@ SP_MKT_PRESENTACIONES = "https://neixcom.sharepoint.com/sites/NEIXSOCIEDADDEBOLS
 st.set_page_config(
     page_title="NEIX Workbench",
     page_icon="🧰",
-    layout="wide"
+    layout="wide",
 )
 
 
@@ -231,7 +238,7 @@ st.markdown(
     }
     </style>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 
@@ -301,7 +308,7 @@ def check_password():
         "Clave",
         type="password",
         placeholder="Ingrese la clave",
-        key="login_password"
+        key="login_password",
     )
 
     if st.button("Ingresar", key="login_btn"):
@@ -387,6 +394,10 @@ if tool:
             transactions_analyzer.render()
             st.stop()
 
+        elif tool == "filtro_especies_exterior":
+            filtro_especies_exterior.render()
+            st.stop()
+
         # -------------------------
         # Marketing
         # -------------------------
@@ -416,7 +427,7 @@ if tool:
             st.markdown("<div class='section-sub'>Backoffice se abre en una web externa</div>", unsafe_allow_html=True)
             st.markdown(
                 f'<a class="primary-link" href="{BACKOFFICE_URL}" target="_blank">Abrir Backoffice</a>',
-                unsafe_allow_html=True
+                unsafe_allow_html=True,
             )
             st.stop()
 
@@ -453,9 +464,10 @@ with tabs[0]:
             ("Tenencia", "tenencia"),
             ("CN", "cn"),
             ("Movimientos CV", "transactions_analyzer"),
+            ("Filtro Especies Exterior", "filtro_especies_exterior"),
         ],
         cols_per_row=3,
-        key_prefix="comercial"
+        key_prefix="comercial",
     )
 
 
@@ -472,7 +484,7 @@ with tabs[1]:
             <a class="primary-link" href="{BACKOFFICE_URL}" target="_blank">Abrir Backoffice</a>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
 
@@ -491,7 +503,7 @@ with tabs[2]:
             ("Carteras (ARG)", "cartera2"),
         ],
         cols_per_row=3,
-        key_prefix="mesa"
+        key_prefix="mesa",
     )
 
 
@@ -508,7 +520,7 @@ with tabs[3]:
             ("Banca Corporativa", BI_BANCA_CORP),
             ("Middle Office", BI_MIDDLE),
         ],
-        cols_per_row=3
+        cols_per_row=3,
     )
 
 
@@ -526,5 +538,5 @@ with tabs[4]:
             ("Presentaciones", "mkt_presentaciones"),
         ],
         cols_per_row=3,
-        key_prefix="marketing"
+        key_prefix="marketing",
     )
