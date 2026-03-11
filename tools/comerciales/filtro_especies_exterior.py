@@ -155,12 +155,10 @@ def _build_output_excel(df_final: pd.DataFrame) -> BytesIO:
     ws = wb.active
     ws.title = "Filtro Especies Exterior"
 
-    # Formato precio
     for row in ws.iter_rows(min_row=2, min_col=2, max_col=2):
         for cell in row:
             cell.number_format = "0.00"
 
-    # Anchos de columna
     ws.column_dimensions["A"].width = 22
     ws.column_dimensions["B"].width = 14
 
@@ -171,6 +169,7 @@ def _build_output_excel(df_final: pd.DataFrame) -> BytesIO:
 
 
 def process_excel_file(file) -> tuple[pd.DataFrame, BytesIO, dict]:
+
     df = pd.read_excel(file, header=1)
 
     if df.empty:
@@ -197,6 +196,7 @@ def process_excel_file(file) -> tuple[pd.DataFrame, BytesIO, dict]:
 
     df_final = df_filtrado[[csva_col, precio_col]].copy()
     df_final.columns = ["CSVA", "Precio"]
+
     df_final["CSVA"] = _norm_text(df_final["CSVA"])
     df_final["Precio"] = pd.to_numeric(df_final["Precio"], errors="coerce").round(2)
 
@@ -220,7 +220,22 @@ def process_excel_file(file) -> tuple[pd.DataFrame, BytesIO, dict]:
 # RENDER
 # =========================================================
 def render() -> None:
+
     _inject_ui_css()
+
+    st.markdown(
+        """
+        <div class="fes-wrap">
+            <div class="fes-title">Filtro Especies Exterior</div>
+            <div class="fes-subtitle">
+                Filtra especies con <b>Fuente = BBG</b> y <b>Moneda = USD EXTERIOR</b>.
+                Devuelve un Excel con columnas <b>CSVA</b> y <b>Precio</b>.
+            </div>
+            <div class="fes-line"></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     archivo = st.file_uploader(
         "Subí tu archivo Excel",
