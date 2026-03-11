@@ -222,20 +222,6 @@ def process_excel_file(file) -> tuple[pd.DataFrame, BytesIO, dict]:
 def render() -> None:
     _inject_ui_css()
 
-    st.markdown(
-        """
-        <div class="fes-wrap">
-            <div class="fes-title">Filtro Especies Exterior</div>
-            <div class="fes-subtitle">
-                Subí el Excel de precios y obtené un archivo limpio con <b>CSVA</b> y <b>Precio</b>,
-                filtrado por <b>Fuente = BBG</b> y <b>Moneda = USD EXTERIOR</b>.
-            </div>
-            <div class="fes-line"></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
     archivo = st.file_uploader(
         "Subí tu archivo Excel",
         type=["xlsx"],
