@@ -1,3 +1,17 @@
+# tools/comerciales/twr_engine.py
+# ─────────────────────────────────────────────────────────────────────────────
+#  TWR Engine — Time-Weighted Return
+#  Calcula rendimiento de cartera desde el Excel de Pershing + precios yfinance
+#
+#  Método: Modified Dietz mensual encadenado (aprox. TWR diario)
+#    R_mes = (MV_fin - MV_ini - CF) / (MV_ini + W * CF)
+#    W     = peso temporal del flujo (asumimos mitad de mes → W = 0.5)
+#    TWR   = ∏(1 + R_i) - 1  sobre los sub-períodos seleccionados
+#
+#  Fuente de precios: Yahoo Finance vía yfinance (cache 1 h en session_state)
+#
+#  Dependencias: pip install yfinance altair streamlit pandas numpy openpyxl
+# ─────────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
 import io
@@ -44,8 +58,17 @@ FUND_TYPES  = {"OPEN END TAXABLE LOAD FUND","OPEN END FUND","MUTUAL FUND","MONEY
 CASH_TX     = {"FEDERAL FUNDS RECEIVED","FEDERAL FUNDS SENT"}
 INTERNAL_TX = {"ACTIVITY WITHIN YOUR ACCT"}
 DIV_MARKERS = ["CASH DIVIDEND RECEIVED","FOREIGN SECURITY DIVIDEND RECEIVED"]
-TAX_MARKERS = ["NON-RESIDENT ALIEN TAX","FOREIGN TAX WITHHELD"]
-FEE_MARKERS = ["FEE","ADVISORY","CUSTODY","SUBSCRIPTION","INT.","INTEREST","ASSET BASED FEE"]
+TAX_MARKERS = ["NON-RESIDENT ALIEN TAX","FOREIGN TAX WITHHELD AT   THE SOURCE",
+               "FOREIGN TAX WITHHELD"]
+# Fees exactos de Pershing (match exacto para evitar falsos positivos con texto libre de trades)
+FEE_EXACT   = {"PES BILLING FEE","FOREIGN CUSTODY FEE","ASSET BASED FEE",
+               "PAPER DELIVERY            SUBSCRIPTION",
+               "ASSET MANAGEMENT ACCOUNT  SPECIAL HANDLING FEE",
+               "INT. CHARGED ON DEBIT     BALANCES",
+               "FEE ON FOREIGN DIVIDEND   WITHHELD AT THE SOURCE"}
+FEE_MARKERS = ["ADVISORY","CUSTODY","SUBSCRIPTION","ASSET BASED FEE"]
+# El dividendo de PBR trae un fee separado — lo sumamos a Fee, no a Dividend
+DIV_FEE_MARKERS = ["FEE ON FOREIGN DIVIDEND"]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -154,22 +177,37 @@ def _read_pershing_excel(data: bytes) -> pd.DataFrame:
 #  Clasificadores de fila
 # ═════════════════════════════════════════════════════════════════════════════
 def _bucket(row) -> str:
-    tx   = str(row.get("Transaction Type","")).upper()
-    code = str(row.get("Transaction code","")).upper()
+    tx   = str(row.get("Transaction Type","")).upper().strip()
+    code = str(row.get("Transaction code","")).upper().strip()
     comm = row.get("Commission",None)
     bs   = str(row.get("Buy/Sell","")).upper().strip()
-    if tx in INTERNAL_TX:                                                return "Internal"
-    if tx == "FEDERAL FUNDS RECEIVED":                                   return "Cash In"
-    if tx == "FEDERAL FUNDS SENT":                                       return "Cash Out"
-    if any(m in tx for m in DIV_MARKERS):                               return "Dividend"
-    if any(m in tx for m in TAX_MARKERS) or code in {"NRA","FGN","FGF"} or "TAX" in tx:
-                                                                         return "Tax"
-    if ("FEE" in tx or code in {"PDS","NTF","INM","PCT","/FG"}
-            or any(m in tx for m in FEE_MARKERS)
-            or (isinstance(comm,(int,float)) and pd.notna(comm) and comm>0)):
-                                                                         return "Fee"
+
+    # Trades: Buy/Sell col es la fuente de verdad — va PRIMERO para evitar
+    # que el texto libre "Buy 711 share(s) of EWZ..." matchee como fee/dividend
     if bs == "BUY":  return "Buy"
     if bs == "SELL": return "Sell"
+
+    # Flujos internos
+    if tx in INTERNAL_TX:              return "Internal"
+    if tx == "FEDERAL FUNDS RECEIVED": return "Cash In"
+    if tx == "FEDERAL FUNDS SENT":     return "Cash Out"
+
+    # Dividendos (antes que tax, porque algunos tx tienen ambas palabras)
+    if any(m in tx for m in DIV_MARKERS): return "Dividend"
+
+    # Tax / retenciones
+    if (any(m in tx for m in TAX_MARKERS)
+            or code in {"NRA","FGN","FGF"}
+            or tx == "NON-RESIDENT ALIEN TAX"):
+        return "Tax"
+
+    # Fee — primero match exacto, luego substrings seguros
+    if tx in FEE_EXACT:                              return "Fee"
+    if any(m in tx for m in DIV_FEE_MARKERS):        return "Fee"
+    if any(m in tx for m in FEE_MARKERS):            return "Fee"
+    if code in {"PDS","NTF","INM","PCT","/FG"}:      return "Fee"
+    if isinstance(comm,(int,float)) and pd.notna(comm) and comm > 0: return "Fee"
+
     return "Other"
 
 def _asset_class(row) -> str:
@@ -366,7 +404,8 @@ def _cash_flows(dfa: pd.DataFrame, group_col: Optional[str] = None) -> pd.DataFr
     ci = dfa[dfa["flow_bucket"].eq("Cash In")].copy()
     co = dfa[dfa["flow_bucket"].eq("Cash Out")].copy()
     ci_m = ci.groupby("month_end")["Net Amount (Base Currency)"].sum().rename("ci")
-    co_m = co.groupby("month_end")["Net Amount (Base Currency)"].abs().sum().rename("co")
+    co["_abs_amt"] = co["Net Amount (Base Currency)"].abs()
+    co_m = co.groupby("month_end")["_abs_amt"].sum().rename("co")
     cf = pd.concat([ci_m, co_m], axis=1).fillna(0.0)
     cf["net_cf"] = cf["ci"] - cf["co"]
     cf = cf.reset_index()[["month_end","net_cf"]]
@@ -678,6 +717,12 @@ def _to_excel(twr_total: pd.DataFrame, twr_asset: pd.DataFrame,
     return buf.getvalue()
 
 
+def _sym_description(dfa: pd.DataFrame, sym: str) -> str:
+    """Devuelve la descripción del instrumento para mostrar en el expander."""
+    rows = dfa[dfa["symbol_key"].eq(sym)]["Security Description"].dropna()
+    return _first(rows) or sym
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 #  ▶  RENDER PRINCIPAL
 # ═════════════════════════════════════════════════════════════════════════════
@@ -716,20 +761,74 @@ def render(_ctx=None) -> None:
 
     # ── precios yfinance ─────────────────────────────────────────────────────
     cache_key = f"prices_{up.name}"
-    prices_missing = cache_key not in st.session_state
-    if prices_missing:
+    if cache_key not in st.session_state:
         with st.spinner("Descargando precios de cierre desde Yahoo Finance…"):
             prices_df = _get_prices(dfa, cache_key)
     else:
         prices_df = st.session_state[cache_key]
 
-    # Tickers sin precio
-    all_syms    = set(dfa.loc[dfa["flow_bucket"].isin(["Buy","Sell"]) & dfa["symbol_key"].ne(""), "symbol_key"])
-    found_syms  = set(prices_df.columns.tolist()) if not prices_df.empty else set()
-    missing_sym = all_syms - found_syms
+    # ── detectar tickers sin precio ─────────────────────────────────────────
+    all_syms   = set(dfa.loc[dfa["flow_bucket"].isin(["Buy","Sell"]) & dfa["symbol_key"].ne(""), "symbol_key"])
+    found_syms = set(prices_df.columns.tolist()) if not prices_df.empty else set()
+    missing_sym = sorted(all_syms - found_syms)
+
+    # ── input de precios manuales para instrumentos sin ticker ───────────────
     if missing_sym:
-        st.warning(f"Sin precio en Yahoo Finance: **{', '.join(sorted(missing_sym))}** "
-                   f"— estos símbolos quedarán sin valorizar.")
+        with st.expander(
+            f"⚠ {len(missing_sym)} instrumento(s) sin precio en Yahoo Finance — cargá NAV manual",
+            expanded=True,
+        ):
+            st.markdown(
+                '<div class="subtle">Pegá el valor de cuotaparte (NAV) al cierre de cada mes. '
+                'Podés dejar en blanco los meses donde no tenías posición. '
+                'Formato: número con punto decimal (ej: 42.54)</div>',
+                unsafe_allow_html=True,
+            )
+            all_months_nav = sorted(dfa["month"].dropna().unique().tolist())
+            manual_key = f"manual_prices_{up.name}"
+            if manual_key not in st.session_state:
+                st.session_state[manual_key] = {}
+
+            for sym in missing_sym:
+                st.markdown(f"**{sym}** — {_sym_description(dfa, sym)}")
+                cols = st.columns(min(len(all_months_nav), 7))
+                for i, m in enumerate(all_months_nav):
+                    col_idx = i % len(cols)
+                    key_widget = f"nav_{sym}_{m}"
+                    val = cols[col_idx].text_input(
+                        m, value=st.session_state[manual_key].get(key_widget, ""),
+                        key=key_widget, label_visibility="visible"
+                    )
+                    if val.strip():
+                        try:
+                            st.session_state[manual_key][key_widget] = val.strip()
+                        except Exception:
+                            pass
+
+            # Construir DataFrame de precios manuales y fusionar con prices_df
+            manual_rows = {}
+            for sym in missing_sym:
+                for m in all_months_nav:
+                    key_widget = f"nav_{sym}_{m}"
+                    raw = st.session_state[manual_key].get(key_widget, "")
+                    if raw:
+                        try:
+                            me = pd.Period(m, "M").to_timestamp("M")
+                            manual_rows.setdefault(me, {})[sym] = float(raw.replace(",","."))
+                        except Exception:
+                            pass
+
+            if manual_rows:
+                manual_df = pd.DataFrame(manual_rows).T
+                manual_df.index = pd.to_datetime(manual_df.index).normalize()
+                if prices_df.empty:
+                    prices_df = manual_df
+                else:
+                    prices_df = prices_df.join(manual_df, how="outer")
+                st.session_state[cache_key] = prices_df
+                still_missing = [s for s in missing_sym if s not in prices_df.columns or prices_df[s].isna().all()]
+                if still_missing:
+                    st.caption(f"Todavía sin precio: {', '.join(still_missing)}")
 
     # ── posiciones y flujos ──────────────────────────────────────────────────
     positions  = _build_positions(dfa)
