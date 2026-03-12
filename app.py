@@ -10,7 +10,6 @@ from tools.comerciales import (
     filtro_especies_exterior,
 )
 
-
 # =========================
 # URLS
 # =========================
@@ -24,7 +23,6 @@ SP_MKT_INSTRUCTIVOS = "https://neixcom.sharepoint.com/sites/NEIXSOCIEDADDEBOLSAS
 SP_MKT_MATERIALES = "https://neixcom.sharepoint.com/sites/NEIXSOCIEDADDEBOLSAS.A-Marketingprueba/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FNEIXSOCIEDADDEBOLSAS%2EA%2DMarketingprueba%2FShared%20Documents%2FMarketing%2FMateriales%20de%20Marketing&viewid=74e4d9a3%2Dd2c9%2D4f09%2D9bc8%2Deb59e613117f&p=true"
 SP_MKT_PRESENTACIONES = "https://neixcom.sharepoint.com/sites/NEIXSOCIEDADDEBOLSAS.A-Marketingprueba/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FNEIXSOCIEDADDEBOLSAS%2EA%2DMarketingprueba%2FShared%20Documents%2FMarketing%2FPresentaciones&viewid=74e4d9a3%2Dd2c9%2D4f09%2D9bc8%2Deb59e613117f&p=true"
 
-
 # =========================
 # CONFIG
 # =========================
@@ -34,12 +32,10 @@ st.set_page_config(
     layout="wide",
 )
 
-
 # =========================
 # PASSWORD DESDE SECRETS
 # =========================
 APP_PASSWORD = st.secrets["app_password"]
-
 
 # =========================
 # ESTADO INICIAL
@@ -47,21 +43,42 @@ APP_PASSWORD = st.secrets["app_password"]
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-
 # =========================
 # ESTÉTICA
 # =========================
 st.markdown(
     """
     <style>
+    :root{
+        --bg: #ffffff;
+        --card: #ffffff;
+        --text: #0f172a;
+        --muted: #64748b;
+        --line: rgba(15,23,42,0.08);
+        --line-strong: rgba(15,23,42,0.11);
+        --red: #ef4444;
+        --shadow-sm: 0 6px 22px rgba(15,23,42,.035);
+        --shadow-md: 0 10px 30px rgba(15,23,42,.055);
+        --shadow-hover:
+            0 16px 38px rgba(15,23,42,.07),
+            0 10px 26px rgba(239,68,68,.10);
+        --radius: 18px;
+    }
+
     /* ===== Layout general ===== */
+    .stApp{
+        background: #ffffff;
+    }
+
     .block-container{
-        padding-top: 1.1rem;
-        max-width: 1240px;
+        padding-top: 1.15rem;
+        padding-bottom: 2rem;
+        max-width: 1320px;
     }
 
     header[data-testid="stHeader"]{
-        display: none !important;
+        visibility: hidden;
+        height: 0rem;
     }
 
     div[data-testid="stToolbar"]{
@@ -76,141 +93,163 @@ st.markdown(
         visibility: hidden;
     }
 
-    /* ===== Header ===== */
-    .neix-title{
+    /* ===== Header general ===== */
+    .neix-wrap{
         text-align:center;
-        font-weight:900;
-        letter-spacing:.14em;
-        font-size:1.6rem;
-        margin-top:0;
-        margin-bottom:4px;
-        color:#111827;
+        margin-top: .2rem;
+        margin-bottom: 1.25rem;
+    }
+
+    .neix-title{
+        font-weight: 850;
+        letter-spacing: .16em;
+        font-size: 1.62rem;
+        color: var(--text);
+        margin-bottom: .18rem;
+        line-height: 1.15;
     }
 
     .neix-caption{
-        text-align:center;
-        color:#6b7280;
-        font-size:.95rem;
-        margin-bottom:10px;
+        color: var(--muted);
+        font-size: .93rem;
+        margin-bottom: .65rem;
     }
 
-    .neix-line{
-        width:60px;
-        height:3px;
-        background:#ef4444;
-        margin:0 auto 18px auto;
-        border-radius:4px;
+    .neix-accent{
+        width: 64px;
+        height: 2px;
+        background: linear-gradient(90deg, rgba(239,68,68,.95), rgba(239,68,68,.30));
+        border-radius: 999px;
+        margin: 0 auto;
     }
 
     /* ===== Tabs ===== */
     .stTabs [data-baseweb="tab-list"]{
-        justify-content:flex-start;
-        gap:8px;
-        border-bottom:1px solid rgba(0,0,0,0.08);
-        padding-left:2px;
-        margin-top:2px;
+        gap: 10px;
+        border-bottom: 1px solid var(--line);
+        padding-left: 0;
+        margin-top: 0.35rem;
+        margin-bottom: 0.35rem;
     }
 
     .stTabs [data-baseweb="tab"]{
-        background:transparent;
-        border:none;
-        font-weight:700;
-        color:#64748b;
-        padding:10px 14px;
-        font-size:.95rem;
+        background: transparent;
+        border: none;
+        color: var(--muted);
+        font-weight: 700;
+        font-size: .95rem;
+        padding: 10px 16px 12px 16px;
     }
 
     .stTabs [data-baseweb="tab"]:hover{
-        color:#1e3a8a;
+        color: var(--text);
     }
 
     .stTabs [aria-selected="true"]{
-        color:#1e3a8a;
-        border-bottom:3px solid #ef4444;
+        color: var(--text);
+        border-bottom: 3px solid var(--red);
     }
 
     /* ===== Titles ===== */
     .section-title{
-        font-size:1.35rem;
+        font-size:1.28rem;
         font-weight:800;
         margin-top:6px;
-        margin-bottom:2px;
+        margin-bottom:4px;
         color:#111827;
+        letter-spacing:-0.01em;
     }
 
     .section-sub{
         color:#6b7280;
-        font-size:.92rem;
-        margin-bottom:14px;
+        font-size:.94rem;
+        margin-bottom:16px;
     }
 
     /* ===== Login ===== */
+    .login-page-wrap{
+        text-align:center;
+        margin-top: .2rem;
+        margin-bottom: .55rem;
+    }
+
+    .login-head-title{
+        font-weight: 850;
+        letter-spacing: .16em;
+        font-size: 1.62rem;
+        color: var(--text);
+        margin-bottom: .18rem;
+        line-height: 1.15;
+    }
+
+    .login-head-sub{
+        color: var(--muted);
+        font-size: .93rem;
+        margin-bottom: .65rem;
+    }
+
+    .login-head-line{
+        width: 64px;
+        height: 2px;
+        background: linear-gradient(90deg, rgba(239,68,68,.95), rgba(239,68,68,.30));
+        border-radius: 999px;
+        margin: 0 auto;
+    }
+
     .login-wrap{
-        max-width:420px;
-        margin:70px auto 0 auto;
-        padding:34px 32px 28px 32px;
-        border-radius:18px;
-        border:1px solid rgba(0,0,0,0.08);
-        background:white;
-        box-shadow:0 10px 30px rgba(0,0,0,0.06);
-    }
-
-    .login-title{
-        text-align:center;
-        font-weight:900;
-        letter-spacing:.12em;
-        font-size:1.35rem;
-        margin-bottom:6px;
-        color:#111827;
-    }
-
-    .login-sub{
-        text-align:center;
-        color:#6b7280;
-        font-size:.95rem;
-        margin-bottom:18px;
-    }
-
-    .login-line{
-        width:56px;
-        height:3px;
-        background:#ef4444;
-        margin:0 auto 22px auto;
-        border-radius:4px;
+        max-width: 420px;
+        margin: 86px auto 0 auto;
+        padding: 26px 24px 22px 24px;
+        border: 1px solid rgba(15,23,42,0.10);
+        border-radius: 18px;
+        background: #ffffff;
+        box-shadow: 0 8px 24px rgba(15,23,42,.04);
+        text-align: center;
     }
 
     .login-footer{
         text-align:center;
         color:#94a3b8;
         font-size:.82rem;
-        margin-top:10px;
+        margin-top:12px;
     }
 
-    /* ===== Buttons ===== */
+    /* ===== Botones ===== */
     div[data-testid="stButton"] > button{
         width:100%;
-        border-radius:12px;
-        font-weight:700;
-        min-height:44px;
-        border:1px solid rgba(0,0,0,0.08);
-        background:white;
-        color:#0f172a;
-        box-shadow:0 2px 8px rgba(0,0,0,0.03);
+        border-radius:14px !important;
+        font-weight:700 !important;
+        min-height:46px !important;
+        border:1px solid rgba(15,23,42,0.10) !important;
+        background:#ffffff !important;
+        color:#0f172a !important;
+        box-shadow:0 2px 8px rgba(15,23,42,0.03) !important;
+        transition:
+            transform .16s ease,
+            box-shadow .16s ease,
+            border-color .16s ease !important;
     }
 
     div[data-testid="stButton"] > button:hover{
-        border-color:rgba(239,68,68,.35);
-        color:#1e3a8a;
+        border-color:rgba(239,68,68,.35) !important;
+        box-shadow:
+            0 10px 24px rgba(15,23,42,.05),
+            0 6px 18px rgba(239,68,68,.08) !important;
     }
 
     div[data-testid="stLinkButton"] a{
         width:100%;
-        border-radius:12px !important;
+        border-radius:14px !important;
         font-weight:700 !important;
-        min-height:44px !important;
+        min-height:46px !important;
         display:flex !important;
         align-items:center !important;
         justify-content:center !important;
+    }
+
+    /* ===== Inputs ===== */
+    div[data-testid="stTextInput"] input{
+        border-radius: 14px !important;
     }
 
     /* ===== Botón principal rojo ===== */
@@ -234,23 +273,44 @@ st.markdown(
 
     /* ===== Espaciados ===== */
     .top-gap{
-        height:6px;
+        height:4px;
+    }
+
+    @media (max-width: 900px){
+        .neix-title,
+        .login-head-title{
+            font-size: 1.42rem;
+            letter-spacing: .14em;
+        }
+
+        .neix-caption,
+        .login-head-sub{
+            font-size: .9rem;
+        }
+
+        .login-wrap{
+            margin-top: 64px;
+        }
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-
 # =========================
 # HELPERS
 # =========================
 def _header():
-    st.markdown("<div class='top-gap'></div>", unsafe_allow_html=True)
-    st.markdown("<div class='neix-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
-    st.markdown("<div class='neix-caption'>Navegación por áreas y proyectos</div>", unsafe_allow_html=True)
-    st.markdown("<div class='neix-line'></div>", unsafe_allow_html=True)
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="neix-wrap">
+            <div class="neix-title">N E I X&nbsp;&nbsp;Workbench</div>
+            <div class="neix-caption">Navegación por áreas y proyectos</div>
+            <div class="neix-accent"></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def go_tool(tool_name: str):
@@ -299,27 +359,39 @@ def check_password():
     if st.session_state.logged_in:
         return True
 
-    st.markdown("<div class='login-wrap'>", unsafe_allow_html=True)
-    st.markdown("<div class='login-title'>N E I X &nbsp;&nbsp;Workbench</div>", unsafe_allow_html=True)
-    st.markdown("<div class='login-sub'>Ingresá la clave para continuar</div>", unsafe_allow_html=True)
-    st.markdown("<div class='login-line'></div>", unsafe_allow_html=True)
-
-    password = st.text_input(
-        "Clave",
-        type="password",
-        placeholder="Ingrese la clave",
-        key="login_password",
+    st.markdown(
+        """
+        <div class="login-page-wrap">
+            <div class="login-head-title">N E I X&nbsp;&nbsp;Workbench</div>
+            <div class="login-head-sub">Ingreso restringido</div>
+            <div class="login-head-line"></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
+    st.divider()
 
-    if st.button("Ingresar", key="login_btn"):
-        if password == APP_PASSWORD:
-            st.session_state.logged_in = True
-            st.rerun()
-        else:
-            st.error("Clave incorrecta")
+    c1, c2, c3 = st.columns([1.15, 1, 1.15])
 
-    st.markdown("<div class='login-footer'>Acceso interno</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+    with c2:
+        st.markdown("<div class='login-wrap'>", unsafe_allow_html=True)
+
+        password = st.text_input(
+            "Clave",
+            type="password",
+            placeholder="Clave",
+            label_visibility="collapsed",
+            key="login_password",
+        )
+
+        if st.button("Ingresar", key="login_btn", use_container_width=True):
+            if password == APP_PASSWORD:
+                st.session_state.logged_in = True
+                st.rerun()
+            else:
+                st.error("Clave incorrecta")
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
     return False
 
@@ -329,7 +401,6 @@ def check_password():
 # =========================
 if not check_password():
     st.stop()
-
 
 # =========================
 # ROUTER (?tool=...)
@@ -440,14 +511,12 @@ if tool:
         st.exception(e)
         st.stop()
 
-
 # =========================
 # HOME
 # =========================
 _header()
 
 tabs = st.tabs(["Comercial", "Operaciones", "Mesa", "Performance · BI", "Marketing"])
-
 
 # =========================
 # COMERCIAL
@@ -470,7 +539,6 @@ with tabs[0]:
         key_prefix="comercial",
     )
 
-
 # =========================
 # OPERACIONES
 # =========================
@@ -486,7 +554,6 @@ with tabs[1]:
         """,
         unsafe_allow_html=True,
     )
-
 
 # =========================
 # MESA
@@ -506,7 +573,6 @@ with tabs[2]:
         key_prefix="mesa",
     )
 
-
 # =========================
 # PERFORMANCE · BI
 # =========================
@@ -522,7 +588,6 @@ with tabs[3]:
         ],
         cols_per_row=3,
     )
-
 
 # =========================
 # MARKETING
