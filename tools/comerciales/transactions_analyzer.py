@@ -677,7 +677,7 @@ def _chart_symbol_heatmap(twr: pd.DataFrame) -> None:
                  y=alt.Y("group:N", title="", sort=top),
                  color=alt.Color("r_monthly_pct:Q",
                      title="Rend. mensual %",
-                     scale=alt.Scale(scheme="rdylgn", domainMid=0)),
+                     scale=alt.Scale(scheme="redyellowgreen", domainMid=0)),
                  tooltip=[alt.Tooltip("group:N",title="Símbolo"),
                           alt.Tooltip("month:N",title="Mes"),
                           alt.Tooltip("r_monthly_pct:Q",title="Rend. mensual %",format="+.2f"),
@@ -717,7 +717,33 @@ def _to_excel(twr_total: pd.DataFrame, twr_asset: pd.DataFrame,
     return buf.getvalue()
 
 
-def _sym_description(dfa: pd.DataFrame, sym: str) -> str:
+def _capital_summary(dfa: pd.DataFrame, mv_primera: float, mv_ultima: float) -> dict:
+    """
+    Calcula los bloques de capital para el resumen superior:
+      - Posición inicial : MV del primer mes con posición valorizada
+      - Posición final   : MV del último mes valorizado
+      - Ingresos         : suma de FEDERAL FUNDS RECEIVED (Cash In)
+      - Egresos          : suma de FEDERAL FUNDS SENT     (Cash Out)
+      - Fondeo total     : Ingresos + Egresos (neto absoluto aportado)
+      - Resultado $      : Posición final − Posición inicial − Fondeo neto
+    """
+    ingresos = dfa.loc[dfa["flow_bucket"].eq("Cash In"),
+                       "Net Amount (Base Currency)"].sum()
+    egresos  = abs(dfa.loc[dfa["flow_bucket"].eq("Cash Out"),
+                           "Net Amount (Base Currency)"].sum())
+    fondeo   = ingresos - egresos          # neto aportado
+    resultado = mv_ultima - mv_primera - fondeo  if (mv_primera and mv_ultima) else None
+    return {
+        "pos_ini":   mv_primera,
+        "pos_fin":   mv_ultima,
+        "ingresos":  ingresos,
+        "egresos":   egresos,
+        "fondeo":    fondeo,
+        "resultado": resultado,
+    }
+
+
+
     """Devuelve la descripción del instrumento para mostrar en el expander."""
     rows = dfa[dfa["symbol_key"].eq(sym)]["Security Description"].dropna()
     return _first(rows) or sym
@@ -864,6 +890,39 @@ def render(_ctx=None) -> None:
         f'<span class="pill">MV estimado: {_fmt_m(mv_end_t)}</span>'
         f'<span class="pill">Precios: {"✓ OK" if has_price else "⚠ sin datos"}</span>',
         unsafe_allow_html=True)
+
+    # ── Resumen de capital ───────────────────────────────────────────────────
+    # MV del primer y último mes disponible en twr_total
+    total_rows = twr_total[twr_total["group"].eq("Total")].sort_values("month")
+    mv_primera = total_rows["mv_end"].dropna().iloc[0]  if not total_rows.empty else None
+    mv_ultima  = total_rows["mv_end"].dropna().iloc[-1] if not total_rows.empty else None
+    cap = _capital_summary(dfa, mv_primera, mv_ultima)
+
+    st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+    st.subheader("Resumen de capital")
+
+    def _kpi_neu(label, value):
+        """KPI sin color de delta — para valores de stock/flujo."""
+        return (f'<div class="kpi neu">'
+                f'<div class="kpi-lbl">{label}</div>'
+                f'<div class="kpi-val">{value}</div>'
+                f'<div class="kpi-dlt neu">USD</div>'
+                f'</div>')
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1: st.markdown(_kpi_neu("Posición inicial",  _fmt_m(cap["pos_ini"])),  unsafe_allow_html=True)
+    with c2: st.markdown(_kpi_neu("Posición final",    _fmt_m(cap["pos_fin"])),  unsafe_allow_html=True)
+    with c3: st.markdown(_kpi_neu("Ingresos",          _fmt_m(cap["ingresos"])), unsafe_allow_html=True)
+    with c4: st.markdown(_kpi_neu("Egresos",           _fmt_m(cap["egresos"])),  unsafe_allow_html=True)
+    with c5: st.markdown(_kpi_neu("Fondeo neto",       _fmt_m(cap["fondeo"])),   unsafe_allow_html=True)
+    with c6:
+        res = cap["resultado"]
+        st.markdown(
+            _kpi_html("Resultado $", _fmt_m(res), delta=res,
+                      delta_label=("▲ ganancia" if res and res > 0 else ("▼ pérdida" if res and res < 0 else "—"))),
+            unsafe_allow_html=True)
+
+    st.markdown('<div class="gap"></div>', unsafe_allow_html=True)
 
     # ── KPIs del mes seleccionado ─────────────────────────────────────────────
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
