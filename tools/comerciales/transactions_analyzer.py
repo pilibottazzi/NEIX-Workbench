@@ -717,30 +717,43 @@ def _to_excel(twr_total: pd.DataFrame, twr_asset: pd.DataFrame,
     return buf.getvalue()
 
 
-def _capital_summary(dfa: pd.DataFrame, mv_primera: float, mv_ultima: float) -> dict:
+def _capital_summary(dfa: pd.DataFrame, mv_ultima: float) -> dict:
     """
-    Calcula los bloques de capital para el resumen superior:
-      - Posición inicial : MV del primer mes con posición valorizada
-      - Posición final   : MV del último mes valorizado
-      - Ingresos         : suma de FEDERAL FUNDS RECEIVED (Cash In)
-      - Egresos          : suma de FEDERAL FUNDS SENT     (Cash Out)
-      - Fondeo total     : Ingresos + Egresos (neto absoluto aportado)
-      - Resultado $      : Posición final − Posición inicial − Fondeo neto
+    Resumen de capital con la lógica correcta:
+
+    - Posición inicial   : primer FEDERAL FUNDS RECEIVED = capital con que abrió la cuenta
+    - Ingresos adicionales: Cash In posteriores al primero
+    - Fondeo total       : todos los Cash In (pos.inicial + ingresos adicionales)
+    - Egresos            : todos los Cash Out (FEDERAL FUNDS SENT)
+    - Posición final     : MV del último mes valorizado (precio mercado)
+    - Resultado $        : Posición final − Fondeo neto (ganancia/pérdida real)
     """
-    ingresos = dfa.loc[dfa["flow_bucket"].eq("Cash In"),
-                       "Net Amount (Base Currency)"].sum()
-    egresos  = abs(dfa.loc[dfa["flow_bucket"].eq("Cash Out"),
-                           "Net Amount (Base Currency)"].sum())
-    fondeo   = ingresos - egresos          # neto aportado
-    resultado = mv_ultima - mv_primera - fondeo  if (mv_primera and mv_ultima) else None
+    cash_in_rows = (dfa[dfa["flow_bucket"].eq("Cash In")]
+                    .sort_values("Settlement Date"))
+    cash_out_rows = dfa[dfa["flow_bucket"].eq("Cash Out")]
+
+    if cash_in_rows.empty:
+        pos_inicial   = 0.0
+        ingresos_adic = 0.0
+    else:
+        pos_inicial   = float(cash_in_rows.iloc[0]["Net Amount (Base Currency)"])
+        ingresos_adic = float(cash_in_rows.iloc[1:]["Net Amount (Base Currency)"].sum())
+
+    fondeo_total  = pos_inicial + ingresos_adic
+    egresos       = abs(float(cash_out_rows["Net Amount (Base Currency)"].sum())) if not cash_out_rows.empty else 0.0
+    fondeo_neto   = fondeo_total - egresos
+    resultado     = (mv_ultima - fondeo_neto) if (mv_ultima is not None) else None
+
     return {
-        "pos_ini":   mv_primera,
-        "pos_fin":   mv_ultima,
-        "ingresos":  ingresos,
-        "egresos":   egresos,
-        "fondeo":    fondeo,
-        "resultado": resultado,
+        "pos_ini":      pos_inicial,
+        "ingresos":     ingresos_adic,
+        "fondeo_total": fondeo_total,
+        "egresos":      egresos,
+        "fondeo_neto":  fondeo_neto,
+        "pos_fin":      mv_ultima,
+        "resultado":    resultado,
     }
+
 
 
 
@@ -892,35 +905,38 @@ def render(_ctx=None) -> None:
         unsafe_allow_html=True)
 
     # ── Resumen de capital ───────────────────────────────────────────────────
-    # MV del primer y último mes disponible en twr_total
     total_rows = twr_total[twr_total["group"].eq("Total")].sort_values("month")
-    mv_primera = total_rows["mv_end"].dropna().iloc[0]  if not total_rows.empty else None
     mv_ultima  = total_rows["mv_end"].dropna().iloc[-1] if not total_rows.empty else None
-    cap = _capital_summary(dfa, mv_primera, mv_ultima)
+    cap = _capital_summary(dfa, mv_ultima)
 
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
     st.subheader("Resumen de capital")
 
-    def _kpi_neu(label, value):
-        """KPI sin color de delta — para valores de stock/flujo."""
+    def _kpi_neu(label, value, sub="USD"):
         return (f'<div class="kpi neu">'
                 f'<div class="kpi-lbl">{label}</div>'
                 f'<div class="kpi-val">{value}</div>'
-                f'<div class="kpi-dlt neu">USD</div>'
+                f'<div class="kpi-dlt neu">{sub}</div>'
                 f'</div>')
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    with c1: st.markdown(_kpi_neu("Posición inicial",  _fmt_m(cap["pos_ini"])),  unsafe_allow_html=True)
-    with c2: st.markdown(_kpi_neu("Posición final",    _fmt_m(cap["pos_fin"])),  unsafe_allow_html=True)
-    with c3: st.markdown(_kpi_neu("Ingresos",          _fmt_m(cap["ingresos"])), unsafe_allow_html=True)
-    with c4: st.markdown(_kpi_neu("Egresos",           _fmt_m(cap["egresos"])),  unsafe_allow_html=True)
-    with c5: st.markdown(_kpi_neu("Fondeo neto",       _fmt_m(cap["fondeo"])),   unsafe_allow_html=True)
-    with c6:
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    with c1: st.markdown(_kpi_neu("Posición inicial",      _fmt_m(cap["pos_ini"]),
+                                   "primer ingreso"), unsafe_allow_html=True)
+    with c2: st.markdown(_kpi_neu("Ingresos adicionales",  _fmt_m(cap["ingresos"]),
+                                   "post-apertura"),  unsafe_allow_html=True)
+    with c3: st.markdown(_kpi_neu("Fondeo total",          _fmt_m(cap["fondeo_total"]),
+                                   "aportado"),       unsafe_allow_html=True)
+    with c4: st.markdown(_kpi_neu("Egresos",               _fmt_m(cap["egresos"]),
+                                   "retirado"),       unsafe_allow_html=True)
+    with c5: st.markdown(_kpi_neu("Fondeo neto",           _fmt_m(cap["fondeo_neto"]),
+                                   "aportado neto"),  unsafe_allow_html=True)
+    with c6: st.markdown(_kpi_neu("Posición final",        _fmt_m(cap["pos_fin"]),
+                                   "MV mercado"),     unsafe_allow_html=True)
+    with c7:
         res = cap["resultado"]
-        st.markdown(
-            _kpi_html("Resultado $", _fmt_m(res), delta=res,
-                      delta_label=("▲ ganancia" if res and res > 0 else ("▼ pérdida" if res and res < 0 else "—"))),
-            unsafe_allow_html=True)
+        lbl = ("▲ ganancia" if res and res > 0 else ("▼ pérdida" if res and res < 0 else "—"))
+        st.markdown(_kpi_html("Resultado $", _fmt_m(res), delta=res, delta_label=lbl),
+                    unsafe_allow_html=True)
 
     st.markdown('<div class="gap"></div>', unsafe_allow_html=True)
 
