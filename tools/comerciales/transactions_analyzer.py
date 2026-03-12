@@ -1,17 +1,3 @@
-# tools/comerciales/twr_engine.py
-# ─────────────────────────────────────────────────────────────────────────────
-#  TWR Engine — Time-Weighted Return
-#  Calcula rendimiento de cartera desde el Excel de Pershing + precios yfinance
-#
-#  Método: Modified Dietz mensual encadenado (aprox. TWR diario)
-#    R_mes = (MV_fin - MV_ini - CF) / (MV_ini + W * CF)
-#    W     = peso temporal del flujo (asumimos mitad de mes → W = 0.5)
-#    TWR   = ∏(1 + R_i) - 1  sobre los sub-períodos seleccionados
-#
-#  Fuente de precios: Yahoo Finance vía yfinance (cache 1 h en session_state)
-#
-#  Dependencias: pip install yfinance altair streamlit pandas numpy openpyxl
-# ─────────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
 import io
