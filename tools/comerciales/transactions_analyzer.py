@@ -857,9 +857,102 @@ def _capital_summary(dfa: pd.DataFrame, mv_ultima: float) -> dict:
 
 
 
+def _sym_description(dfa: pd.DataFrame, sym: str) -> str:
     """Devuelve la descripción del instrumento para mostrar en el expander."""
     rows = dfa[dfa["symbol_key"].eq(sym)]["Security Description"].dropna()
     return _first(rows) or sym
+
+
+def _build_movimientos_mes(dfa: pd.DataFrame, month: str) -> dict:
+    """
+    Devuelve {'compras': df, 'ventas': df} para el mes seleccionado.
+    Cada df tiene: Categoría | Instrumento | ISIN | Cantidad | Precio unit. | Total USD
+    """
+    mes = dfa[dfa["month"].eq(month)].copy()
+
+    def _meta(sym):
+        rows = dfa[dfa["symbol_key"].eq(sym)]
+        desc = _first(rows["Security Description"].dropna()) or sym
+        isin = _first(rows["ISIN"].dropna())
+        cat  = CATEGORIA_MAP.get(_first(rows["asset_bucket"].dropna()) or "", "Otros")
+        isin = str(isin).strip() if isin and str(isin) not in {"nan","None",""} else ""
+        return desc.strip(), isin, cat
+
+    def _build(bucket):
+        rows = mes[mes["flow_bucket"].eq(bucket)].copy()
+        if rows.empty:
+            return pd.DataFrame()
+        out = []
+        for _, r in rows.iterrows():
+            sym  = r["symbol_key"]
+            qty  = abs(float(r.get("Quantity") or 0))
+            amt  = abs(float(r["Net Amount (Base Currency)"]))
+            pr_col = r.get("Price (Transaction Currency)")
+            pr   = float(pr_col) if pr_col and str(pr_col) not in {"nan","None",""} else (amt/qty if qty else 0)
+            desc, isin, cat = _meta(sym)
+            out.append({
+                "Categoría":    cat,
+                "Instrumento":  desc,
+                "ISIN":         isin,
+                "Cantidad":     qty,
+                "Precio unit.": pr,
+                "Total USD":    amt,
+            })
+        df = pd.DataFrame(out)
+        cat_order = ["MM, T Bills y Simis","Renta Fija","Renta Variable","Otros"]
+        df["_o"] = df["Categoría"].map({c: i for i, c in enumerate(cat_order)})
+        return df.sort_values(["_o","Total USD"], ascending=[True,False]).drop(columns="_o")
+
+    return {"compras": _build("Buy"), "ventas": _build("Sell")}
+
+
+def _build_rentabilidad_mensual(dfa: pd.DataFrame,
+                                 twr_total: pd.DataFrame) -> pd.DataFrame:
+    """
+    Tabla mes a mes exactamente como la planilla del cliente:
+      Mes | Inicio | Ingresos | Fin | Fin neto ingresos | Rent USD | Rent % | TWR
+    """
+    rows = twr_total[twr_total["group"].eq("Total")].sort_values("month").copy()
+    if rows.empty:
+        return pd.DataFrame()
+
+    ci_mes = (dfa[dfa["flow_bucket"].eq("Cash In")]
+              .groupby("month")["Net Amount (Base Currency)"].sum()
+              .rename("ingresos"))
+
+    MESES_ES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
+                "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+
+    result = []
+    for _, r in rows.iterrows():
+        m        = r["month"]
+        inicio   = r["mv_start"]
+        fin      = r["mv_end"]
+        ingresos = float(ci_mes.get(m, 0.0))
+        fin_neto = (fin - ingresos) if (fin is not None and not pd.isna(fin)) else None
+        rent_usd = ((fin_neto - inicio)
+                    if (fin_neto is not None and inicio is not None and not pd.isna(inicio))
+                    else None)
+        try:
+            mes_dt    = pd.Period(m, "M").to_timestamp()
+            mes_label = f"{MESES_ES[mes_dt.month-1]} {mes_dt.year}"
+        except Exception:
+            mes_label = m
+
+        result.append({
+            "Mes":              mes_label,
+            "_month":           m,
+            "Inicio":           inicio,
+            "Ingresos":         ingresos if ingresos else None,
+            "Fin":              fin,
+            "Fin (neto ingr.)": fin_neto,
+            "Rent. USD":        rent_usd,
+            "Rent. %":          r["r_monthly_pct"],
+            "TWR mensual %":    r["r_monthly_pct"],
+            "TWR acumulado %":  r["r_cum_twr"],
+        })
+
+    return pd.DataFrame(result)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1074,12 +1167,14 @@ def render(_ctx=None) -> None:
     st.markdown('<div class="gap"></div>', unsafe_allow_html=True)
 
     # ── tabs ──────────────────────────────────────────────────────────────────
-    t1, t2, t3, t4, t5 = st.tabs([
+    t1, t2, t3, t4, t5, t6, t7 = st.tabs([
         "Cartera total",
         "Por asset class",
         "Por símbolo",
         "Tabla de períodos",
         "Estado de posición",
+        "Movimientos del mes",
+        "Rentabilidad mes a mes",
     ])
 
     # ─ Tab 1: Cartera total ──────────────────────────────────────────────────
@@ -1214,6 +1309,105 @@ def render(_ctx=None) -> None:
             if missing_sym:
                 st.caption(f"⚠ Instrumentos sin precio en Yahoo Finance "
                            f"(valuación parcial): {', '.join(sorted(missing_sym))}")
+
+    # ─ Tab 6: Movimientos del mes ────────────────────────────────────────────
+    with t6:
+        movs = _build_movimientos_mes(dfa, selected_month)
+        compras = movs["compras"]
+        ventas  = movs["ventas"]
+
+        def _render_movimientos(df, tipo, color_header):
+            if df.empty:
+                st.caption(f"Sin {tipo.lower()} en {selected_month}.")
+                return
+            total = df["Total USD"].sum()
+            st.markdown(
+                f'<div style="background:{color_header};color:#fff;padding:6px 14px;'
+                f'border-radius:6px;margin:10px 0 4px;font-weight:700;font-size:.88rem;'
+                f'display:flex;justify-content:space-between;">'
+                f'<span>{tipo}</span>'
+                f'<span>Total: {_fmt_m(total)} USD</span></div>',
+                unsafe_allow_html=True)
+            for cat in ["MM, T Bills y Simis","Renta Fija","Renta Variable","Otros"]:
+                bloque = df[df["Categoría"].eq(cat)]
+                if bloque.empty:
+                    continue
+                subtotal = bloque["Total USD"].sum()
+                st.markdown(
+                    f'<div style="background:#1a1a2e;color:#fff;padding:5px 14px;'
+                    f'border-radius:5px;margin:6px 0 3px;font-size:.82rem;'
+                    f'display:flex;justify-content:space-between;">'
+                    f'<span>{cat}</span><span>{_fmt_m(subtotal)} USD</span></div>',
+                    unsafe_allow_html=True)
+                view = bloque[["Instrumento","ISIN","Cantidad","Precio unit.","Total USD"]].copy()
+                _show_df(view, height=min(50 + len(view)*38, 360),
+                         money=["Precio unit.","Total USD"])
+
+        col_c, col_v = st.columns(2)
+        with col_c:
+            _render_movimientos(compras, "Compras", "#10b981")
+        with col_v:
+            _render_movimientos(ventas,  "Ventas",  "#ef4444")
+
+    # ─ Tab 7: Rentabilidad mes a mes ─────────────────────────────────────────
+    with t7:
+        rent_df = _build_rentabilidad_mensual(dfa, twr_total)
+        if rent_df.empty:
+            st.info("Sin datos suficientes.")
+        else:
+            # ── Totalizador TWR encadenado al final ──────────────────────────
+            twr_final = rent_df["TWR acumulado %"].dropna().iloc[-1] if not rent_df.empty else None
+
+            # ── Tabla principal ──────────────────────────────────────────────
+            view = rent_df[[
+                "Mes","Inicio","Ingresos","Fin",
+                "Fin (neto ingr.)","Rent. USD","Rent. %","TWR acumulado %"
+            ]].copy()
+
+            # Colorear header de tabla
+            st.markdown(
+                '<div style="background:#1a1a2e;color:#fff;padding:6px 14px;'
+                'border-radius:6px;margin:0 0 4px;font-weight:700;font-size:.88rem;">'
+                'Rentabilidad Mes a Mes</div>',
+                unsafe_allow_html=True)
+
+            # Formatear y mostrar
+            if not view.empty:
+                fmt = {
+                    "Inicio":          "{:,.3f}",
+                    "Ingresos":        "{:,.3f}",
+                    "Fin":             "{:,.3f}",
+                    "Fin (neto ingr.)":"{:,.3f}",
+                    "Rent. USD":       "{:,.3f}",
+                    "Rent. %":         "{:+.2f}%",
+                    "TWR acumulado %": "{:+.2f}%",
+                }
+                styled = (view.style
+                          .format(fmt, na_rep="—")
+                          .map(lambda v: (f"color:{POS_TXT};font-weight:600"
+                                         if isinstance(v,(int,float)) and not pd.isna(v) and v > 0
+                                         else f"color:{NEG_TXT};font-weight:600"
+                                         if isinstance(v,(int,float)) and not pd.isna(v) and v < 0
+                                         else ""),
+                               subset=pd.IndexSlice[:,["Rent. USD","Rent. %","TWR acumulado %"]]))
+                st.dataframe(styled, use_container_width=True,
+                             height=min(80 + len(view)*36, 600), hide_index=True)
+
+            # ── Pie con TWR total ────────────────────────────────────────────
+            if twr_final is not None:
+                color = POS_TXT if twr_final > 0 else NEG_TXT
+                bg    = POS_BG  if twr_final > 0 else NEG_BG
+                st.markdown(
+                    f'<div style="text-align:right;padding:8px 14px;margin-top:4px;'
+                    f'border-top:2px solid rgba(17,24,39,.15);">'
+                    f'TWR total &nbsp;&nbsp;'
+                    f'<span style="background:{bg};color:{color};padding:4px 14px;'
+                    f'border-radius:999px;font-weight:700;font-size:1.1rem;">'
+                    f'{twr_final:+.2f}%</span></div>',
+                    unsafe_allow_html=True)
+
+            st.caption("Rent. % = (Fin neto ingresos − Inicio) / Inicio · "
+                       "TWR = ∏(1+Rᵢ)−1 encadenado mensual")
 
     # ── descarga ─────────────────────────────────────────────────────────────
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
