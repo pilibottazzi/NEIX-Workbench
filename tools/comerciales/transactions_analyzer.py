@@ -55,6 +55,106 @@ ETF_TYPES   = {"EXCHANGE TRADED FUNDS"}
 STOCK_TYPES = {"COMMON STOCK","COMMON STOCK ADR"}
 BOND_TYPES  = {"CORP BOND","CORPORATE BOND","INDEX LINKED CORP BOND","GOVERNMENT BOND","MUNICIPAL BOND"}
 FUND_TYPES  = {"OPEN END TAXABLE LOAD FUND","OPEN END FUND","MUTUAL FUND","MONEY MARKET FUND"}
+
+# Mapeo asset_bucket → categoría display (igual que la planilla del cliente)
+CATEGORIA_MAP = {
+    "ETF":      "Renta Variable",
+    "Stock":    "Renta Variable",
+    "Bond":     "Renta Fija",
+    "Fund":     "Renta Variable",   # los fondos Janus/Neuberger son equity
+    "Currency": "MM, T Bills y Simis",
+    "Other":    "Otros",
+}
+
+def _build_estado_posicion(positions: pd.DataFrame,
+                            prices_df: pd.DataFrame,
+                            dfa: pd.DataFrame,
+                            month: str) -> pd.DataFrame:
+    """
+    Construye la tabla estilo estado de posición mensual:
+    Categoría | Instrumento | ISIN | Cantidad | Precio | Valuación | % cartera
+
+    Incluye también la caja residual (cash no invertido) en MM.
+    """
+    pos_mes = positions[positions["month"].eq(month)].copy()
+    if pos_mes.empty:
+        return pd.DataFrame()
+
+    me = pd.Period(month, "M").to_timestamp("M")
+
+    # ── Mapa símbolo → descripción e ISIN ───────────────────────────────────
+    desc_map = {}
+    isin_map = {}
+    for sym in pos_mes["symbol_key"].unique():
+        rows = dfa[dfa["symbol_key"].eq(sym)]
+        desc = _first(rows["Security Description"].dropna())
+        isin = _first(rows["ISIN"].dropna())
+        desc_map[sym] = (desc or sym).strip()
+        isin_map[sym] = (str(isin).strip() if isin and str(isin) not in {"nan","None",""} else "")
+
+    rows_out = []
+    for _, row in pos_mes.iterrows():
+        sym = row["symbol_key"]
+        qty = row["closing_qty"]
+        pr  = np.nan
+        if not prices_df.empty and sym in prices_df.columns:
+            sub = prices_df.loc[prices_df.index <= me, sym].dropna()
+            if not sub.empty:
+                pr = float(sub.iloc[-1])
+
+        # Bonos/ETN: precio cotiza "por 100 de parValue" → MV = qty × pr / 100
+        is_bond = row["asset_bucket"] in {"Bond"}
+        if not np.isnan(pr):
+            mv = qty * (pr / 100.0) if is_bond else qty * pr
+        else:
+            mv = np.nan
+
+        cat = CATEGORIA_MAP.get(row["asset_bucket"], "Otros")
+        rows_out.append({
+            "categoria":   cat,
+            "Instrumento": desc_map.get(sym, sym),
+            "ISIN":        isin_map.get(sym, ""),
+            "Cantidad":    qty,
+            "Precio":      pr,
+            "Valuación":   mv,
+        })
+
+    # ── Caja residual ────────────────────────────────────────────────────────
+    # Calculamos el cash acumulado hasta este mes
+    all_flows = dfa[dfa["month"] <= month].copy()
+    cash_residual = float(all_flows.loc[
+        all_flows["flow_bucket"].isin(["Cash In","Cash Out","Dividend","Tax","Fee","Sell"]),
+        "Net Amount (Base Currency)"
+    ].sum()) + float(all_flows.loc[
+        all_flows["flow_bucket"].eq("Buy"),
+        "Net Amount (Base Currency)"
+    ].sum())
+    # Redondear: si es positivo y no trivial, lo mostramos
+    if cash_residual > 0.5:
+        rows_out.append({
+            "categoria":   "MM, T Bills y Simis",
+            "Instrumento": "FEDERATED HERMES STD USD RET",
+            "ISIN":        "",
+            "Cantidad":    cash_residual,
+            "Precio":      1.0,
+            "Valuación":   cash_residual,
+        })
+
+    df_out = pd.DataFrame(rows_out)
+    if df_out.empty:
+        return df_out
+
+    # ── % de cartera ─────────────────────────────────────────────────────────
+    total_mv = df_out["Valuación"].sum(skipna=True)
+    df_out["% Cartera"] = (df_out["Valuación"] / total_mv * 100).round(2)
+
+    # ── Orden de categorías ──────────────────────────────────────────────────
+    cat_order = ["MM, T Bills y Simis","Renta Fija","Renta Variable","Otros"]
+    df_out["_cat_ord"] = df_out["categoria"].map(
+        {c: i for i, c in enumerate(cat_order)})
+    df_out = df_out.sort_values(["_cat_ord","Valuación"],
+                                ascending=[True, False]).drop(columns="_cat_ord")
+    return df_out
 CASH_TX     = {"FEDERAL FUNDS RECEIVED","FEDERAL FUNDS SENT"}
 INTERNAL_TX = {"ACTIVITY WITHIN YOUR ACCT"}
 DIV_MARKERS = ["CASH DIVIDEND RECEIVED","FOREIGN SECURITY DIVIDEND RECEIVED"]
@@ -979,7 +1079,7 @@ def render(_ctx=None) -> None:
         "Por asset class",
         "Por símbolo",
         "Tabla de períodos",
-        "Posiciones & precios",
+        "Estado de posición",
     ])
 
     # ─ Tab 1: Cartera total ──────────────────────────────────────────────────
@@ -1064,33 +1164,56 @@ def render(_ctx=None) -> None:
             _show_df(s_sym, height=460, money=["MV cierre"],
                      pct=["3 meses","12 meses","YTD","Desde inception"])
 
-    # ─ Tab 5: Posiciones & precios ──────────────────────────────────────────
+    # ─ Tab 5: Estado de posición mensual ────────────────────────────────────
     with t5:
-        if positions.empty:
-            st.info("Sin posiciones calculadas.")
-        else:
-            pos_mes = positions[positions["month"].eq(selected_month)].copy()
+        st.markdown(
+            f'<div class="subtle">Posición al cierre de <b>{selected_month}</b> '
+            f'— agrupada por categoría</div>', unsafe_allow_html=True)
 
-            # Agregar precio y MV
-            price_rows = []
-            for _, row in pos_mes.iterrows():
-                sym  = row["symbol_key"]
-                me   = pd.Period(selected_month,"M").to_timestamp("M")
-                pr   = np.nan
-                if not prices_df.empty and sym in prices_df.columns:
-                    sub = prices_df.loc[prices_df.index <= me, sym].dropna()
-                    if not sub.empty: pr = float(sub.iloc[-1])
-                price_rows.append({"Símbolo": sym, "Asset Class": row["asset_bucket"],
-                                   "Qty cierre": row["closing_qty"],
-                                   "Precio cierre": pr,
-                                   "MV (base)": row["closing_qty"]*pr if not np.isnan(pr) else np.nan})
-            df_prices = pd.DataFrame(price_rows).sort_values("MV (base)", ascending=False, na_position="last")
-            st.markdown(f'<div class="subtle">Posición al cierre de <b>{selected_month}</b></div>', unsafe_allow_html=True)
-            _show_df(df_prices, height=440,
-                     money=["Precio cierre","MV (base)"],
-                     qty=["Qty cierre"])
+        estado = _build_estado_posicion(positions, prices_df, dfa, selected_month)
+
+        if estado.empty:
+            st.info("Sin posiciones para el mes seleccionado.")
+        else:
+            total_mv = estado["Valuación"].sum(skipna=True)
+
+            # ── Renderizar por categoría ─────────────────────────────────────
+            for cat in ["MM, T Bills y Simis","Renta Fija","Renta Variable","Otros"]:
+                bloque = estado[estado["categoria"].eq(cat)].copy()
+                if bloque.empty:
+                    continue
+
+                subtotal = bloque["Valuación"].sum(skipna=True)
+                pct_cat  = subtotal / total_mv * 100 if total_mv else 0
+
+                # Header de categoría
+                st.markdown(
+                    f'<div style="background:#1a1a2e;color:#fff;padding:6px 14px;'
+                    f'border-radius:6px;margin:10px 0 4px;font-weight:700;'
+                    f'font-size:.88rem;display:flex;justify-content:space-between;">'
+                    f'<span>{cat}</span>'
+                    f'<span>{_fmt_m(subtotal)} &nbsp;·&nbsp; {pct_cat:.2f}%</span>'
+                    f'</div>',
+                    unsafe_allow_html=True)
+
+                # Tabla del bloque
+                view = bloque[["Instrumento","ISIN","Cantidad","Precio","Valuación","% Cartera"]].copy()
+                _show_df(view, height=min(50 + len(view)*38, 400),
+                         money=["Precio","Valuación"],
+                         pct=[])  # % cartera lo formateamos aparte
+
+            # ── Totalizador ──────────────────────────────────────────────────
+            st.markdown(
+                f'<div style="text-align:right;padding:8px 14px;'
+                f'border-top:2px solid rgba(17,24,39,.15);margin-top:6px;'
+                f'font-weight:700;font-size:1.05rem;">'
+                f'Total cartera &nbsp;&nbsp; {_fmt_m(total_mv)}'
+                f'</div>',
+                unsafe_allow_html=True)
+
             if missing_sym:
-                st.caption(f"⚠ Sin precio Yahoo Finance: {', '.join(sorted(missing_sym))}")
+                st.caption(f"⚠ Instrumentos sin precio en Yahoo Finance "
+                           f"(valuación parcial): {', '.join(sorted(missing_sym))}")
 
     # ── descarga ─────────────────────────────────────────────────────────────
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
