@@ -325,15 +325,18 @@ def compare_species(d_ini: pd.DataFrame, d_fin: pd.DataFrame) -> pd.DataFrame:
     comp["Var_Importe"] = comp["Imp_Fin"]  - comp["Imp_Ini"]
     comp["Var_Pct"]     = comp.apply(lambda r: _pct_change(r["Imp_Fin"], r["Imp_Ini"]), axis=1)
 
+    comp["Var_Resultado"] = comp["Res_Fin"] - comp["Res_Ini"]
+
     comp["Movimiento"] = np.select(
         [
+            comp["Var_Cant"] == 0,
             (comp["Imp_Ini"] == 0) & (comp["Imp_Fin"] != 0),
-            (comp["Imp_Ini"] != 0) & (comp["Imp_Fin"] == 0),
-            comp["Var_Cant"] > 0,
-            comp["Var_Cant"] < 0,
+            (comp["Cant_Ini"] > 0) & (comp["Var_Cant"] > 0),
+            (comp["Var_Cant"] < 0) & (comp["Cant_Fin"] == 0),
+            (comp["Var_Cant"] < 0) & (comp["Cant_Fin"] > 0),
         ],
-        ["Alta", "Baja", "Compra", "Venta"],
-        default="Sin cambio",
+        ["Mantenida", "Posición nueva", "Aumento de posición", "Cierre de posición", "Disminución"],
+        default="Mantenida",
     )
     return comp.sort_values("Var_Importe", ascending=False)
 
@@ -381,7 +384,7 @@ def _kpi_html(label: str, value: str, delta: str, delta_color: str) -> str:
 
 
 def _styled(df: pd.DataFrame, fmts: Dict[str, str]):
-    return df.style.format(fmts, na_rep="—").hide(axis="index")
+    return df.reset_index(drop=True).style.format(fmts, na_rep="—").hide(axis="index")
 
 
 # =========================================================
@@ -471,13 +474,15 @@ def render() -> None:
         ), unsafe_allow_html=True)
 
     with k4:
-        altas   = mov_counts.get("Alta", 0)
-        bajas   = mov_counts.get("Baja", 0)
-        compras = mov_counts.get("Compra", 0)
+        nuevas   = mov_counts.get("Posición nueva", 0)
+        aumentos = mov_counts.get("Aumento de posición", 0)
+        disminuc = mov_counts.get("Disminución", 0)
+        cierres  = mov_counts.get("Cierre de posición", 0)
+        mantenidas = mov_counts.get("Mantenida", 0)
         st.markdown(_kpi_html(
             "Movimientos",
             f"{len(df_species)} especies",
-            f"Altas {altas} · Bajas {bajas} · Compras {compras}",
+            f"Nuevas {nuevas} · Aumentos {aumentos} · Disminuc. {disminuc} · Cierres {cierres} · Mant. {mantenidas}",
             MUTED,
         ), unsafe_allow_html=True)
 
@@ -498,58 +503,59 @@ def render() -> None:
     st.markdown('<div class="cp-section">Detalle general por especie</div>', unsafe_allow_html=True)
 
     cols_general = [
-        "Especie", "Categoria", "Tipo", "Moneda",
-        "Cant_Ini", "Cant_Fin", "Var_Cant",
-        "Imp_Ini",  "Imp_Fin",  "Var_Importe", "Var_Pct",
+        "Especie", "Tipo", "Moneda",
+        "Imp_Ini", "Imp_Fin", "Var_Importe", "Var_Pct",
+        "Var_Resultado",
         "Movimiento",
     ]
     df_general = df_species[cols_general].copy()
 
     st.dataframe(
         _styled(df_general, {
-            "Cant_Ini":    "{:,.2f}",
-            "Cant_Fin":    "{:,.2f}",
-            "Var_Cant":    "{:+,.2f}",
-            "Imp_Ini":     "$ {:,.2f}",
-            "Imp_Fin":     "$ {:,.2f}",
-            "Var_Importe": "$ {:+,.2f}",
-            "Var_Pct":     "{:+,.2f}%",
+            "Imp_Ini":       "$ {:,.2f}",
+            "Imp_Fin":       "$ {:,.2f}",
+            "Var_Importe":   "$ {:+,.2f}",
+            "Var_Pct":       "{:+,.2f}%",
+            "Var_Resultado": "$ {:+,.2f}",
         }),
         use_container_width=True,
         height=500,
     )
 
-    # ── Compras / Ventas / Sin cambio ─────────────────────
+    # ── Tabs por tipo de movimiento ───────────────────────
     st.markdown('<div class="cp-section">Por tipo de movimiento</div>', unsafe_allow_html=True)
 
-    tab_compras, tab_ventas, tab_altas, tab_bajas, tab_igual = st.tabs(
-        ["Compras", "Ventas", "Altas", "Bajas", "Sin cambio"]
+    tab_mant, tab_nueva, tab_aumento, tab_dism, tab_cierre = st.tabs(
+        ["Mantenida", "Posición nueva", "Aumento de posición", "Disminución", "Cierre de posición"]
     )
 
     cols_mov = [
-        "Especie", "Categoria", "Moneda",
-        "Cant_Ini", "Cant_Fin", "Var_Cant",
-        "Imp_Ini", "Imp_Fin", "Var_Importe",
+        "Especie", "Tipo", "Moneda",
+        "Imp_Ini", "Imp_Fin", "Var_Importe", "Var_Pct",
+        "Var_Resultado",
     ]
     fmt_mov = {
-        "Cant_Ini": "{:,.2f}", "Cant_Fin": "{:,.2f}", "Var_Cant": "{:+,.2f}",
-        "Imp_Ini":  "$ {:,.2f}", "Imp_Fin": "$ {:,.2f}", "Var_Importe": "$ {:+,.2f}",
+        "Imp_Ini":       "$ {:,.2f}",
+        "Imp_Fin":       "$ {:,.2f}",
+        "Var_Importe":   "$ {:+,.2f}",
+        "Var_Pct":       "{:+,.2f}%",
+        "Var_Resultado": "$ {:+,.2f}",
     }
 
-    def _render_mov_tab(mov: str, ascending=False):
+    def _render_mov_tab(mov: str, ascending: bool = False) -> None:
         sub = df_species[df_species["Movimiento"] == mov][cols_mov].sort_values(
             "Var_Importe", ascending=ascending
         )
         if sub.empty:
-            st.info(f"No hay operaciones de tipo '{mov}'.")
+            st.info(f"No hay posiciones en '{mov}'.")
         else:
-            st.dataframe(_styled(sub, fmt_mov), use_container_width=True, height=300)
+            st.dataframe(_styled(sub, fmt_mov), use_container_width=True, height=340)
 
-    with tab_compras:  _render_mov_tab("Compra")
-    with tab_ventas:   _render_mov_tab("Venta", ascending=True)
-    with tab_altas:    _render_mov_tab("Alta")
-    with tab_bajas:    _render_mov_tab("Baja", ascending=True)
-    with tab_igual:    _render_mov_tab("Sin cambio")
+    with tab_mant:    _render_mov_tab("Mantenida")
+    with tab_nueva:   _render_mov_tab("Posición nueva")
+    with tab_aumento: _render_mov_tab("Aumento de posición")
+    with tab_dism:    _render_mov_tab("Disminución", ascending=True)
+    with tab_cierre:  _render_mov_tab("Cierre de posición", ascending=True)
 
     # ── Descarga ──────────────────────────────────────────
     st.markdown('<div class="cp-section">Exportar</div>', unsafe_allow_html=True)
