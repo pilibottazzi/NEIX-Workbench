@@ -8,6 +8,7 @@ from tools.comerciales import (
     cn,
     transactions_analyzer,
     filtro_especies_exterior,
+    cartera_propia,
 )
 
 # =========================
@@ -469,6 +470,10 @@ if tool:
             filtro_especies_exterior.render()
             st.stop()
 
+        elif tool == "cartera_propia":
+            cartera_propia.render()
+            st.stop()
+
         # -------------------------
         # Marketing
         # -------------------------
@@ -534,6 +539,7 @@ with tabs[0]:
             ("CN", "cn"),
             ("Movimientos CV", "transactions_analyzer"),
             ("Filtro Especies Exterior", "filtro_especies_exterior"),
+            ("Cartera Propia", "cartera_propia"),
         ],
         cols_per_row=3,
         key_prefix="comercial",
