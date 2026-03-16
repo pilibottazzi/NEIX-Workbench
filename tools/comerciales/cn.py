@@ -66,6 +66,60 @@ def _read_template_bytes() -> bytes | None:
     return TEMPLATE_PATH.read_bytes()
 
 
+def _normalize_empty_strings(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Limpia espacios y transforma strings vacíos en NA.
+    """
+    df = df.copy()
+
+    for col in df.columns:
+        if pd.api.types.is_object_dtype(df[col]):
+            df[col] = df[col].astype(str).str.strip()
+            df[col] = df[col].replace(
+                {
+                    "": pd.NA,
+                    "nan": pd.NA,
+                    "None": pd.NA,
+                    "NaN": pd.NA,
+                    "NAN": pd.NA,
+                }
+            )
+
+    return df
+
+
+def _parse_fecha(series: pd.Series) -> pd.Series:
+    """
+    Convierte la fecha a datetime sin hora.
+    Intenta primero formato día/mes/año.
+    """
+    dt = pd.to_datetime(series, errors="coerce", dayfirst=True)
+    return dt.dt.normalize()
+
+
+def _drop_empty_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Elimina filas vacías del consolidado.
+    Regla:
+    - si todos los campos de negocio están vacíos => se elimina
+    - además, exige que al menos uno de los campos principales tenga dato
+    """
+    df = df.copy()
+
+    business_cols = [c for c in OUTPUT_COLS if c in df.columns]
+
+    # Eliminar filas donde TODO lo relevante está vacío
+    df = df.dropna(subset=business_cols, how="all").copy()
+
+    # Refuerzo: exigir que exista al menos alguno de estos campos clave
+    key_cols = [c for c in ["Fecha", "Cuenta", "Producto", "Neto Agente", "Gross Agente"] if c in df.columns]
+    if key_cols:
+        mask_has_key_data = df[key_cols].notna().any(axis=1)
+        df = df.loc[mask_has_key_data].copy()
+
+    return df
+
+
 def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame]:
     try:
         df = pd.read_excel(xls, sheet_name=sheet_name, dtype=str)
@@ -80,6 +134,15 @@ def _read_one_sheet(xls: pd.ExcelFile, sheet_name: str) -> Optional[pd.DataFrame
         return None
 
     df = df[OUTPUT_COLS].copy()
+    df = _normalize_empty_strings(df)
+    df = _drop_empty_rows(df)
+
+    if df.empty:
+        return None
+
+    if "Fecha" in df.columns:
+        df["Fecha"] = _parse_fecha(df["Fecha"])
+
     df.insert(0, "Banco", sheet_name)
 
     return df
@@ -97,20 +160,14 @@ def _coerce_ar_number_to_float(series: pd.Series) -> pd.Series:
     """
     s = series.astype(str).str.strip()
 
-    # vacíos
     s = s.replace({"": None, "None": None, "nan": None, "NaN": None})
 
-    # limpiamos símbolos comunes
-    s = s.str.replace("\u00a0", "", regex=False)  # non-breaking space
+    s = s.str.replace("\u00a0", "", regex=False)
     s = s.str.replace(" ", "", regex=False)
     s = s.str.replace("$", "", regex=False)
     s = s.str.replace("USD", "", regex=False)
     s = s.str.replace("ARS", "", regex=False)
 
-    # Heurística:
-    # si tiene "," y ".":
-    #  - si la última ocurrencia es "," => asumimos AR (miles ".", decimal ",")
-    #  - si la última ocurrencia es "." => asumimos US (miles ",", decimal ".")
     has_comma = s.str.contains(",", na=False)
     has_dot = s.str.contains(r"\.", na=False)
 
@@ -123,7 +180,6 @@ def _coerce_ar_number_to_float(series: pd.Series) -> pd.Series:
         ar_mask = last_comma > last_dot
         us_mask = ~ar_mask
 
-        # AR: miles "." -> remove, decimal "," -> "."
         idx_ar = out[both].index[ar_mask]
         out.loc[idx_ar] = (
             out.loc[idx_ar]
@@ -131,27 +187,35 @@ def _coerce_ar_number_to_float(series: pd.Series) -> pd.Series:
             .str.replace(",", ".", regex=False)
         )
 
-        # US: miles "," -> remove, decimal "." -> keep
         idx_us = out[both].index[us_mask]
         out.loc[idx_us] = out.loc[idx_us].str.replace(",", "", regex=False)
 
-    # solo coma: decimal coma
     only_comma = has_comma & ~has_dot
     if only_comma.any():
         out.loc[only_comma] = out.loc[only_comma].str.replace(",", ".", regex=False)
 
-    # solo punto: ya es decimal punto (o entero) => dejamos
-    # nada: entero => ok
-
     return pd.to_numeric(out, errors="coerce")
+
+
+def _prepare_final_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df = _normalize_empty_strings(df)
+    df = _drop_empty_rows(df)
+
+    if "Fecha" in df.columns:
+        df["Fecha"] = _parse_fecha(df["Fecha"])
+
+    return df.reset_index(drop=True)
 
 
 def _to_excel_bytes(df: pd.DataFrame) -> bytes:
     """
-    Exporta el consolidado a Excel dejando Neto/Gross como NÚMEROS
-    y aplicando formato de número con coma decimal (estilo ES/AR).
+    Exporta el consolidado a Excel dejando:
+    - Fecha como FECHA real sin hora
+    - Neto/Gross como NÚMEROS
     """
-    df = df.copy()
+    df = _prepare_final_dataframe(df)
+
     num_cols = ["Neto Agente", "Gross Agente"]
 
     for c in num_cols:
@@ -164,12 +228,17 @@ def _to_excel_bytes(df: pd.DataFrame) -> bytes:
 
         ws = writer.sheets["Consolidado"]
 
-        # Aplicar formato número (con coma decimal) a las columnas Neto/Gross
-        # Nota: number_format es independiente del locale; Excel mostrará coma si el locale es ES/AR.
+        # Formato fecha sin hora
+        if "Fecha" in df.columns:
+            fecha_idx = df.columns.get_loc("Fecha") + 1
+            for col_cells in ws.iter_cols(min_col=fecha_idx, max_col=fecha_idx, min_row=2):
+                for cell in col_cells:
+                    cell.number_format = "dd/mm/yyyy"
+
+        # Formato número
         for col_name in num_cols:
             if col_name in df.columns:
-                col_idx = df.columns.get_loc(col_name) + 1  # 1-based en openpyxl
-                # iter_cols usa índices 1-based
+                col_idx = df.columns.get_loc(col_name) + 1
                 for col_cells in ws.iter_cols(min_col=col_idx, max_col=col_idx, min_row=2):
                     for cell in col_cells:
                         cell.number_format = "#,##0.00"
@@ -184,9 +253,6 @@ def _to_excel_bytes(df: pd.DataFrame) -> bytes:
 def render(back_to_home=None) -> None:
     _inject_css()
 
-    # -------------------------------------------------
-    # BOTÓN TEMPLATE
-    # -------------------------------------------------
     template_bytes = _read_template_bytes()
 
     if template_bytes:
@@ -202,9 +268,6 @@ def render(back_to_home=None) -> None:
 
     st.divider()
 
-    # -------------------------------------------------
-    # UPLOAD
-    # -------------------------------------------------
     up = st.file_uploader(
         "CN: Subí el Excel para consolidar bancos",
         type=["xlsx", "xls"],
@@ -222,7 +285,7 @@ def render(back_to_home=None) -> None:
     dfs: List[pd.DataFrame] = []
     for s in SHEETS:
         one = _read_one_sheet(xls, s)
-        if one is not None:
+        if one is not None and not one.empty:
             dfs.append(one)
 
     if not dfs:
@@ -230,6 +293,7 @@ def render(back_to_home=None) -> None:
         return
 
     df_all = pd.concat(dfs, ignore_index=True)
+    df_all = _prepare_final_dataframe(df_all)
 
     st.download_button(
         "Excel consolidado",
@@ -240,4 +304,10 @@ def render(back_to_home=None) -> None:
     )
 
     st.markdown("### Consolidado")
-    st.dataframe(df_all, use_container_width=True, height=620)
+
+    df_view = df_all.copy()
+    if "Fecha" in df_view.columns:
+        df_view["Fecha"] = pd.to_datetime(df_view["Fecha"], errors="coerce").dt.strftime("%d/%m/%Y")
+        df_view["Fecha"] = df_view["Fecha"].fillna("")
+
+    st.dataframe(df_view, use_container_width=True, height=620)
