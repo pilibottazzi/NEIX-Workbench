@@ -46,18 +46,21 @@ def _inject_css() -> None:
             padding: 1rem 1.1rem;
             min-height: 112px;
           }}
+
           .cp-kpi-label {{
             color: {MUTED};
             font-size: 0.82rem;
             margin-bottom: 0.3rem;
             letter-spacing: 0.02em;
           }}
+
           .cp-kpi-value {{
             color: {PRIMARY};
             font-size: 1.45rem;
             font-weight: 700;
             line-height: 1.1;
           }}
+
           .cp-kpi-delta {{
             margin-top: 0.3rem;
             font-size: 0.83rem;
@@ -94,8 +97,7 @@ def _inject_css() -> None:
 def _fmt_money(v: float, decimals: int = 2) -> str:
     if pd.isna(v):
         return "—"
-    fmt = f"$ {{v:,.{decimals}f}}"
-    return fmt.format(v=v)
+    return f"$ {v:,.{decimals}f}"
 
 
 def _fmt_pct(v: float) -> str:
@@ -118,7 +120,7 @@ def _to_ts(value) -> Optional[pd.Timestamp]:
     if value is None:
         return None
     if isinstance(value, (pd.Timestamp, datetime)):
-        return pd.Timestamp(value)
+        return pd.Timestamp(value).normalize()
     try:
         if pd.isna(value):
             return None
@@ -159,9 +161,9 @@ def _detect_tipo(categoria: str) -> str:
 
 def _parse_header(df: pd.DataFrame) -> Dict[str, object]:
     out: Dict[str, object] = {
-        "usuario": _norm(df.iloc[3, 0]),
-        "comitente": _norm(df.iloc[3, 1]),
-        "fecha": _to_ts(df.iloc[3, 2]),
+        "usuario": _norm(df.iloc[3, 0]) if df.shape[0] > 3 and df.shape[1] > 0 else "",
+        "comitente": _norm(df.iloc[3, 1]) if df.shape[0] > 3 and df.shape[1] > 1 else "",
+        "fecha": _to_ts(df.iloc[3, 2]) if df.shape[0] > 3 and df.shape[1] > 2 else None,
     }
 
     label_map = {
@@ -183,6 +185,13 @@ def _parse_header(df: pd.DataFrame) -> Dict[str, object]:
 
 
 def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
+    if df.shape[0] <= 16 or df.shape[1] < 10:
+        return pd.DataFrame(columns=[
+            "Especie", "Estado", "Cantidad", "Precio", "Importe",
+            "PctTotal", "Costo", "PctVar", "Resultado",
+            "Categoria", "Moneda", "Tipo"
+        ])
+
     raw = df.iloc[16:, 1:10].copy()
     raw.columns = [
         "Especie", "Estado", "Cantidad", "Precio", "Importe",
@@ -219,7 +228,11 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
 
     out = pd.DataFrame(rows)
     if out.empty:
-        return out
+        return pd.DataFrame(columns=[
+            "Especie", "Estado", "Cantidad", "Precio", "Importe",
+            "PctTotal", "Costo", "PctVar", "Resultado",
+            "Categoria", "Moneda", "Tipo"
+        ])
 
     out["Moneda"] = out["Categoria"].apply(_detect_moneda)
     out["Tipo"] = out["Categoria"].apply(_detect_tipo)
@@ -229,8 +242,33 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_portfolio(file) -> Tuple[Dict[str, object], pd.DataFrame]:
-    df_raw = pd.read_excel(file, header=None)
-    return _parse_header(df_raw), _parse_detail(df_raw)
+    """
+    Lee el archivo Excel con fallback de engines.
+    - .xlsx / .xlsm: intenta openpyxl y luego calamine
+    - .xls: intenta xlrd y luego calamine
+    """
+    name = getattr(file, "name", "archivo").lower()
+
+    if name.endswith(".xls"):
+        engines = ["xlrd", "calamine"]
+    else:
+        engines = ["openpyxl", "calamine"]
+
+    last_error = None
+
+    for engine in engines:
+        try:
+            file.seek(0)
+            df_raw = pd.read_excel(file, header=None, engine=engine)
+            return _parse_header(df_raw), _parse_detail(df_raw)
+        except ImportError as e:
+            last_error = e
+        except Exception as e:
+            last_error = e
+
+    raise ValueError(
+        f"Error procesando {getattr(file, 'name', 'archivo')}: {last_error}"
+    )
 
 
 # =========================================================
@@ -240,6 +278,13 @@ def _safe_num(d: Dict, key: str) -> float:
     return pd.to_numeric(d.get(key), errors="coerce")
 
 
+def _weighted_avg(values: pd.Series, weights: pd.Series) -> float:
+    mask = (~values.isna()) & (~weights.isna()) & (weights != 0)
+    if not mask.any():
+        return np.nan
+    return np.average(values[mask], weights=weights[mask])
+
+
 def _agg_by_especie(detail: pd.DataFrame) -> pd.DataFrame:
     if detail.empty:
         return pd.DataFrame(columns=[
@@ -247,8 +292,10 @@ def _agg_by_especie(detail: pd.DataFrame) -> pd.DataFrame:
             "Cantidad", "Precio", "Importe", "Costo", "Resultado"
         ])
 
+    keys = ["Especie", "Categoria", "Tipo", "Moneda"]
+
     grouped = (
-        detail.groupby(["Especie", "Categoria", "Tipo", "Moneda"], as_index=False)
+        detail.groupby(keys, as_index=False)
         .agg(
             Cantidad=("Cantidad", "sum"),
             Importe=("Importe", "sum"),
@@ -256,38 +303,35 @@ def _agg_by_especie(detail: pd.DataFrame) -> pd.DataFrame:
         )
     )
 
-    precio_ref = (
-        detail.groupby(["Especie", "Categoria", "Tipo", "Moneda"], as_index=False)["Precio"]
-        .mean()
-        .rename(columns={"Precio": "Precio"})
-    )
-    costo_ref = (
-        detail.groupby(["Especie", "Categoria", "Tipo", "Moneda"], as_index=False)["Costo"]
-        .mean()
-        .rename(columns={"Costo": "Costo"})
+    precio_df = (
+        detail.groupby(keys)
+        .apply(lambda g: _weighted_avg(g["Precio"], g["Cantidad"]), include_groups=False)
+        .reset_index(name="Precio")
     )
 
-    grouped = grouped.merge(precio_ref, on=["Especie", "Categoria", "Tipo", "Moneda"], how="left")
-    grouped = grouped.merge(costo_ref, on=["Especie", "Categoria", "Tipo", "Moneda"], how="left")
+    costo_df = (
+        detail.groupby(keys)
+        .apply(lambda g: _weighted_avg(g["Costo"], g["Cantidad"]), include_groups=False)
+        .reset_index(name="Costo")
+    )
+
+    grouped = grouped.merge(precio_df, on=keys, how="left")
+    grouped = grouped.merge(costo_df, on=keys, how="left")
 
     return grouped.sort_values("Importe", ascending=False).reset_index(drop=True)
 
 
 def consolidate_same_date(files: List) -> Dict[pd.Timestamp, Dict[str, object]]:
-    """
-    Agrupa todos los archivos por fecha y consolida header + detalle.
-    """
     grouped: Dict[pd.Timestamp, Dict[str, object]] = {}
 
     for file in files:
-        try:
-            header, detail = load_portfolio(file)
-        except Exception as e:
-            raise ValueError(f"Error procesando {getattr(file, 'name', 'archivo')}: {e}")
-
+        header, detail = load_portfolio(file)
         fecha = header.get("fecha")
+
         if fecha is None:
-            raise ValueError(f"No se pudo identificar la fecha en {getattr(file, 'name', 'archivo')}")
+            raise ValueError(
+                f"No se pudo identificar la fecha en {getattr(file, 'name', 'archivo')}"
+            )
 
         if fecha not in grouped:
             grouped[fecha] = {
@@ -334,6 +378,7 @@ def consolidate_same_date(files: List) -> Dict[pd.Timestamp, Dict[str, object]]:
             "detail": detail_cons,
             "detail_raw_concat": detail_all,
             "file_names": pack["file_names"],
+            "comitentes": sorted({c for c in pack["comitentes"] if c}),
         }
 
     return dict(sorted(consolidated.items(), key=lambda x: x[0]))
@@ -457,6 +502,8 @@ def _kpi_html(label: str, value: str, delta: str, delta_color: str) -> str:
 
 
 def _styled(df: pd.DataFrame, fmts: Dict[str, str]):
+    if df.empty:
+        return df.style
     return df.reset_index(drop=True).style.format(fmts, na_rep="—").hide(axis="index")
 
 
@@ -479,7 +526,7 @@ def render() -> None:
 
     files = st.file_uploader(
         "Subí los Excel de cartera",
-        type=["xlsx", "xls"],
+        type=["xlsx", "xls", "xlsm"],
         accept_multiple_files=True,
         key="cp_multi",
     )
@@ -497,6 +544,10 @@ def render() -> None:
         groups = consolidate_same_date(files)
     except ValueError as e:
         st.error(str(e))
+        st.caption(
+            "Para archivos .xls puede hacer falta tener instalado `xlrd`. "
+            "Como alternativa, también sirve `python-calamine`."
+        )
         return
     except Exception as e:
         st.error(f"Error general al procesar los archivos: {e}")
@@ -677,9 +728,11 @@ def render() -> None:
     }
 
     def _render_mov_tab(mov: str, ascending: bool = False) -> None:
-        sub = df_species[df_species["Movimiento"] == mov][cols_mov].sort_values(
-            "Var_Importe", ascending=ascending
-        ) if not df_species.empty else pd.DataFrame(columns=cols_mov)
+        sub = (
+            df_species[df_species["Movimiento"] == mov][cols_mov]
+            .sort_values("Var_Importe", ascending=ascending)
+            if not df_species.empty else pd.DataFrame(columns=cols_mov)
+        )
 
         if sub.empty:
             st.info(f"No hay posiciones en '{mov}'.")
