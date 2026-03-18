@@ -367,21 +367,62 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
 # =========================================================
 # LECTURA ARCHIVOS
 # =========================================================
-def _read_as_excel(file, name: str) -> pd.DataFrame:
-    if name.endswith(".xls"):
-        engines = ["xlrd", "calamine"]
+def _read_as_html(file) -> pd.DataFrame:
+    file.seek(0)
+    content = file.read()
+
+    if isinstance(content, bytes):
+        text = content.decode("utf-8", errors="ignore")
     else:
-        engines = ["openpyxl", "calamine"]
+        text = str(content)
 
-    last_error = None
-    for engine in engines:
-        try:
-            file.seek(0)
-            return pd.read_excel(file, header=None, engine=engine)
-        except Exception as e:
-            last_error = e
+    if "<html" not in text.lower() and "<table" not in text.lower() and "<pre" not in text.lower():
+        raise ValueError("El archivo no contiene estructura HTML reconocible.")
 
-    raise last_error
+    # intento 1: tablas html clásicas
+    try:
+        tables = pd.read_html(text)
+        if tables:
+            tables = sorted(tables, key=lambda x: x.shape[0] * x.shape[1], reverse=True)
+            return _clean_html_dataframe(tables[0])
+    except Exception:
+        pass
+
+    # intento 2: bloque <pre> o texto plano dentro del html
+    txt = (
+        text.replace("<br>", "\n")
+            .replace("<br/>", "\n")
+            .replace("<br />", "\n")
+            .replace("&nbsp;", " ")
+    )
+
+    # sacamos tags html de forma simple
+    import re
+    txt = re.sub(r"<script.*?</script>", "", txt, flags=re.S | re.I)
+    txt = re.sub(r"<style.*?</style>", "", txt, flags=re.S | re.I)
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    txt = re.sub(r"[ \t]+", " ", txt)
+    txt = re.sub(r"\n+", "\n", txt).strip()
+
+    lines = [line.strip() for line in txt.splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("No tables found")
+
+    # armamos una pseudo-grilla separando por 2 o más espacios
+    rows = []
+    for line in lines:
+        parts = re.split(r"\s{2,}", line.strip())
+        if len(parts) > 1:
+            rows.append(parts)
+
+    if not rows:
+        raise ValueError("No tables found")
+
+    max_cols = max(len(r) for r in rows)
+    rows = [r + [""] * (max_cols - len(r)) for r in rows]
+
+    return pd.DataFrame(rows)
+    
 
 
 def _read_as_html(file) -> pd.DataFrame:
