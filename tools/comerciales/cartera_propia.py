@@ -30,7 +30,6 @@ def _inject_css() -> None:
             padding-bottom: 2rem;
           }}
 
-          /* Tarjetas generales */
           .cp-card {{
             background: #fff;
             border: 1px solid {BORDER};
@@ -40,18 +39,12 @@ def _inject_css() -> None:
             margin-bottom: 1rem;
           }}
 
-          /* KPIs */
-          .cp-kpi-grid {{
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 12px;
-            margin-bottom: 1.25rem;
-          }}
           .cp-kpi {{
             background: #f9fafb;
             border: 1px solid {BORDER};
             border-radius: 14px;
             padding: 1rem 1.1rem;
+            min-height: 112px;
           }}
           .cp-kpi-label {{
             color: {MUTED};
@@ -71,7 +64,6 @@ def _inject_css() -> None:
             font-weight: 600;
           }}
 
-          /* Secciones */
           .cp-section {{
             font-size: 0.92rem;
             font-weight: 700;
@@ -81,22 +73,15 @@ def _inject_css() -> None:
             margin: 1.4rem 0 0.6rem;
           }}
 
-          /* Badges de movimiento */
-          .badge {{
-            display: inline-block;
-            font-size: 0.75rem;
-            font-weight: 600;
-            padding: 2px 9px;
-            border-radius: 20px;
+          div[data-testid="stDataFrame"] {{
+            border-radius: 12px;
+            overflow: hidden;
           }}
-          .badge-alta    {{ background: #dcfce7; color: #15803d; }}
-          .badge-baja    {{ background: #fee2e2; color: #b91c1c; }}
-          .badge-compra  {{ background: #dbeafe; color: #1d4ed8; }}
-          .badge-venta   {{ background: #fef9c3; color: #a16207; }}
-          .badge-igual   {{ background: #f3f4f6; color: #6b7280; }}
 
-          div[data-testid="stDataFrame"] {{ border-radius: 12px; overflow: hidden; }}
-          .stDownloadButton button {{ border-radius: 10px; font-weight: 600; }}
+          .stDownloadButton button {{
+            border-radius: 10px;
+            font-weight: 600;
+          }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -125,12 +110,6 @@ def _pct_change(fin: float, ini: float) -> float:
     return (fin / ini - 1) * 100
 
 
-def _share(value: float, total: float) -> float:
-    if pd.isna(total) or total == 0:
-        return np.nan
-    return value / total * 100
-
-
 def _norm(x) -> str:
     return "" if (x is None or (isinstance(x, float) and np.isnan(x))) else str(x).strip()
 
@@ -146,23 +125,23 @@ def _to_ts(value) -> Optional[pd.Timestamp]:
     except Exception:
         pass
     ts = pd.to_datetime(str(value).strip(), dayfirst=True, errors="coerce")
-    return None if pd.isna(ts) else ts
+    return None if pd.isna(ts) else ts.normalize()
 
 
 # =========================================================
 # PARSEO
 # =========================================================
 def _detect_moneda(categoria: str) -> str:
-    c = categoria.upper()
-    if "U$S EXTERIOR" in c or "EXT" in c:
+    c = _norm(categoria).upper()
+    if "U$S EXTERIOR" in c or "USD EXTERIOR" in c or "EXT" in c:
         return "USD Exterior"
-    if "DOLAR LOCAL" in c or "DÓLAR LOCAL" in c:
+    if "DOLAR LOCAL" in c or "DÓLAR LOCAL" in c or "USD LOCAL" in c:
         return "USD Local"
     return "ARS"
 
 
 def _detect_tipo(categoria: str) -> str:
-    c = categoria.upper()
+    c = _norm(categoria).upper()
     mapping = {
         "CUENTA CORRIENTE": "Cta. Corriente",
         "FONDOS COMUNES": "FCI",
@@ -184,6 +163,7 @@ def _parse_header(df: pd.DataFrame) -> Dict[str, object]:
         "comitente": _norm(df.iloc[3, 1]),
         "fecha": _to_ts(df.iloc[3, 2]),
     }
+
     label_map = {
         "Total Posición": "total_posicion",
         "Portafolio Disponible": "portafolio_disponible",
@@ -192,31 +172,30 @@ def _parse_header(df: pd.DataFrame) -> Dict[str, object]:
         "Cuenta Corriente Dolar Local": "cc_usd_local",
         "Cuenta Corriente Dólar Local": "cc_usd_local",
     }
+
     for i in range(min(len(df), 20)):
         label = _norm(df.iloc[i, 2]) if df.shape[1] > 2 else ""
         val = df.iloc[i, 5] if df.shape[1] > 5 else None
         if label in label_map:
             out[label_map[label]] = pd.to_numeric(val, errors="coerce")
+
     return out
 
 
 def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Extrae el detalle de posiciones desde la fila 16 en adelante.
-    Los subtotales se identifican cuando 'Cantidad' y 'Precio' son NaN
-    pero 'Estado' tiene texto (incluye el caso 'asd' del sistema origen).
-    """
     raw = df.iloc[16:, 1:10].copy()
-    raw.columns = ["Especie", "Estado", "Cantidad", "Precio", "Importe",
-                   "PctTotal", "Costo", "PctVar", "Resultado"]
+    raw.columns = [
+        "Especie", "Estado", "Cantidad", "Precio", "Importe",
+        "PctTotal", "Costo", "PctVar", "Resultado"
+    ]
     raw = raw.reset_index(drop=True)
+
     raw["Especie"] = raw["Especie"].apply(_norm)
-    raw["Estado"]  = raw["Estado"].apply(_norm)
+    raw["Estado"] = raw["Estado"].apply(_norm)
 
     for col in ["Cantidad", "Precio", "Importe", "PctTotal", "Costo", "PctVar", "Resultado"]:
         raw[col] = pd.to_numeric(raw[col], errors="coerce")
 
-    # Un subtotal es una fila sin Cantidad ni Precio pero con Estado no vacío
     def _is_subtotal(row) -> bool:
         return pd.isna(row["Cantidad"]) and pd.isna(row["Precio"]) and row["Estado"] != ""
 
@@ -225,7 +204,7 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
 
     for _, row in raw.iterrows():
         especie = row["Especie"]
-        # Descarta filas completamente vacías y notas al pie
+
         if especie == "" and pd.isna(row["Cantidad"]) and pd.isna(row["Importe"]):
             continue
         if especie.startswith("* "):
@@ -243,9 +222,9 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
         return out
 
     out["Moneda"] = out["Categoria"].apply(_detect_moneda)
-    out["Tipo"]   = out["Categoria"].apply(_detect_tipo)
-    # Excluir filas de CC global (sin categoría asignada = primeras filas de FX)
+    out["Tipo"] = out["Categoria"].apply(_detect_tipo)
     out = out[out["Categoria"] != ""].copy()
+
     return out
 
 
@@ -254,53 +233,122 @@ def load_portfolio(file) -> Tuple[Dict[str, object], pd.DataFrame]:
     return _parse_header(df_raw), _parse_detail(df_raw)
 
 
-def assign_dates(file_a, file_b) -> Tuple[
-    Dict, pd.DataFrame, str,
-    Dict, pd.DataFrame, str,
-]:
-    """Determina cuál archivo es el inicial y cuál el final según la fecha."""
-    h_a, d_a = load_portfolio(file_a)
-    h_b, d_b = load_portfolio(file_b)
-    ref_a, ref_b = h_a.get("fecha"), h_b.get("fecha")
-
-    name_a = getattr(file_a, "name", "archivo_a")
-    name_b = getattr(file_b, "name", "archivo_b")
-
-    for ref, name in [(ref_a, name_a), (ref_b, name_b)]:
-        if ref is None:
-            raise ValueError(f"No se pudo identificar la fecha en: {name}")
-
-    if ref_a <= ref_b:
-        return h_a, d_a, name_a, h_b, d_b, name_b
-    return h_b, d_b, name_b, h_a, d_a, name_a
-
-
 # =========================================================
-# AGREGADOS
+# CONSOLIDACIÓN MULTI-ARCHIVO
 # =========================================================
+def _safe_num(d: Dict, key: str) -> float:
+    return pd.to_numeric(d.get(key), errors="coerce")
+
+
 def _agg_by_especie(detail: pd.DataFrame) -> pd.DataFrame:
     if detail.empty:
-        return pd.DataFrame()
-    return (
+        return pd.DataFrame(columns=[
+            "Especie", "Categoria", "Tipo", "Moneda",
+            "Cantidad", "Precio", "Importe", "Costo", "Resultado"
+        ])
+
+    grouped = (
         detail.groupby(["Especie", "Categoria", "Tipo", "Moneda"], as_index=False)
         .agg(
             Cantidad=("Cantidad", "sum"),
-            Precio=("Precio", "mean"),
             Importe=("Importe", "sum"),
-            Costo=("Costo", "mean"),
             Resultado=("Resultado", "sum"),
         )
-        .sort_values("Importe", ascending=False)
     )
 
+    precio_ref = (
+        detail.groupby(["Especie", "Categoria", "Tipo", "Moneda"], as_index=False)["Precio"]
+        .mean()
+        .rename(columns={"Precio": "Precio"})
+    )
+    costo_ref = (
+        detail.groupby(["Especie", "Categoria", "Tipo", "Moneda"], as_index=False)["Costo"]
+        .mean()
+        .rename(columns={"Costo": "Costo"})
+    )
 
+    grouped = grouped.merge(precio_ref, on=["Especie", "Categoria", "Tipo", "Moneda"], how="left")
+    grouped = grouped.merge(costo_ref, on=["Especie", "Categoria", "Tipo", "Moneda"], how="left")
+
+    return grouped.sort_values("Importe", ascending=False).reset_index(drop=True)
+
+
+def consolidate_same_date(files: List) -> Dict[pd.Timestamp, Dict[str, object]]:
+    """
+    Agrupa todos los archivos por fecha y consolida header + detalle.
+    """
+    grouped: Dict[pd.Timestamp, Dict[str, object]] = {}
+
+    for file in files:
+        try:
+            header, detail = load_portfolio(file)
+        except Exception as e:
+            raise ValueError(f"Error procesando {getattr(file, 'name', 'archivo')}: {e}")
+
+        fecha = header.get("fecha")
+        if fecha is None:
+            raise ValueError(f"No se pudo identificar la fecha en {getattr(file, 'name', 'archivo')}")
+
+        if fecha not in grouped:
+            grouped[fecha] = {
+                "fecha": fecha,
+                "headers_raw": [],
+                "details_raw": [],
+                "file_names": [],
+                "comitentes": [],
+                "usuarios": [],
+            }
+
+        grouped[fecha]["headers_raw"].append(header)
+        grouped[fecha]["details_raw"].append(detail.copy())
+        grouped[fecha]["file_names"].append(getattr(file, "name", "archivo"))
+        grouped[fecha]["comitentes"].append(_norm(header.get("comitente")))
+        grouped[fecha]["usuarios"].append(_norm(header.get("usuario")))
+
+    consolidated: Dict[pd.Timestamp, Dict[str, object]] = {}
+
+    for fecha, pack in grouped.items():
+        headers_raw = pack["headers_raw"]
+        details_raw = pack["details_raw"]
+
+        header_cons = {
+            "fecha": fecha,
+            "usuario": "Consolidado",
+            "comitente": "Consolidado",
+            "cantidad_archivos": len(pack["file_names"]),
+            "cantidad_comitentes": len({c for c in pack["comitentes"] if c}),
+            "archivos": " | ".join(pack["file_names"]),
+            "comitentes_lista": " | ".join(sorted({c for c in pack["comitentes"] if c})),
+            "total_posicion": np.nansum([_safe_num(h, "total_posicion") for h in headers_raw]),
+            "portafolio_disponible": np.nansum([_safe_num(h, "portafolio_disponible") for h in headers_raw]),
+            "cc_ars": np.nansum([_safe_num(h, "cc_ars") for h in headers_raw]),
+            "cc_usd_ext": np.nansum([_safe_num(h, "cc_usd_ext") for h in headers_raw]),
+            "cc_usd_local": np.nansum([_safe_num(h, "cc_usd_local") for h in headers_raw]),
+        }
+
+        detail_all = pd.concat(details_raw, ignore_index=True) if details_raw else pd.DataFrame()
+        detail_cons = _agg_by_especie(detail_all)
+
+        consolidated[fecha] = {
+            "header": header_cons,
+            "detail": detail_cons,
+            "detail_raw_concat": detail_all,
+            "file_names": pack["file_names"],
+        }
+
+    return dict(sorted(consolidated.items(), key=lambda x: x[0]))
+
+
+# =========================================================
+# COMPARACIONES
+# =========================================================
 def compare_headers(h_ini: Dict, h_fin: Dict) -> pd.DataFrame:
     rows = [
-        ("Total Posición",          h_ini.get("total_posicion"),         h_fin.get("total_posicion")),
-        ("Portafolio Disponible",    h_ini.get("portafolio_disponible"),   h_fin.get("portafolio_disponible")),
-        ("Cuenta Corriente ARS",    h_ini.get("cc_ars"),                  h_fin.get("cc_ars")),
-        ("CC USD Exterior",          h_ini.get("cc_usd_ext"),              h_fin.get("cc_usd_ext")),
-        ("CC USD Local",            h_ini.get("cc_usd_local"),            h_fin.get("cc_usd_local")),
+        ("Total Posición", h_ini.get("total_posicion"), h_fin.get("total_posicion")),
+        ("Portafolio Disponible", h_ini.get("portafolio_disponible"), h_fin.get("portafolio_disponible")),
+        ("Cuenta Corriente ARS", h_ini.get("cc_ars"), h_fin.get("cc_ars")),
+        ("CC USD Exterior", h_ini.get("cc_usd_ext"), h_fin.get("cc_usd_ext")),
+        ("CC USD Local", h_ini.get("cc_usd_local"), h_fin.get("cc_usd_local")),
     ]
     df = pd.DataFrame(rows, columns=["Indicador", "Inicio", "Fin"])
     df["Variación $"] = df["Fin"] - df["Inicio"]
@@ -311,52 +359,86 @@ def compare_headers(h_ini: Dict, h_fin: Dict) -> pd.DataFrame:
 def compare_species(d_ini: pd.DataFrame, d_fin: pd.DataFrame) -> pd.DataFrame:
     keys = ["Especie", "Categoria", "Tipo", "Moneda"]
 
-    a = _agg_by_especie(d_ini).rename(columns={
-        "Cantidad": "Cant_Ini", "Precio": "Precio_Ini",
-        "Importe": "Imp_Ini",   "Resultado": "Res_Ini",
-    })
-    b = _agg_by_especie(d_fin).rename(columns={
-        "Cantidad": "Cant_Fin", "Precio": "Precio_Fin",
-        "Importe": "Imp_Fin",   "Resultado": "Res_Fin",
-    })
+    a = d_ini.rename(columns={
+        "Cantidad": "Cant_Ini",
+        "Precio": "Precio_Ini",
+        "Importe": "Imp_Ini",
+        "Resultado": "Res_Ini",
+        "Costo": "Costo_Ini",
+    }).copy()
+
+    b = d_fin.rename(columns={
+        "Cantidad": "Cant_Fin",
+        "Precio": "Precio_Fin",
+        "Importe": "Imp_Fin",
+        "Resultado": "Res_Fin",
+        "Costo": "Costo_Fin",
+    }).copy()
 
     comp = pd.merge(a, b, on=keys, how="outer").fillna(0)
-    comp["Var_Cant"]    = comp["Cant_Fin"] - comp["Cant_Ini"]
-    comp["Var_Importe"] = comp["Imp_Fin"]  - comp["Imp_Ini"]
-    comp["Var_Pct"]     = comp.apply(lambda r: _pct_change(r["Imp_Fin"], r["Imp_Ini"]), axis=1)
 
+    comp["Var_Cant"] = comp["Cant_Fin"] - comp["Cant_Ini"]
+    comp["Var_Importe"] = comp["Imp_Fin"] - comp["Imp_Ini"]
+    comp["Var_Pct"] = comp.apply(lambda r: _pct_change(r["Imp_Fin"], r["Imp_Ini"]), axis=1)
     comp["Var_Resultado"] = comp["Res_Fin"] - comp["Res_Ini"]
 
     comp["Movimiento"] = np.select(
         [
-            comp["Var_Cant"] == 0,
+            (comp["Cant_Ini"] > 0) & (comp["Cant_Fin"] > 0) & (comp["Var_Cant"] == 0),
             (comp["Imp_Ini"] == 0) & (comp["Imp_Fin"] != 0),
             (comp["Cant_Ini"] > 0) & (comp["Var_Cant"] > 0),
             (comp["Var_Cant"] < 0) & (comp["Cant_Fin"] == 0),
             (comp["Var_Cant"] < 0) & (comp["Cant_Fin"] > 0),
         ],
-        ["Mantenida", "Posición nueva", "Aumento de posición", "Cierre de posición", "Disminución"],
+        [
+            "Mantenida",
+            "Posición nueva",
+            "Aumento de posición",
+            "Cierre de posición",
+            "Disminución",
+        ],
         default="Mantenida",
     )
-    return comp.sort_values("Var_Importe", ascending=False)
+
+    return comp.sort_values("Var_Importe", ascending=False).reset_index(drop=True)
 
 
 # =========================================================
 # EXPORT
 # =========================================================
 def build_export(
-    h_ini: Dict, h_fin: Dict,
-    d_ini: pd.DataFrame, d_fin: pd.DataFrame,
-    df_header: pd.DataFrame, df_species: pd.DataFrame,
+    h_ini: Dict,
+    h_fin: Dict,
+    d_ini: pd.DataFrame,
+    d_fin: pd.DataFrame,
+    df_header: pd.DataFrame,
+    df_species: pd.DataFrame,
+    all_groups: Dict[pd.Timestamp, Dict[str, object]],
 ) -> bytes:
     bio = BytesIO()
+
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
         pd.DataFrame([h_ini]).to_excel(writer, sheet_name="Header_Inicio", index=False)
-        pd.DataFrame([h_fin]).to_excel(writer, sheet_name="Header_Fin",    index=False)
+        pd.DataFrame([h_fin]).to_excel(writer, sheet_name="Header_Fin", index=False)
         d_ini.to_excel(writer, sheet_name="Detalle_Inicio", index=False)
-        d_fin.to_excel(writer, sheet_name="Detalle_Fin",    index=False)
-        df_header.to_excel(writer,  sheet_name="Resumen",  index=False)
+        d_fin.to_excel(writer, sheet_name="Detalle_Fin", index=False)
+        df_header.to_excel(writer, sheet_name="Resumen", index=False)
         df_species.to_excel(writer, sheet_name="Especies", index=False)
+
+        resumen_fechas = []
+        for fecha, pack in all_groups.items():
+            resumen_fechas.append({
+                "Fecha": fecha,
+                "Cantidad archivos": pack["header"].get("cantidad_archivos"),
+                "Cantidad comitentes": pack["header"].get("cantidad_comitentes"),
+                "Archivos": " | ".join(pack["file_names"]),
+                "Comitentes": pack["header"].get("comitentes_lista"),
+                "Total Posición": pack["header"].get("total_posicion"),
+                "Portafolio Disponible": pack["header"].get("portafolio_disponible"),
+            })
+
+        pd.DataFrame(resumen_fechas).to_excel(writer, sheet_name="Fechas_Consolidadas", index=False)
+
     bio.seek(0)
     return bio.read()
 
@@ -364,15 +446,6 @@ def build_export(
 # =========================================================
 # RENDER AUXILIARES
 # =========================================================
-def _badge_html(mov: str) -> str:
-    cls_map = {
-        "Alta": "badge-alta", "Baja": "badge-baja",
-        "Compra": "badge-compra", "Venta": "badge-venta",
-    }
-    cls = cls_map.get(mov, "badge-igual")
-    return f'<span class="badge {cls}">{mov}</span>'
-
-
 def _kpi_html(label: str, value: str, delta: str, delta_color: str) -> str:
     return f"""
     <div class="cp-kpi">
@@ -395,59 +468,124 @@ def render() -> None:
 
     st.title("Cartera Propia")
     st.markdown(
-        f'<p style="color:{MUTED};font-size:0.95rem;margin-top:-0.3rem;margin-bottom:1.4rem;">'
-        "Comparación ejecutiva del portafolio entre dos fechas. "
-        "El sistema identifica automáticamente el archivo inicial y el final.</p>",
+        f"""
+        <p style="color:{MUTED};font-size:0.95rem;margin-top:-0.3rem;margin-bottom:1.2rem;">
+        Subí múltiples archivos de distintas comitentes. El sistema agrupa automáticamente por fecha,
+        consolida las tenencias de la misma fecha y compara la fecha inicial vs. la final.
+        </p>
+        """,
         unsafe_allow_html=True,
     )
 
-    # ── Carga de archivos ─────────────────────────────────
-    with st.container():
-        c1, c2 = st.columns(2)
-        file_a = c1.file_uploader("Excel 1", type=["xlsx", "xls"], key="cp_a")
-        file_b = c2.file_uploader("Excel 2", type=["xlsx", "xls"], key="cp_b")
-        run = st.button("Analizar cartera", use_container_width=True)
+    files = st.file_uploader(
+        "Subí los Excel de cartera",
+        type=["xlsx", "xls"],
+        accept_multiple_files=True,
+        key="cp_multi",
+    )
+
+    run = st.button("Analizar cartera consolidada", use_container_width=True)
 
     if not run:
         return
-    if file_a is None or file_b is None:
-        st.warning("Subí ambos archivos para continuar.")
+
+    if not files:
+        st.warning("Subí al menos dos archivos para continuar.")
         return
 
-    # ── Procesamiento ─────────────────────────────────────
     try:
-        h_ini, d_ini, name_ini, h_fin, d_fin, name_fin = assign_dates(file_a, file_b)
+        groups = consolidate_same_date(files)
     except ValueError as e:
         st.error(str(e))
         return
+    except Exception as e:
+        st.error(f"Error general al procesar los archivos: {e}")
+        return
 
-    fecha_ini = h_ini["fecha"]
-    fecha_fin = h_fin["fecha"]
-    fmt_fecha = lambda ts: ts.strftime("%d/%m/%Y") if ts else "—"
+    unique_dates = list(groups.keys())
 
-    st.info(
-        f"**Inicial:** {name_ini} ({fmt_fecha(fecha_ini)})  \n"
-        f"**Final:** {name_fin} ({fmt_fecha(fecha_fin)})"
+    if len(unique_dates) < 2:
+        st.warning("Necesitás archivos de al menos dos fechas distintas para comparar.")
+        return
+
+    st.markdown('<div class="cp-section">Fechas detectadas</div>', unsafe_allow_html=True)
+
+    df_detectadas = pd.DataFrame([
+        {
+            "Fecha": fecha.strftime("%d/%m/%Y"),
+            "Cantidad de archivos": groups[fecha]["header"]["cantidad_archivos"],
+            "Cantidad de comitentes": groups[fecha]["header"]["cantidad_comitentes"],
+            "Total Posición": groups[fecha]["header"]["total_posicion"],
+            "Portafolio Disponible": groups[fecha]["header"]["portafolio_disponible"],
+            "Comitentes": groups[fecha]["header"]["comitentes_lista"],
+        }
+        for fecha in unique_dates
+    ])
+
+    st.dataframe(
+        _styled(df_detectadas, {
+            "Total Posición": "$ {:,.2f}",
+            "Portafolio Disponible": "$ {:,.2f}",
+        }),
+        use_container_width=True,
+        height=min(280, 70 + 35 * len(df_detectadas)),
     )
 
-    df_header  = compare_headers(h_ini, h_fin)
+    default_ini = 0
+    default_fin = len(unique_dates) - 1
+
+    c1, c2 = st.columns(2)
+    fecha_ini = c1.selectbox(
+        "Fecha inicial",
+        options=unique_dates,
+        format_func=lambda x: x.strftime("%d/%m/%Y"),
+        index=default_ini,
+    )
+    fecha_fin = c2.selectbox(
+        "Fecha final",
+        options=unique_dates,
+        format_func=lambda x: x.strftime("%d/%m/%Y"),
+        index=default_fin,
+    )
+
+    if fecha_ini >= fecha_fin:
+        st.error("La fecha inicial debe ser anterior a la fecha final.")
+        return
+
+    h_ini = groups[fecha_ini]["header"]
+    d_ini = groups[fecha_ini]["detail"]
+
+    h_fin = groups[fecha_fin]["header"]
+    d_fin = groups[fecha_fin]["detail"]
+
+    st.info(
+        f"**Inicial:** {fecha_ini.strftime('%d/%m/%Y')} · "
+        f"{h_ini['cantidad_archivos']} archivo(s) · {h_ini['cantidad_comitentes']} comitente(s)\n\n"
+        f"**Final:** {fecha_fin.strftime('%d/%m/%Y')} · "
+        f"{h_fin['cantidad_archivos']} archivo(s) · {h_fin['cantidad_comitentes']} comitente(s)"
+    )
+
+    df_header = compare_headers(h_ini, h_fin)
     df_species = compare_species(d_ini, d_fin)
 
-    total_ini  = pd.to_numeric(h_ini.get("total_posicion"), errors="coerce")
-    total_fin  = pd.to_numeric(h_fin.get("total_posicion"), errors="coerce")
-    disp_fin   = pd.to_numeric(h_fin.get("portafolio_disponible"), errors="coerce")
-    disp_var   = disp_fin - pd.to_numeric(h_ini.get("portafolio_disponible"), errors="coerce")
-    total_var  = total_fin - total_ini
-    total_pct  = _pct_change(total_fin, total_ini)
+    total_ini = pd.to_numeric(h_ini.get("total_posicion"), errors="coerce")
+    total_fin = pd.to_numeric(h_fin.get("total_posicion"), errors="coerce")
+    disp_ini = pd.to_numeric(h_ini.get("portafolio_disponible"), errors="coerce")
+    disp_fin = pd.to_numeric(h_fin.get("portafolio_disponible"), errors="coerce")
 
-    res_fin    = pd.to_numeric(d_fin["Resultado"], errors="coerce").fillna(0).sum()
-    mov_counts = df_species["Movimiento"].value_counts().to_dict()
+    total_var = total_fin - total_ini
+    total_pct = _pct_change(total_fin, total_ini)
+    disp_var = disp_fin - disp_ini
 
-    # ── KPIs ──────────────────────────────────────────────
+    res_fin = pd.to_numeric(d_fin["Resultado"], errors="coerce").fillna(0).sum() if not d_fin.empty else 0
+    mov_counts = df_species["Movimiento"].value_counts().to_dict() if not df_species.empty else {}
+
     st.markdown('<div class="cp-section">Resumen ejecutivo</div>', unsafe_allow_html=True)
-    k1, k2, k3, k4 = st.columns(4)
 
-    def _delta_color(v): return SUCCESS if v >= 0 else DANGER
+    def _delta_color(v):
+        return SUCCESS if pd.notna(v) and v >= 0 else DANGER
+
+    k1, k2, k3, k4 = st.columns(4)
 
     with k1:
         st.markdown(_kpi_html(
@@ -459,7 +597,7 @@ def render() -> None:
 
     with k2:
         st.markdown(_kpi_html(
-            "Portafolio disponible",
+            "Portafolio disponible final",
             _fmt_money(disp_fin),
             f"var: {_fmt_money(disp_var)}",
             _delta_color(disp_var),
@@ -474,11 +612,12 @@ def render() -> None:
         ), unsafe_allow_html=True)
 
     with k4:
-        nuevas   = mov_counts.get("Posición nueva", 0)
+        nuevas = mov_counts.get("Posición nueva", 0)
         aumentos = mov_counts.get("Aumento de posición", 0)
         disminuc = mov_counts.get("Disminución", 0)
-        cierres  = mov_counts.get("Cierre de posición", 0)
+        cierres = mov_counts.get("Cierre de posición", 0)
         mantenidas = mov_counts.get("Mantenida", 0)
+
         st.markdown(_kpi_html(
             "Movimientos",
             f"{len(df_species)} especies",
@@ -486,43 +625,39 @@ def render() -> None:
             MUTED,
         ), unsafe_allow_html=True)
 
-    # ── Comparación general ────────────────────────────────
     st.markdown('<div class="cp-section">Comparación inicio vs. fin</div>', unsafe_allow_html=True)
     st.dataframe(
         _styled(df_header, {
-            "Inicio":       "$ {:,.2f}",
-            "Fin":          "$ {:,.2f}",
-            "Variación $":  "$ {:,.2f}",
-            "Variación %":  "{:+,.2f}%",
+            "Inicio": "$ {:,.2f}",
+            "Fin": "$ {:,.2f}",
+            "Variación $": "$ {:+,.2f}",
+            "Variación %": "{:+,.2f}%",
         }),
         use_container_width=True,
         height=240,
     )
 
-    # ── Detalle por especie ────────────────────────────────
     st.markdown('<div class="cp-section">Detalle general por especie</div>', unsafe_allow_html=True)
 
     cols_general = [
         "Especie", "Tipo", "Moneda",
         "Imp_Ini", "Imp_Fin", "Var_Importe", "Var_Pct",
-        "Var_Resultado",
-        "Movimiento",
+        "Var_Resultado", "Movimiento",
     ]
-    df_general = df_species[cols_general].copy()
+    df_general = df_species[cols_general].copy() if not df_species.empty else pd.DataFrame(columns=cols_general)
 
     st.dataframe(
         _styled(df_general, {
-            "Imp_Ini":       "$ {:,.2f}",
-            "Imp_Fin":       "$ {:,.2f}",
-            "Var_Importe":   "$ {:+,.2f}",
-            "Var_Pct":       "{:+,.2f}%",
+            "Imp_Ini": "$ {:,.2f}",
+            "Imp_Fin": "$ {:,.2f}",
+            "Var_Importe": "$ {:+,.2f}",
+            "Var_Pct": "{:+,.2f}%",
             "Var_Resultado": "$ {:+,.2f}",
         }),
         use_container_width=True,
         height=500,
     )
 
-    # ── Tabs por tipo de movimiento ───────────────────────
     st.markdown('<div class="cp-section">Por tipo de movimiento</div>', unsafe_allow_html=True)
 
     tab_mant, tab_nueva, tab_aumento, tab_dism, tab_cierre = st.tabs(
@@ -531,39 +666,44 @@ def render() -> None:
 
     cols_mov = [
         "Especie", "Tipo", "Moneda",
-        "Imp_Ini", "Imp_Fin", "Var_Importe", "Var_Pct",
-        "Var_Resultado",
+        "Imp_Ini", "Imp_Fin", "Var_Importe", "Var_Pct", "Var_Resultado",
     ]
     fmt_mov = {
-        "Imp_Ini":       "$ {:,.2f}",
-        "Imp_Fin":       "$ {:,.2f}",
-        "Var_Importe":   "$ {:+,.2f}",
-        "Var_Pct":       "{:+,.2f}%",
+        "Imp_Ini": "$ {:,.2f}",
+        "Imp_Fin": "$ {:,.2f}",
+        "Var_Importe": "$ {:+,.2f}",
+        "Var_Pct": "{:+,.2f}%",
         "Var_Resultado": "$ {:+,.2f}",
     }
 
     def _render_mov_tab(mov: str, ascending: bool = False) -> None:
         sub = df_species[df_species["Movimiento"] == mov][cols_mov].sort_values(
             "Var_Importe", ascending=ascending
-        )
+        ) if not df_species.empty else pd.DataFrame(columns=cols_mov)
+
         if sub.empty:
             st.info(f"No hay posiciones en '{mov}'.")
         else:
             st.dataframe(_styled(sub, fmt_mov), use_container_width=True, height=340)
 
-    with tab_mant:    _render_mov_tab("Mantenida")
-    with tab_nueva:   _render_mov_tab("Posición nueva")
-    with tab_aumento: _render_mov_tab("Aumento de posición")
-    with tab_dism:    _render_mov_tab("Disminución", ascending=True)
-    with tab_cierre:  _render_mov_tab("Cierre de posición", ascending=True)
+    with tab_mant:
+        _render_mov_tab("Mantenida")
+    with tab_nueva:
+        _render_mov_tab("Posición nueva")
+    with tab_aumento:
+        _render_mov_tab("Aumento de posición")
+    with tab_dism:
+        _render_mov_tab("Disminución", ascending=True)
+    with tab_cierre:
+        _render_mov_tab("Cierre de posición", ascending=True)
 
-    # ── Descarga ──────────────────────────────────────────
     st.markdown('<div class="cp-section">Exportar</div>', unsafe_allow_html=True)
-    export_bytes = build_export(h_ini, h_fin, d_ini, d_fin, df_header, df_species)
+    export_bytes = build_export(h_ini, h_fin, d_ini, d_fin, df_header, df_species, groups)
+
     st.download_button(
-        label="Descargar Excel comparativo",
+        label="Descargar Excel comparativo consolidado",
         data=export_bytes,
-        file_name="cartera_propia_comparativo.xlsx",
+        file_name="cartera_propia_consolidada.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
