@@ -20,6 +20,9 @@ DANGER = "#dc2626"
 INFO = "#2563eb"
 
 
+# =========================================================
+# UI
+# =========================================================
 def _inject_css() -> None:
     st.markdown(
         f"""
@@ -28,15 +31,6 @@ def _inject_css() -> None:
             max-width: 1280px;
             padding-top: 1.2rem;
             padding-bottom: 2rem;
-          }}
-
-          .cp-card {{
-            background: #fff;
-            border: 1px solid {BORDER};
-            border-radius: 16px;
-            padding: 1.2rem 1.4rem;
-            box-shadow: 0 2px 12px rgba(17,24,39,0.04);
-            margin-bottom: 1rem;
           }}
 
           .cp-kpi {{
@@ -92,7 +86,7 @@ def _inject_css() -> None:
 
 
 # =========================================================
-# HELPERS DE FORMATO
+# HELPERS GENERALES
 # =========================================================
 def _fmt_money(v: float, decimals: int = 2) -> str:
     if pd.isna(v):
@@ -130,12 +124,23 @@ def _to_ts(value) -> Optional[pd.Timestamp]:
     return None if pd.isna(ts) else ts.normalize()
 
 
+def _safe_num(d: Dict, key: str) -> float:
+    return pd.to_numeric(d.get(key), errors="coerce")
+
+
+def _weighted_avg(values: pd.Series, weights: pd.Series) -> float:
+    mask = (~values.isna()) & (~weights.isna()) & (weights != 0)
+    if not mask.any():
+        return np.nan
+    return np.average(values[mask], weights=weights[mask])
+
+
 # =========================================================
-# PARSEO
+# DETECCIONES DE NEGOCIO
 # =========================================================
 def _detect_moneda(categoria: str) -> str:
     c = _norm(categoria).upper()
-    if "U$S EXTERIOR" in c or "USD EXTERIOR" in c or "EXT" in c:
+    if "U$S EXTERIOR" in c or "USD EXTERIOR" in c or "EXTERIOR" in c or "EXT" in c:
         return "USD Exterior"
     if "DOLAR LOCAL" in c or "DÓLAR LOCAL" in c or "USD LOCAL" in c:
         return "USD Local"
@@ -159,12 +164,71 @@ def _detect_tipo(categoria: str) -> str:
     return "Otros"
 
 
+# =========================================================
+# NORMALIZACIÓN NUMÉRICA HTML/TEXTO
+# =========================================================
+def _coerce_numeric_series(series: pd.Series) -> pd.Series:
+    s = series.astype(str).str.strip()
+    s = s.replace(
+        {
+            "": np.nan,
+            "nan": np.nan,
+            "None": np.nan,
+            "-": np.nan,
+            "—": np.nan,
+        }
+    )
+
+    # elimina separadores de miles y cambia coma decimal por punto
+    s = s.str.replace(r"\.", "", regex=True)
+    s = s.str.replace(",", ".", regex=False)
+
+    # elimina símbolos
+    s = s.str.replace("%", "", regex=False)
+    s = s.str.replace("$", "", regex=False)
+    s = s.str.replace("U$S", "", regex=False)
+    s = s.str.replace("USD", "", regex=False)
+
+    return pd.to_numeric(s, errors="coerce")
+
+
+def _clean_html_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    # aplana multicolumns si existen
+    if isinstance(out.columns, pd.MultiIndex):
+        out.columns = [
+            " ".join([_norm(x) for x in tup if _norm(x) != ""]).strip()
+            for tup in out.columns
+        ]
+
+    # fuerza nombres de columnas simples
+    out.columns = [str(c) for c in out.columns]
+
+    # limpia espacios raros
+    for col in out.columns:
+        out[col] = out[col].apply(lambda x: _norm(x).replace("\xa0", " "))
+
+    return out
+
+
+# =========================================================
+# PARSEO HEADER
+# =========================================================
 def _parse_header(df: pd.DataFrame) -> Dict[str, object]:
     out: Dict[str, object] = {
-        "usuario": _norm(df.iloc[3, 0]) if df.shape[0] > 3 and df.shape[1] > 0 else "",
-        "comitente": _norm(df.iloc[3, 1]) if df.shape[0] > 3 and df.shape[1] > 1 else "",
-        "fecha": _to_ts(df.iloc[3, 2]) if df.shape[0] > 3 and df.shape[1] > 2 else None,
+        "usuario": "",
+        "comitente": "",
+        "fecha": None,
     }
+
+    # intento directo original
+    try:
+        out["usuario"] = _norm(df.iloc[3, 0])
+        out["comitente"] = _norm(df.iloc[3, 1])
+        out["fecha"] = _to_ts(df.iloc[3, 2])
+    except Exception:
+        pass
 
     label_map = {
         "Total Posición": "total_posicion",
@@ -175,35 +239,96 @@ def _parse_header(df: pd.DataFrame) -> Dict[str, object]:
         "Cuenta Corriente Dólar Local": "cc_usd_local",
     }
 
-    for i in range(min(len(df), 20)):
-        label = _norm(df.iloc[i, 2]) if df.shape[1] > 2 else ""
-        val = df.iloc[i, 5] if df.shape[1] > 5 else None
-        if label in label_map:
-            out[label_map[label]] = pd.to_numeric(val, errors="coerce")
+    max_rows = min(len(df), 60)
+    max_cols = min(df.shape[1], 12)
+
+    # búsqueda flexible en todo el bloque superior
+    for i in range(max_rows):
+        for j in range(max_cols):
+            val = _norm(df.iloc[i, j])
+
+            if out["fecha"] is None:
+                ts = _to_ts(val)
+                if ts is not None:
+                    out["fecha"] = ts
+
+            if out["usuario"] == "" and ("usuario" in val.lower() or "cliente" in val.lower()):
+                if j + 1 < df.shape[1]:
+                    out["usuario"] = _norm(df.iloc[i, j + 1])
+
+            if out["comitente"] == "" and "comitente" in val.lower():
+                if j + 1 < df.shape[1]:
+                    out["comitente"] = _norm(df.iloc[i, j + 1])
+
+            if val in label_map:
+                for k in range(j + 1, min(j + 7, df.shape[1])):
+                    num = pd.to_numeric(
+                        str(df.iloc[i, k]).replace(".", "").replace(",", "."),
+                        errors="coerce",
+                    )
+                    if pd.notna(num):
+                        out[label_map[val]] = num
+                        break
 
     return out
 
 
-def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
-    if df.shape[0] <= 16 or df.shape[1] < 10:
-        return pd.DataFrame(columns=[
-            "Especie", "Estado", "Cantidad", "Precio", "Importe",
-            "PctTotal", "Costo", "PctVar", "Resultado",
-            "Categoria", "Moneda", "Tipo"
-        ])
+# =========================================================
+# PARSEO DETALLE
+# =========================================================
+def _empty_detail_df() -> pd.DataFrame:
+    return pd.DataFrame(columns=[
+        "Especie", "Estado", "Cantidad", "Precio", "Importe",
+        "PctTotal", "Costo", "PctVar", "Resultado",
+        "Categoria", "Moneda", "Tipo"
+    ])
 
-    raw = df.iloc[16:, 1:10].copy()
-    raw.columns = [
+
+def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
+    expected_cols = [
         "Especie", "Estado", "Cantidad", "Precio", "Importe",
         "PctTotal", "Costo", "PctVar", "Resultado"
     ]
-    raw = raw.reset_index(drop=True)
+
+    if df.empty:
+        return _empty_detail_df()
+
+    raw = None
+
+    # intento estructura original exacta
+    try:
+        tmp = df.iloc[16:, 1:10].copy()
+        if tmp.shape[1] == 9:
+            tmp.columns = expected_cols
+            raw = tmp.reset_index(drop=True)
+    except Exception:
+        pass
+
+    # fallback flexible: buscar bloque de 9 columnas que tenga pinta de detalle
+    if raw is None:
+        for start_col in range(max(1, df.shape[1] - 8)):
+            tmp = df.iloc[:, start_col:start_col + 9].copy()
+            if tmp.shape[1] != 9:
+                continue
+
+            tmp.columns = expected_cols
+
+            especie_nonempty = tmp["Especie"].astype(str).str.strip().ne("").sum()
+            importe_num = _coerce_numeric_series(tmp["Importe"]).notna().sum()
+            cantidad_num = _coerce_numeric_series(tmp["Cantidad"]).notna().sum()
+
+            if especie_nonempty > 5 and (importe_num > 3 or cantidad_num > 3):
+                raw = tmp.reset_index(drop=True)
+                break
+
+    if raw is None:
+        return _empty_detail_df()
 
     raw["Especie"] = raw["Especie"].apply(_norm)
     raw["Estado"] = raw["Estado"].apply(_norm)
 
     for col in ["Cantidad", "Precio", "Importe", "PctTotal", "Costo", "PctVar", "Resultado"]:
-        raw[col] = pd.to_numeric(raw[col], errors="coerce")
+        raw[col] = _coerce_numeric_series(raw[col])
 
     def _is_subtotal(row) -> bool:
         return pd.isna(row["Cantidad"]) and pd.isna(row["Precio"]) and row["Estado"] != ""
@@ -216,8 +341,10 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
 
         if especie == "" and pd.isna(row["Cantidad"]) and pd.isna(row["Importe"]):
             continue
+
         if especie.startswith("* "):
             continue
+
         if _is_subtotal(row):
             current_cat = row["Estado"]
             continue
@@ -228,11 +355,7 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
 
     out = pd.DataFrame(rows)
     if out.empty:
-        return pd.DataFrame(columns=[
-            "Especie", "Estado", "Cantidad", "Precio", "Importe",
-            "PctTotal", "Costo", "PctVar", "Resultado",
-            "Categoria", "Moneda", "Tipo"
-        ])
+        return _empty_detail_df()
 
     out["Moneda"] = out["Categoria"].apply(_detect_moneda)
     out["Tipo"] = out["Categoria"].apply(_detect_tipo)
@@ -240,62 +363,71 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
-def load_portfolio(file) -> Tuple[Dict[str, object], pd.DataFrame]:
-    """
-    Lee el archivo intentando:
-    1) Excel real (.xls/.xlsx/.xlsm)
-    2) HTML disfrazado de .xls
-    """
-    name = getattr(file, "name", "archivo").lower()
-    last_error = None
 
-    # -----------------------------
-    # 1) Intento como Excel real
-    # -----------------------------
+# =========================================================
+# LECTURA ARCHIVOS
+# =========================================================
+def _read_as_excel(file, name: str) -> pd.DataFrame:
     if name.endswith(".xls"):
         engines = ["xlrd", "calamine"]
     else:
         engines = ["openpyxl", "calamine"]
 
+    last_error = None
     for engine in engines:
         try:
             file.seek(0)
-            df_raw = pd.read_excel(file, header=None, engine=engine)
-            return _parse_header(df_raw), _parse_detail(df_raw)
+            return pd.read_excel(file, header=None, engine=engine)
         except Exception as e:
             last_error = e
 
-    # -----------------------------
-    # 2) Intento como HTML disfrazado
-    # -----------------------------
+    raise last_error
+
+
+def _read_as_html(file) -> pd.DataFrame:
+    file.seek(0)
+    content = file.read()
+
+    if isinstance(content, bytes):
+        text = content.decode("utf-8", errors="ignore")
+    else:
+        text = str(content)
+
+    if "<html" not in text.lower() and "<table" not in text.lower():
+        raise ValueError("El archivo no contiene estructura HTML reconocible.")
+
+    tables = pd.read_html(text)
+    if not tables:
+        raise ValueError("El HTML no contiene tablas.")
+
+    # Busca la tabla más grande, suele ser la correcta
+    tables = sorted(tables, key=lambda x: x.shape[0] * x.shape[1], reverse=True)
+    df_html = _clean_html_dataframe(tables[0])
+
+    # algunas exportaciones HTML pierden filas/columnas vacías; igual devolvemos la mayor
+    return df_html
+
+
+def load_portfolio(file) -> Tuple[Dict[str, object], pd.DataFrame]:
+    """
+    Intenta leer:
+    1) Excel real
+    2) HTML disfrazado de .xls
+    """
+    name = getattr(file, "name", "archivo").lower()
+    last_error = None
+
+    # 1) intento como Excel real
     try:
-        file.seek(0)
-        content = file.read()
+        df_raw = _read_as_excel(file, name)
+        return _parse_header(df_raw), _parse_detail(df_raw)
+    except Exception as e:
+        last_error = e
 
-        if isinstance(content, bytes):
-            text = content.decode("utf-8", errors="ignore")
-        else:
-            text = str(content)
-
-        # chequeo básico: si contiene html o tablas
-        if "<html" in text.lower() or "<table" in text.lower():
-            tables = pd.read_html(text)
-
-            if not tables:
-                raise ValueError("El archivo HTML no contiene tablas.")
-
-            # en muchos casos la primera tabla es la correcta
-            df_raw = tables[0].copy()
-
-            # convertir columnas numéricas si vienen como texto
-            for col in df_raw.columns:
-                try:
-                    df_raw[col] = df_raw[col].replace({r"\.": "", ",": "."}, regex=True)
-                except Exception:
-                    pass
-
-            return _parse_header(df_raw), _parse_detail(df_raw)
-
+    # 2) intento como HTML
+    try:
+        df_raw = _read_as_html(file)
+        return _parse_header(df_raw), _parse_detail(df_raw)
     except Exception as e:
         last_error = e
 
@@ -303,20 +435,10 @@ def load_portfolio(file) -> Tuple[Dict[str, object], pd.DataFrame]:
         f"Error procesando {getattr(file, 'name', 'archivo')}: {last_error}"
     )
 
+
 # =========================================================
-# CONSOLIDACIÓN MULTI-ARCHIVO
+# AGREGADOS / CONSOLIDACIÓN
 # =========================================================
-def _safe_num(d: Dict, key: str) -> float:
-    return pd.to_numeric(d.get(key), errors="coerce")
-
-
-def _weighted_avg(values: pd.Series, weights: pd.Series) -> float:
-    mask = (~values.isna()) & (~weights.isna()) & (weights != 0)
-    if not mask.any():
-        return np.nan
-    return np.average(values[mask], weights=weights[mask])
-
-
 def _agg_by_especie(detail: pd.DataFrame) -> pd.DataFrame:
     if detail.empty:
         return pd.DataFrame(columns=[
@@ -402,7 +524,7 @@ def consolidate_same_date(files: List) -> Dict[pd.Timestamp, Dict[str, object]]:
             "cc_usd_local": np.nansum([_safe_num(h, "cc_usd_local") for h in headers_raw]),
         }
 
-        detail_all = pd.concat(details_raw, ignore_index=True) if details_raw else pd.DataFrame()
+        detail_all = pd.concat(details_raw, ignore_index=True) if details_raw else _empty_detail_df()
         detail_cons = _agg_by_especie(detail_all)
 
         consolidated[fecha] = {
@@ -551,6 +673,7 @@ def render() -> None:
         <p style="color:{MUTED};font-size:0.95rem;margin-top:-0.3rem;margin-bottom:1.2rem;">
         Subí múltiples archivos de distintas comitentes. El sistema agrupa automáticamente por fecha,
         consolida las tenencias de la misma fecha y compara la fecha inicial vs. la final.
+        También soporta archivos .xls que en realidad son HTML exportado por el sistema.
         </p>
         """,
         unsafe_allow_html=True,
@@ -577,8 +700,8 @@ def render() -> None:
     except ValueError as e:
         st.error(str(e))
         st.caption(
-            "Para archivos .xls puede hacer falta tener instalado `xlrd`. "
-            "Como alternativa, también sirve `python-calamine`."
+            "Si algún archivo sigue fallando, probablemente venga con una estructura HTML distinta "
+            "a la habitual y haya que ajustar el parser."
         )
         return
     except Exception as e:
@@ -637,7 +760,6 @@ def render() -> None:
 
     h_ini = groups[fecha_ini]["header"]
     d_ini = groups[fecha_ini]["detail"]
-
     h_fin = groups[fecha_fin]["header"]
     d_fin = groups[fecha_fin]["detail"]
 
