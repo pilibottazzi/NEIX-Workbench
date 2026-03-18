@@ -18,6 +18,38 @@ MUTED = "#6b7280"
 BORDER = "rgba(17,24,39,0.08)"
 SUCCESS = "#16a34a"
 DANGER = "#dc2626"
+WARNING = "#d97706"
+INFO = "#2563eb"
+BG_SOFT = "#f9fafb"
+
+
+# =========================================================
+# CONFIG NEGOCIO
+# =========================================================
+NON_RENTABLE_KEYS = {
+    "PESOS",
+    "DOLAR LOCAL",
+    "DÓLAR LOCAL",
+    "USD LOCAL",
+    "DOLAR EXTERIOR",
+    "DÓLAR EXTERIOR",
+    "USD EXTERIOR",
+    "CUENTA CORRIENTE",
+    "CTA. CORRIENTE",
+    "CTA CORRIENTE",
+}
+
+PORTFOLIO_REQUIRED_FINAL = [
+    "Especie", "Categoria", "Tipo", "Moneda",
+    "Cantidad", "Precio", "Importe", "Costo", "Resultado",
+    "activo_match", "Cartera Neix", "Archivo", "Fecha"
+]
+
+RENTAL_BASE_COLUMNS = [
+    "id", "F.Inicio", "F.Vto", "Cliente", "Neix", "Cartera Neix", "VN",
+    "Activo", "Especie", "Dias", "Precio", "Tasa Cliente", "Pagar Cliente",
+    "Tasa Manager", "Pagar Manager", "Moneda", "Obs", "Estado"
+]
 
 
 # =========================================================
@@ -28,17 +60,17 @@ def _inject_css() -> None:
         f"""
         <style>
           .block-container {{
-            max-width: 1280px;
+            max-width: 1400px;
             padding-top: 1.2rem;
             padding-bottom: 2rem;
           }}
 
           .cp-kpi {{
-            background: #f9fafb;
+            background: {BG_SOFT};
             border: 1px solid {BORDER};
             border-radius: 14px;
             padding: 1rem 1.1rem;
-            min-height: 112px;
+            min-height: 118px;
           }}
 
           .cp-kpi-label {{
@@ -50,15 +82,16 @@ def _inject_css() -> None:
 
           .cp-kpi-value {{
             color: {PRIMARY};
-            font-size: 1.45rem;
+            font-size: 1.35rem;
             font-weight: 700;
             line-height: 1.1;
           }}
 
           .cp-kpi-delta {{
-            margin-top: 0.3rem;
-            font-size: 0.83rem;
+            margin-top: 0.35rem;
+            font-size: 0.82rem;
             font-weight: 600;
+            line-height: 1.3;
           }}
 
           .cp-section {{
@@ -67,17 +100,27 @@ def _inject_css() -> None:
             color: {MUTED};
             letter-spacing: 0.06em;
             text-transform: uppercase;
-            margin: 1.4rem 0 0.6rem;
+            margin: 1.45rem 0 0.65rem;
           }}
 
           div[data-testid="stDataFrame"] {{
             border-radius: 12px;
             overflow: hidden;
+            border: 1px solid {BORDER};
           }}
 
-          .stDownloadButton button {{
+          .stDownloadButton button, .stButton button {{
             border-radius: 10px;
             font-weight: 600;
+          }}
+
+          .cp-note {{
+            background: #fff;
+            border: 1px solid {BORDER};
+            border-radius: 12px;
+            padding: 0.9rem 1rem;
+            color: {MUTED};
+            font-size: 0.92rem;
           }}
         </style>
         """,
@@ -86,12 +129,18 @@ def _inject_css() -> None:
 
 
 # =========================================================
-# HELPERS
+# HELPERS GENERALES
 # =========================================================
 def _fmt_money(v: float, decimals: int = 2) -> str:
     if pd.isna(v):
         return "—"
     return f"$ {v:,.{decimals}f}"
+
+
+def _fmt_num(v: float, decimals: int = 0) -> str:
+    if pd.isna(v):
+        return "—"
+    return f"{v:,.{decimals}f}"
 
 
 def _fmt_pct(v: float) -> str:
@@ -115,6 +164,50 @@ def _norm(x) -> str:
     except Exception:
         pass
     return str(x).replace("\xa0", " ").strip()
+
+
+def _norm_upper(x) -> str:
+    return _norm(x).upper().strip()
+
+
+def _strip_extra_spaces(s: str) -> str:
+    return re.sub(r"\s+", " ", _norm(s)).strip()
+
+
+def _normalize_text_key(x) -> str:
+    s = _norm_upper(x)
+    s = re.sub(r"\s+", " ", s)
+    s = s.replace("_", " ")
+    s = s.replace("-", " ")
+    s = re.sub(r"[^\w\s./]", "", s)
+    return s.strip()
+
+
+def _normalize_col_name(c: str) -> str:
+    s = _normalize_text_key(c)
+    mapping = {
+        "F INICIO": "F.Inicio",
+        "F.INICIO": "F.Inicio",
+        "F VTO": "F.Vto",
+        "F.VTO": "F.Vto",
+        "CARTERA NEIX": "Cartera Neix",
+        "ACTIVO": "Activo",
+        "ESPECIE": "Especie",
+        "VN": "VN",
+        "MONEDA": "Moneda",
+        "ESTADO": "Estado",
+        "ID": "id",
+        "CLIENTE": "Cliente",
+        "NEIX": "Neix",
+        "DIAS": "Dias",
+        "PRECIO": "Precio",
+        "TASA CLIENTE": "Tasa Cliente",
+        "PAGAR CLIENTE": "Pagar Cliente",
+        "TASA MANAGER": "Tasa Manager",
+        "PAGAR MANAGER": "Pagar Manager",
+        "OBS": "Obs",
+    }
+    return mapping.get(s, _strip_extra_spaces(c))
 
 
 def _to_ts(value) -> Optional[pd.Timestamp]:
@@ -173,11 +266,6 @@ def _coerce_numeric_scalar(x):
     s = s.replace("(", "-").replace(")", "")
     s = s.replace(" ", "")
 
-    # Casos:
-    # 1.234,56  -> 1234.56
-    # 1,234.56  -> 1234.56
-    # 1234,56   -> 1234.56
-    # 1234.56   -> 1234.56
     if "," in s and "." in s:
         if s.rfind(",") > s.rfind("."):
             s = s.replace(".", "").replace(",", ".")
@@ -187,7 +275,6 @@ def _coerce_numeric_scalar(x):
         s = s.replace(".", "")
         s = s.replace(",", ".")
     else:
-        # solo puntos: puede ser decimal o miles
         if s.count(".") > 1:
             s = s.replace(".", "")
 
@@ -208,6 +295,50 @@ def _looks_like_html(text: str) -> bool:
         or "<pre" in low
         or "<body" in low
     )
+
+
+def _first_token(text: str) -> str:
+    s = _normalize_text_key(text)
+    if not s:
+        return ""
+    parts = re.split(r"\s+", s)
+    token = parts[0].strip()
+    token = re.sub(r"[^\w./-]", "", token)
+    return token
+
+
+def _normalize_activo_match_from_portfolio(especie: str) -> str:
+    token = _first_token(especie)
+    return token.upper()
+
+
+def _normalize_activo_match_from_rental(activo: str) -> str:
+    token = _normalize_text_key(activo)
+    token = re.sub(r"\s+", " ", token).strip()
+    return token.upper()
+
+
+def _normalize_cartera_neix(x: str) -> str:
+    return _normalize_text_key(x)
+
+
+def _is_non_rentable_position(row: pd.Series) -> bool:
+    especie = _normalize_text_key(row.get("Especie", ""))
+    activo = _normalize_text_key(row.get("activo_match", ""))
+    tipo = _normalize_text_key(row.get("Tipo", ""))
+    moneda = _normalize_text_key(row.get("Moneda", ""))
+    categoria = _normalize_text_key(row.get("Categoria", ""))
+
+    all_text = " | ".join([especie, activo, tipo, moneda, categoria])
+
+    if tipo in {"CTA. CORRIENTE", "CUENTA CORRIENTE"}:
+        return True
+
+    for key in NON_RENTABLE_KEYS:
+        if key in all_text:
+            return True
+
+    return False
 
 
 # =========================================================
@@ -245,7 +376,6 @@ def _detect_tipo(categoria: str) -> str:
 def _read_as_excel(file, name: str) -> pd.DataFrame:
     lower_name = name.lower()
 
-    # Priorizamos por extensión, pero con fallback amplio
     if lower_name.endswith(".xlsx") or lower_name.endswith(".xlsm"):
         engines = ["openpyxl", "calamine", "xlrd"]
     elif lower_name.endswith(".xls"):
@@ -264,6 +394,28 @@ def _read_as_excel(file, name: str) -> pd.DataFrame:
             last_error = e
 
     raise last_error if last_error else ValueError("No se pudo leer como Excel.")
+
+
+def _read_excel_best_effort(file) -> pd.DataFrame:
+    name = getattr(file, "name", "archivo")
+    lower_name = name.lower()
+
+    if lower_name.endswith(".xlsx") or lower_name.endswith(".xlsm"):
+        engines = ["openpyxl", "calamine", "xlrd"]
+    elif lower_name.endswith(".xls"):
+        engines = ["xlrd", "calamine", "openpyxl"]
+    else:
+        engines = ["openpyxl", "xlrd", "calamine"]
+
+    last_error = None
+    for engine in engines:
+        try:
+            file.seek(0)
+            return pd.read_excel(file, engine=engine)
+        except Exception as e:
+            last_error = e
+
+    raise last_error if last_error else ValueError(f"No se pudo leer {name}.")
 
 
 def _clean_html_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -302,20 +454,17 @@ def _html_to_text_lines(text: str) -> List[str]:
 def _text_lines_to_dataframe(lines: List[str]) -> pd.DataFrame:
     rows = []
 
-    # 1) separar por 2+ espacios
     for line in lines:
         parts = re.split(r"\s{2,}", line.strip())
         if len(parts) > 1:
             rows.append(parts)
 
-    # 2) si eso no funciona, intentamos por tab
     if not rows:
         for line in lines:
             parts = [p.strip() for p in line.split("\t") if p.strip() != ""]
             if len(parts) > 1:
                 rows.append(parts)
 
-    # 3) si sigue sin funcionar, una columna sola
     if not rows:
         rows = [[line] for line in lines]
 
@@ -336,7 +485,6 @@ def _read_as_html(file) -> pd.DataFrame:
     if not _looks_like_html(text):
         raise ValueError("El archivo no contiene estructura HTML reconocible.")
 
-    # intento 1: tablas html
     try:
         tables = pd.read_html(text)
         if tables:
@@ -345,7 +493,6 @@ def _read_as_html(file) -> pd.DataFrame:
     except Exception:
         pass
 
-    # intento 2: html raro / pre / texto dentro del html
     lines = _html_to_text_lines(text)
     if not lines:
         raise ValueError("No tables found")
@@ -354,15 +501,9 @@ def _read_as_html(file) -> pd.DataFrame:
 
 
 def load_portfolio(file) -> Tuple[Dict[str, object], pd.DataFrame]:
-    """
-    Intenta leer:
-    1) Excel real
-    2) HTML disfrazado
-    """
     name = getattr(file, "name", "archivo")
     last_error = None
 
-    # 1) Excel real
     try:
         df_raw = _read_as_excel(file, name)
         header = _parse_header(df_raw)
@@ -372,7 +513,6 @@ def load_portfolio(file) -> Tuple[Dict[str, object], pd.DataFrame]:
     except Exception as e:
         last_error = e
 
-    # 2) HTML / texto
     try:
         file.seek(0)
         raw = file.read()
@@ -406,7 +546,6 @@ def _parse_header(df: pd.DataFrame) -> Dict[str, object]:
         "cc_usd_local": np.nan,
     }
 
-    # intento directo original
     try:
         if df.shape[0] > 3 and df.shape[1] > 0:
             out["usuario"] = _norm(df.iloc[3, 0])
@@ -434,19 +573,16 @@ def _parse_header(df: pd.DataFrame) -> Dict[str, object]:
     max_rows = min(len(df), 80)
     max_cols = min(df.shape[1], 20)
 
-    # búsqueda flexible
     for i in range(max_rows):
         for j in range(max_cols):
             val = _norm(df.iloc[i, j])
             val_low = val.lower()
 
-            # fecha
             if out["fecha"] is None:
                 ts = _to_ts(val)
                 if ts is not None:
                     out["fecha"] = ts
 
-            # usuario
             if out["usuario"] == "" and any(x in val_low for x in ["usuario", "cliente", "titular"]):
                 for k in range(j + 1, min(j + 4, df.shape[1])):
                     candidate = _norm(df.iloc[i, k])
@@ -454,7 +590,6 @@ def _parse_header(df: pd.DataFrame) -> Dict[str, object]:
                         out["usuario"] = candidate
                         break
 
-            # comitente
             if out["comitente"] == "" and "comitente" in val_low:
                 for k in range(j + 1, min(j + 4, df.shape[1])):
                     candidate = _norm(df.iloc[i, k])
@@ -462,12 +597,10 @@ def _parse_header(df: pd.DataFrame) -> Dict[str, object]:
                         out["comitente"] = candidate
                         break
 
-            # métricas
             for alias, target in label_aliases.items():
                 if alias in val_low:
                     found = False
 
-                    # buscar a derecha
                     for k in range(j + 1, min(j + 8, df.shape[1])):
                         num = _coerce_numeric_scalar(df.iloc[i, k])
                         if pd.notna(num):
@@ -475,7 +608,6 @@ def _parse_header(df: pd.DataFrame) -> Dict[str, object]:
                             found = True
                             break
 
-                    # buscar abajo si no encontró
                     if not found:
                         for r in range(i + 1, min(i + 4, len(df))):
                             num = _coerce_numeric_scalar(df.iloc[r, j])
@@ -523,7 +655,6 @@ def _find_detail_block(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         "PctTotal", "Costo", "PctVar", "Resultado"
     ]
 
-    # 1) intento estructura original
     try:
         tmp = df.iloc[16:, 1:10].copy()
         if tmp.shape[1] == 9:
@@ -532,7 +663,6 @@ def _find_detail_block(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     except Exception:
         pass
 
-    # 2) buscar mejor bloque de 9 columnas
     best_score = -1
     best_df = None
 
@@ -583,12 +713,10 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
         if especie.startswith("* "):
             continue
 
-        # muchas exportaciones ponen la categoría en Estado
         if _is_subtotal(row):
             current_cat = row["Estado"]
             continue
 
-        # si no hay especie pero sí texto en estado, también puede ser categoría
         if especie == "" and row["Estado"] != "":
             current_cat = row["Estado"]
             continue
@@ -605,7 +733,6 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
     out["Moneda"] = out["Categoria"].apply(_detect_moneda)
     out["Tipo"] = out["Categoria"].apply(_detect_tipo)
 
-    # mantenemos incluso sin categoría si trae datos válidos
     numeric_ok = out[["Cantidad", "Precio", "Importe", "Resultado"]].notna().any(axis=1)
     out = out[numeric_ok].copy()
 
@@ -613,7 +740,7 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================================================
-# CONSOLIDACIÓN
+# CONSOLIDACIÓN CARTERA
 # =========================================================
 def _agg_by_especie(detail: pd.DataFrame) -> pd.DataFrame:
     if detail.empty:
@@ -663,6 +790,17 @@ def consolidate_same_date(files: List) -> Dict[pd.Timestamp, Dict[str, object]]:
                 f"No se pudo identificar la fecha en {getattr(file, 'name', 'archivo')}"
             )
 
+        comitente = _norm(header.get("comitente"))
+        usuario = _norm(header.get("usuario"))
+        file_name = getattr(file, "name", "archivo")
+
+        detail_ext = detail.copy()
+        detail_ext["Cartera Neix"] = comitente
+        detail_ext["Usuario"] = usuario
+        detail_ext["Archivo"] = file_name
+        detail_ext["Fecha"] = fecha
+        detail_ext["activo_match"] = detail_ext["Especie"].apply(_normalize_activo_match_from_portfolio)
+
         if fecha not in grouped:
             grouped[fecha] = {
                 "fecha": fecha,
@@ -674,10 +812,10 @@ def consolidate_same_date(files: List) -> Dict[pd.Timestamp, Dict[str, object]]:
             }
 
         grouped[fecha]["headers_raw"].append(header)
-        grouped[fecha]["details_raw"].append(detail.copy())
-        grouped[fecha]["file_names"].append(getattr(file, "name", "archivo"))
-        grouped[fecha]["comitentes"].append(_norm(header.get("comitente")))
-        grouped[fecha]["usuarios"].append(_norm(header.get("usuario")))
+        grouped[fecha]["details_raw"].append(detail_ext.copy())
+        grouped[fecha]["file_names"].append(file_name)
+        grouped[fecha]["comitentes"].append(comitente)
+        grouped[fecha]["usuarios"].append(usuario)
 
     consolidated: Dict[pd.Timestamp, Dict[str, object]] = {}
 
@@ -700,7 +838,7 @@ def consolidate_same_date(files: List) -> Dict[pd.Timestamp, Dict[str, object]]:
             "cc_usd_local": np.nansum([_safe_num(h, "cc_usd_local") for h in headers_raw]),
         }
 
-        detail_all = pd.concat(details_raw, ignore_index=True) if details_raw else _empty_detail_df()
+        detail_all = pd.concat(details_raw, ignore_index=True) if details_raw else pd.DataFrame(columns=PORTFOLIO_REQUIRED_FINAL)
         detail_cons = _agg_by_especie(detail_all)
 
         consolidated[fecha] = {
@@ -715,19 +853,150 @@ def consolidate_same_date(files: List) -> Dict[pd.Timestamp, Dict[str, object]]:
 
 
 # =========================================================
-# COMPARACIONES
+# ALQUILERES
 # =========================================================
-def compare_headers(h_ini: Dict, h_fin: Dict) -> pd.DataFrame:
+def _ensure_required_rental_cols(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out.columns = [_normalize_col_name(c) for c in out.columns]
+
+    for col in RENTAL_BASE_COLUMNS:
+        if col not in out.columns:
+            out[col] = np.nan
+
+    return out[RENTAL_BASE_COLUMNS].copy()
+
+
+def load_rentals(file, source_name: str) -> pd.DataFrame:
+    df = _read_excel_best_effort(file)
+    df = _ensure_required_rental_cols(df)
+
+    for c in df.columns:
+        if c not in {"VN", "Precio", "Tasa Cliente", "Pagar Cliente", "Tasa Manager", "Pagar Manager"}:
+            df[c] = df[c].apply(_norm)
+
+    df["VN"] = _coerce_numeric_series(df["VN"])
+    df["Precio"] = _coerce_numeric_series(df["Precio"])
+    df["F.Inicio"] = df["F.Inicio"].apply(_to_ts)
+    df["F.Vto"] = df["F.Vto"].apply(_to_ts)
+
+    df["Cartera Neix"] = df["Cartera Neix"].apply(_normalize_cartera_neix)
+    df["Activo"] = df["Activo"].apply(_normalize_text_key)
+    df["Especie"] = df["Especie"].apply(_strip_extra_spaces)
+    df["Moneda"] = df["Moneda"].apply(_strip_extra_spaces)
+    df["Estado"] = df["Estado"].apply(_strip_extra_spaces)
+
+    df["activo_match"] = df["Activo"].apply(_normalize_activo_match_from_rental)
+    df["source_file"] = getattr(file, "name", source_name)
+    df["source_type"] = source_name
+
+    df["id_norm"] = df["id"].apply(lambda x: _normalize_text_key(x))
+    df["dedup_key"] = np.where(
+        df["id_norm"] != "",
+        df["id_norm"],
+        (
+            df["Cartera Neix"].fillna("").astype(str) + "||" +
+            df["activo_match"].fillna("").astype(str) + "||" +
+            df["VN"].fillna(0).astype(str) + "||" +
+            df["F.Inicio"].astype(str) + "||" +
+            df["F.Vto"].astype(str)
+        )
+    )
+
+    return df
+
+
+def filter_active_rentals(df_active: pd.DataFrame, fecha_final: pd.Timestamp) -> pd.DataFrame:
+    if df_active.empty:
+        return df_active.copy()
+    return df_active[df_active["F.Inicio"].notna() & (df_active["F.Inicio"] <= fecha_final)].copy()
+
+
+def filter_historical_live_rentals(df_hist: pd.DataFrame, fecha_final: pd.Timestamp) -> pd.DataFrame:
+    if df_hist.empty:
+        return df_hist.copy()
+    return df_hist[
+        df_hist["F.Inicio"].notna()
+        & (df_hist["F.Inicio"] <= fecha_final)
+        & df_hist["F.Vto"].notna()
+        & (df_hist["F.Vto"] > fecha_final)
+    ].copy()
+
+
+def consolidate_live_rentals(
+    df_active_live: pd.DataFrame,
+    df_hist_live: pd.DataFrame,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    a = df_active_live.copy()
+    h = df_hist_live.copy()
+
+    if a.empty and h.empty:
+        return (
+            pd.DataFrame(columns=RENTAL_BASE_COLUMNS + ["activo_match", "source_type", "dedup_key"]),
+            pd.DataFrame(columns=["dedup_key", "source_types", "count"])
+        )
+
+    both = pd.concat([a, h], ignore_index=True)
+
+    dup_counts = (
+        both.groupby("dedup_key", dropna=False)
+        .agg(
+            count=("dedup_key", "size"),
+            source_types=("source_type", lambda s: " | ".join(sorted(set(s.astype(str)))))
+        )
+        .reset_index()
+    )
+    possible_double = dup_counts[dup_counts["count"] > 1].copy()
+
+    both = both.sort_values(by=["source_type"], ascending=True).copy()
+    both = both.drop_duplicates(subset=["dedup_key"], keep="first").reset_index(drop=True)
+
+    return both, possible_double
+
+
+def summarize_rentals_for_match(df_rentals_live: pd.DataFrame) -> pd.DataFrame:
+    if df_rentals_live.empty:
+        return pd.DataFrame(columns=[
+            "activo_match", "Cartera Neix",
+            "nominal_alquilado_activo", "nominal_alquilado_historico_vigente",
+            "nominal_alquilado_total", "cantidad_registros_alquiler"
+        ])
+
+    tmp = df_rentals_live.copy()
+    tmp["nominal_alquilado_activo"] = np.where(tmp["source_type"] == "activos", tmp["VN"], 0.0)
+    tmp["nominal_alquilado_historico_vigente"] = np.where(tmp["source_type"] == "historicos", tmp["VN"], 0.0)
+
+    out = (
+        tmp.groupby(["activo_match", "Cartera Neix"], as_index=False)
+        .agg(
+            nominal_alquilado_activo=("nominal_alquilado_activo", "sum"),
+            nominal_alquilado_historico_vigente=("nominal_alquilado_historico_vigente", "sum"),
+            nominal_alquilado_total=("VN", "sum"),
+            cantidad_registros_alquiler=("VN", "size"),
+        )
+    )
+
+    return out
+
+
+# =========================================================
+# COMPARACIONES BASE
+# =========================================================
+def compare_headers(h_ini: Dict, h_fin: Dict, total_final_ajustado: float) -> pd.DataFrame:
     rows = [
-        ("Total Posición", h_ini.get("total_posicion"), h_fin.get("total_posicion")),
-        ("Portafolio Disponible", h_ini.get("portafolio_disponible"), h_fin.get("portafolio_disponible")),
-        ("Cuenta Corriente ARS", h_ini.get("cc_ars"), h_fin.get("cc_ars")),
-        ("CC USD Exterior", h_ini.get("cc_usd_ext"), h_fin.get("cc_usd_ext")),
-        ("CC USD Local", h_ini.get("cc_usd_local"), h_fin.get("cc_usd_local")),
+        ("Total Posición", h_ini.get("total_posicion"), h_fin.get("total_posicion"), total_final_ajustado),
+        ("Portafolio Disponible", h_ini.get("portafolio_disponible"), h_fin.get("portafolio_disponible"), np.nan),
+        ("Cuenta Corriente ARS", h_ini.get("cc_ars"), h_fin.get("cc_ars"), np.nan),
+        ("CC USD Exterior", h_ini.get("cc_usd_ext"), h_fin.get("cc_usd_ext"), np.nan),
+        ("CC USD Local", h_ini.get("cc_usd_local"), h_fin.get("cc_usd_local"), np.nan),
     ]
-    df = pd.DataFrame(rows, columns=["Indicador", "Inicio", "Fin"])
-    df["Variación $"] = df["Fin"] - df["Inicio"]
-    df["Variación %"] = df.apply(lambda r: _pct_change(r["Fin"], r["Inicio"]), axis=1)
+    df = pd.DataFrame(rows, columns=["Indicador", "Inicio", "Fin Bruto", "Fin Ajustado"])
+    df["Variación Bruta $"] = df["Fin Bruto"] - df["Inicio"]
+    df["Variación Bruta %"] = df.apply(lambda r: _pct_change(r["Fin Bruto"], r["Inicio"]), axis=1)
+    df["Variación Ajustada $"] = df["Fin Ajustado"] - df["Inicio"]
+    df["Variación Ajustada %"] = df.apply(
+        lambda r: _pct_change(r["Fin Ajustado"], r["Inicio"]) if pd.notna(r["Fin Ajustado"]) else np.nan,
+        axis=1
+    )
     return df
 
 
@@ -756,6 +1025,7 @@ def compare_species(d_ini: pd.DataFrame, d_fin: pd.DataFrame) -> pd.DataFrame:
     comp["Var_Importe"] = comp["Imp_Fin"] - comp["Imp_Ini"]
     comp["Var_Pct"] = comp.apply(lambda r: _pct_change(r["Imp_Fin"], r["Imp_Ini"]), axis=1)
     comp["Var_Resultado"] = comp["Res_Fin"] - comp["Res_Ini"]
+    comp["activo_match"] = comp["Especie"].apply(_normalize_activo_match_from_portfolio)
 
     comp["Movimiento"] = np.select(
         [
@@ -779,6 +1049,255 @@ def compare_species(d_ini: pd.DataFrame, d_fin: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================================================
+# AJUSTE POR ALQUILERES
+# =========================================================
+def _build_final_portfolio_for_match(detail_raw_final: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    if detail_raw_final.empty:
+        empty = pd.DataFrame(columns=[
+            "Especie", "activo_match", "Tipo", "Moneda", "Cartera Neix",
+            "nominal_final_bruto", "precio_final", "importe_final_bruto", "es_no_alquilable"
+        ])
+        return empty, empty
+
+    df = detail_raw_final.copy()
+
+    df["Cartera Neix"] = df["Cartera Neix"].apply(_normalize_cartera_neix)
+    df["activo_match"] = df["Especie"].apply(_normalize_activo_match_from_portfolio)
+    df["es_no_alquilable"] = df.apply(_is_non_rentable_position, axis=1)
+
+    grouped = (
+        df.groupby(
+            ["Especie", "activo_match", "Tipo", "Moneda", "Cartera Neix", "es_no_alquilable"],
+            as_index=False
+        )
+        .agg(
+            nominal_final_bruto=("Cantidad", "sum"),
+            importe_final_bruto=("Importe", "sum"),
+        )
+    )
+
+    precio_df = (
+        df.groupby(["Especie", "activo_match", "Tipo", "Moneda", "Cartera Neix", "es_no_alquilable"])
+        .apply(lambda g: _weighted_avg(g["Precio"], g["Cantidad"]), include_groups=False)
+        .reset_index(name="precio_final")
+    )
+
+    grouped = grouped.merge(
+        precio_df,
+        on=["Especie", "activo_match", "Tipo", "Moneda", "Cartera Neix", "es_no_alquilable"],
+        how="left",
+    )
+
+    comparable = grouped[~grouped["es_no_alquilable"]].copy()
+    return grouped, comparable
+
+
+def build_adjustment_tables(
+    detail_raw_final: pd.DataFrame,
+    rentals_summary: pd.DataFrame,
+    rentals_live: pd.DataFrame,
+    possible_double: pd.DataFrame,
+) -> Dict[str, pd.DataFrame]:
+    portfolio_all, portfolio_matchable = _build_final_portfolio_for_match(detail_raw_final)
+
+    match_df = portfolio_matchable.merge(
+        rentals_summary,
+        on=["activo_match", "Cartera Neix"],
+        how="left",
+    )
+
+    for col in [
+        "nominal_alquilado_activo",
+        "nominal_alquilado_historico_vigente",
+        "nominal_alquilado_total",
+        "cantidad_registros_alquiler",
+    ]:
+        if col in match_df.columns:
+            match_df[col] = match_df[col].fillna(0.0)
+
+    match_df["nominal_final_real"] = (match_df["nominal_final_bruto"] - match_df["nominal_alquilado_total"]).clip(lower=0)
+    match_df["nominal_sobre_stock"] = match_df["nominal_alquilado_total"] - match_df["nominal_final_bruto"]
+    match_df["importe_final_real"] = match_df["nominal_final_real"] * match_df["precio_final"]
+
+    match_df["match_status"] = np.select(
+        [
+            match_df["nominal_alquilado_total"] > 0,
+            match_df["nominal_alquilado_total"] == 0,
+        ],
+        [
+            "match_ok",
+            "cartera_sin_match",
+        ],
+        default="cartera_sin_match",
+    )
+
+    rentals_no_match = rentals_summary.merge(
+        portfolio_matchable[["activo_match", "Cartera Neix"]].drop_duplicates(),
+        on=["activo_match", "Cartera Neix"],
+        how="left",
+        indicator=True,
+    )
+    rentals_no_match = rentals_no_match[rentals_no_match["_merge"] == "left_only"].drop(columns=["_merge"]).copy()
+
+    cartera_sin_match = match_df[match_df["match_status"] == "cartera_sin_match"].copy()
+    match_ok = match_df[match_df["match_status"] == "match_ok"].copy()
+
+    alerts_rows = []
+
+    over_stock = match_df[match_df["nominal_alquilado_total"] > match_df["nominal_final_bruto"]].copy()
+    for _, r in over_stock.iterrows():
+        alerts_rows.append({
+            "tipo_alerta": "alquiler_supera_stock",
+            "activo_match": r["activo_match"],
+            "Especie": r["Especie"],
+            "Cartera Neix": r["Cartera Neix"],
+            "detalle": f"Alquiler {r['nominal_alquilado_total']:,.0f} > stock final {r['nominal_final_bruto']:,.0f}",
+        })
+
+    if not possible_double.empty:
+        for _, r in possible_double.iterrows():
+            alerts_rows.append({
+                "tipo_alerta": "posible_doble_conteo",
+                "activo_match": "",
+                "Especie": "",
+                "Cartera Neix": "",
+                "detalle": f"dedup_key={r['dedup_key']} | count={r['count']} | source={r['source_types']}",
+            })
+
+    bad_active = rentals_live[rentals_live["activo_match"].eq("")].copy()
+    if not bad_active.empty:
+        for _, r in bad_active.iterrows():
+            alerts_rows.append({
+                "tipo_alerta": "activo_no_normalizable",
+                "activo_match": "",
+                "Especie": _norm(r.get("Especie")),
+                "Cartera Neix": _norm(r.get("Cartera Neix")),
+                "detalle": f"No se pudo normalizar Activo: {_norm(r.get('Activo'))}",
+            })
+
+    alerts = pd.DataFrame(alerts_rows)
+    if alerts.empty:
+        alerts = pd.DataFrame(columns=["tipo_alerta", "activo_match", "Especie", "Cartera Neix", "detalle"])
+
+    ajuste = match_df.copy()
+    ajuste = ajuste[[
+        "Especie", "activo_match", "Cartera Neix",
+        "nominal_final_bruto",
+        "nominal_alquilado_activo",
+        "nominal_alquilado_historico_vigente",
+        "nominal_alquilado_total",
+        "nominal_final_real",
+        "precio_final",
+        "importe_final_bruto",
+        "importe_final_real",
+        "Tipo", "Moneda"
+    ]].sort_values(["Cartera Neix", "activo_match", "Especie"]).reset_index(drop=True)
+
+    return {
+        "portfolio_all": portfolio_all,
+        "portfolio_matchable": portfolio_matchable,
+        "ajuste": ajuste,
+        "match_ok": match_ok.reset_index(drop=True),
+        "cartera_sin_match": cartera_sin_match.reset_index(drop=True),
+        "alquileres_sin_match": rentals_no_match.reset_index(drop=True),
+        "alertas": alerts.reset_index(drop=True),
+    }
+
+
+def build_nominal_detail(df_species: pd.DataFrame, ajuste_df: pd.DataFrame) -> pd.DataFrame:
+    if df_species.empty:
+        return pd.DataFrame(columns=[
+            "Especie", "activo_match", "Tipo", "Moneda",
+            "nominal_inicial", "nominal_final_bruto", "nominal_alquilado",
+            "nominal_final_real", "variacion_nominal", "movimiento"
+        ])
+
+    alquiler_by_activo = (
+        ajuste_df.groupby(["activo_match"], as_index=False)
+        .agg(
+            nominal_alquilado=("nominal_alquilado_total", "sum"),
+            nominal_final_real=("nominal_final_real", "sum"),
+            nominal_final_bruto=("nominal_final_bruto", "sum"),
+        )
+        if not ajuste_df.empty else
+        pd.DataFrame(columns=["activo_match", "nominal_alquilado", "nominal_final_real", "nominal_final_bruto"])
+    )
+
+    out = df_species.copy()
+    out["activo_match"] = out["Especie"].apply(_normalize_activo_match_from_portfolio)
+    out = out.merge(alquiler_by_activo, on="activo_match", how="left")
+
+    out["nominal_alquilado"] = out["nominal_alquilado"].fillna(0.0)
+    out["nominal_final_real"] = np.where(
+        out["nominal_final_real"].notna(),
+        out["nominal_final_real"],
+        out["Cant_Fin"].fillna(0.0),
+    )
+    out["nominal_final_bruto"] = np.where(
+        out["nominal_final_bruto"].notna(),
+        out["nominal_final_bruto"],
+        out["Cant_Fin"].fillna(0.0),
+    )
+
+    out["nominal_inicial"] = out["Cant_Ini"].fillna(0.0)
+    out["variacion_nominal"] = out["nominal_final_real"] - out["nominal_inicial"]
+
+    out = out[[
+        "Especie", "activo_match", "Tipo", "Moneda",
+        "nominal_inicial", "nominal_final_bruto", "nominal_alquilado",
+        "nominal_final_real", "variacion_nominal", "Movimiento"
+    ]].rename(columns={"Movimiento": "movimiento"})
+
+    return out.sort_values("variacion_nominal", ascending=False).reset_index(drop=True)
+
+
+def build_valued_detail(df_species: pd.DataFrame, ajuste_df: pd.DataFrame) -> pd.DataFrame:
+    if df_species.empty:
+        return pd.DataFrame(columns=[
+            "Especie", "activo_match", "Tipo", "Moneda",
+            "importe_inicial", "importe_final_bruto", "importe_final_real",
+            "variacion_bruta", "variacion_real", "movimiento"
+        ])
+
+    ajuste_by_activo = (
+        ajuste_df.groupby(["activo_match"], as_index=False)
+        .agg(
+            importe_final_bruto=("importe_final_bruto", "sum"),
+            importe_final_real=("importe_final_real", "sum"),
+        )
+        if not ajuste_df.empty else
+        pd.DataFrame(columns=["activo_match", "importe_final_bruto", "importe_final_real"])
+    )
+
+    out = df_species.copy()
+    out["activo_match"] = out["Especie"].apply(_normalize_activo_match_from_portfolio)
+    out = out.merge(ajuste_by_activo, on="activo_match", how="left")
+
+    out["importe_final_bruto"] = np.where(
+        out["importe_final_bruto"].notna(),
+        out["importe_final_bruto"],
+        out["Imp_Fin"].fillna(0.0),
+    )
+    out["importe_final_real"] = np.where(
+        out["importe_final_real"].notna(),
+        out["importe_final_real"],
+        out["Imp_Fin"].fillna(0.0),
+    )
+
+    out["importe_inicial"] = out["Imp_Ini"].fillna(0.0)
+    out["variacion_bruta"] = out["importe_final_bruto"] - out["importe_inicial"]
+    out["variacion_real"] = out["importe_final_real"] - out["importe_inicial"]
+
+    out = out[[
+        "Especie", "activo_match", "Tipo", "Moneda",
+        "importe_inicial", "importe_final_bruto", "importe_final_real",
+        "variacion_bruta", "variacion_real", "Movimiento"
+    ]].rename(columns={"Movimiento": "movimiento"})
+
+    return out.sort_values("variacion_real", ascending=False).reset_index(drop=True)
+
+
+# =========================================================
 # EXPORT
 # =========================================================
 def build_export(
@@ -786,8 +1305,13 @@ def build_export(
     h_fin: Dict,
     d_ini: pd.DataFrame,
     d_fin: pd.DataFrame,
-    df_header: pd.DataFrame,
-    df_species: pd.DataFrame,
+    df_general: pd.DataFrame,
+    df_val: pd.DataFrame,
+    df_nom: pd.DataFrame,
+    df_ajuste: pd.DataFrame,
+    audit_tables: Dict[str, pd.DataFrame],
+    rentals_live: pd.DataFrame,
+    rentals_summary: pd.DataFrame,
     all_groups: Dict[pd.Timestamp, Dict[str, object]],
 ) -> bytes:
     bio = BytesIO()
@@ -797,8 +1321,19 @@ def build_export(
         pd.DataFrame([h_fin]).to_excel(writer, sheet_name="Header_Fin", index=False)
         d_ini.to_excel(writer, sheet_name="Detalle_Inicio", index=False)
         d_fin.to_excel(writer, sheet_name="Detalle_Fin", index=False)
-        df_header.to_excel(writer, sheet_name="Resumen", index=False)
-        df_species.to_excel(writer, sheet_name="Especies", index=False)
+
+        df_general.to_excel(writer, sheet_name="Comparacion_General", index=False)
+        df_val.to_excel(writer, sheet_name="Detalle_Valuado", index=False)
+        df_nom.to_excel(writer, sheet_name="Detalle_Nominales", index=False)
+        df_ajuste.to_excel(writer, sheet_name="Ajuste_Alquileres", index=False)
+
+        audit_tables["match_ok"].to_excel(writer, sheet_name="match_ok", index=False)
+        audit_tables["cartera_sin_match"].to_excel(writer, sheet_name="cartera_sin_match", index=False)
+        audit_tables["alquileres_sin_match"].to_excel(writer, sheet_name="alquileres_sin_match", index=False)
+        audit_tables["alertas"].to_excel(writer, sheet_name="alertas", index=False)
+
+        rentals_live.to_excel(writer, sheet_name="Alquileres_Vigentes", index=False)
+        rentals_summary.to_excel(writer, sheet_name="Alquileres_Resumen", index=False)
 
         resumen_fechas = []
         for fecha, pack in all_groups.items():
@@ -833,7 +1368,7 @@ def _kpi_html(label: str, value: str, delta: str, delta_color: str) -> str:
 
 def _styled(df: pd.DataFrame, fmts: Dict[str, str]):
     if df.empty:
-        return df.style
+        return df.style.hide(axis="index")
     return df.reset_index(drop=True).style.format(fmts, na_rep="—").hide(axis="index")
 
 
@@ -843,49 +1378,77 @@ def _styled(df: pd.DataFrame, fmts: Dict[str, str]):
 def render() -> None:
     _inject_css()
 
-    st.title("Cartera Propia")
+    st.title("Cartera Propia Real Ajustada por Alquileres")
     st.markdown(
         f"""
-        <p style="color:{MUTED};font-size:0.95rem;margin-top:-0.3rem;margin-bottom:1.2rem;">
-        Subí múltiples archivos de distintas comitentes. El sistema agrupa automáticamente por fecha,
-        consolida las tenencias de la misma fecha y compara la fecha inicial vs. la final.
-        Soporta archivos .xlsx, .xlsm, .xls y varios exports raros del sistema.
+        <p style="color:{MUTED};font-size:0.95rem;margin-top:-0.25rem;margin-bottom:1.1rem;">
+        El módulo consolida múltiples archivos de cartera propia por fecha, compara una fecha inicial vs. final,
+        descuenta del stock final los nominales alquilados vigentes y construye una visión económica ajustada,
+        con trazabilidad completa del cruce, faltantes y alertas.
         </p>
         """,
         unsafe_allow_html=True,
     )
 
+    st.markdown('<div class="cp-section">Archivos de entrada</div>', unsafe_allow_html=True)
+
     files = st.file_uploader(
-        "Subí los Excel de cartera",
+        "1) Subí los Excel de cartera propia",
         type=["xlsx", "xls", "xlsm"],
         accept_multiple_files=True,
-        key="cp_multi",
+        key="cp_multi_adj",
     )
 
-    run = st.button("Analizar cartera consolidada", use_container_width=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        file_active = st.file_uploader(
+            "2) Subí alquileres activos / corrientes",
+            type=["xlsx", "xls", "xlsm"],
+            accept_multiple_files=False,
+            key="rent_active",
+        )
+    with c2:
+        file_hist = st.file_uploader(
+            "3) Subí alquileres vencidos / históricos",
+            type=["xlsx", "xls", "xlsm"],
+            accept_multiple_files=False,
+            key="rent_hist",
+        )
+
+    st.markdown(
+        f"""
+        <div class="cp-note">
+        En esta primera versión el ajuste por alquileres se aplica únicamente sobre la <b>fecha final</b>.
+        La fecha inicial permanece <b>bruta</b>. El cruce se realiza por <b>activo_match + Cartera Neix</b>.
+        Las posiciones de caja / cuenta corriente se mantienen en la comparación general, pero se excluyen del universo comparable para el ajuste.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    run = st.button("Analizar cartera ajustada", use_container_width=True)
 
     if not run:
         return
 
     if not files:
-        st.warning("Subí al menos dos archivos para continuar.")
+        st.warning("Subí al menos dos archivos de cartera para continuar.")
+        return
+
+    if file_active is None or file_hist is None:
+        st.warning("Necesitás subir tanto el archivo de alquileres activos como el histórico.")
         return
 
     try:
         groups = consolidate_same_date(files)
     except ValueError as e:
         st.error(str(e))
-        st.caption(
-            "Si algún archivo sigue fallando, probablemente tenga una estructura interna distinta "
-            "y haya que ajustar el parser de ese export puntual."
-        )
         return
     except Exception as e:
-        st.error(f"Error general al procesar los archivos: {e}")
+        st.error(f"Error general al procesar los archivos de cartera: {e}")
         return
 
     unique_dates = list(groups.keys())
-
     if len(unique_dates) < 2:
         st.warning("Necesitás archivos de al menos dos fechas distintas para comparar.")
         return
@@ -933,8 +1496,11 @@ def render() -> None:
 
     h_ini = groups[fecha_ini]["header"]
     d_ini = groups[fecha_ini]["detail"]
+    d_ini_raw = groups[fecha_ini]["detail_raw_concat"]
+
     h_fin = groups[fecha_fin]["header"]
     d_fin = groups[fecha_fin]["detail"]
+    d_fin_raw = groups[fecha_fin]["detail_raw_concat"]
 
     st.info(
         f"**Inicial:** {fecha_ini.strftime('%d/%m/%Y')} · "
@@ -943,20 +1509,58 @@ def render() -> None:
         f"{h_fin['cantidad_archivos']} archivo(s) · {h_fin['cantidad_comitentes']} comitente(s)"
     )
 
-    df_header = compare_headers(h_ini, h_fin)
-    df_species = compare_species(d_ini, d_fin)
+    # -------------------------
+    # ALQUILERES
+    # -------------------------
+    try:
+        df_active = load_rentals(file_active, "activos")
+        df_hist = load_rentals(file_hist, "historicos")
+    except Exception as e:
+        st.error(f"Error leyendo alquileres: {e}")
+        return
 
+    df_active_live = filter_active_rentals(df_active, fecha_fin)
+    df_hist_live = filter_historical_live_rentals(df_hist, fecha_fin)
+    rentals_live, possible_double = consolidate_live_rentals(df_active_live, df_hist_live)
+    rentals_summary = summarize_rentals_for_match(rentals_live)
+
+    # -------------------------
+    # TABLAS BASE
+    # -------------------------
     total_ini = pd.to_numeric(h_ini.get("total_posicion"), errors="coerce")
     total_fin = pd.to_numeric(h_fin.get("total_posicion"), errors="coerce")
-    disp_ini = pd.to_numeric(h_ini.get("portafolio_disponible"), errors="coerce")
-    disp_fin = pd.to_numeric(h_fin.get("portafolio_disponible"), errors="coerce")
 
-    total_var = total_fin - total_ini
-    total_pct = _pct_change(total_fin, total_ini)
-    disp_var = disp_fin - disp_ini
+    df_species = compare_species(d_ini, d_fin)
+    audit_tables = build_adjustment_tables(
+        detail_raw_final=d_fin_raw,
+        rentals_summary=rentals_summary,
+        rentals_live=rentals_live,
+        possible_double=possible_double,
+    )
 
-    res_fin = pd.to_numeric(d_fin["Resultado"], errors="coerce").fillna(0).sum() if not d_fin.empty else 0
-    mov_counts = df_species["Movimiento"].value_counts().to_dict() if not df_species.empty else {}
+    df_ajuste = audit_tables["ajuste"]
+    df_nom = build_nominal_detail(df_species, df_ajuste)
+    df_val = build_valued_detail(df_species, df_ajuste)
+
+    total_final_ajustado = pd.to_numeric(df_ajuste["importe_final_real"], errors="coerce").fillna(0).sum()
+    df_general = compare_headers(h_ini, h_fin, total_final_ajustado)
+
+    # -------------------------
+    # KPIS
+    # -------------------------
+    total_final_bruto = pd.to_numeric(df_ajuste["importe_final_bruto"], errors="coerce").fillna(0).sum()
+    nominal_final_bruto_total = pd.to_numeric(df_ajuste["nominal_final_bruto"], errors="coerce").fillna(0).sum()
+    nominal_alquilado_total = pd.to_numeric(df_ajuste["nominal_alquilado_total"], errors="coerce").fillna(0).sum()
+    nominal_final_real_total = pd.to_numeric(df_ajuste["nominal_final_real"], errors="coerce").fillna(0).sum()
+    diff_bruto_vs_ajustado = total_final_bruto - total_final_ajustado
+
+    qty_match = len(audit_tables["match_ok"])
+    qty_cartera_sin_match = len(audit_tables["cartera_sin_match"])
+    qty_alquileres_sin_match = len(audit_tables["alquileres_sin_match"])
+    qty_alertas = len(audit_tables["alertas"])
+
+    total_var_ajustada = total_final_ajustado - total_ini
+    total_pct_ajustada = _pct_change(total_final_ajustado, total_ini)
 
     st.markdown('<div class="cp-section">Resumen ejecutivo</div>', unsafe_allow_html=True)
 
@@ -964,79 +1568,194 @@ def render() -> None:
         return SUCCESS if pd.notna(v) and v >= 0 else DANGER
 
     k1, k2, k3, k4 = st.columns(4)
-
     with k1:
         st.markdown(_kpi_html(
-            "Total posición final",
-            _fmt_money(total_fin),
-            f"{_fmt_money(total_var)} · {_fmt_pct(total_pct)}",
-            _delta_color(total_var),
+            "Posición final bruta",
+            _fmt_money(total_final_bruto),
+            f"vs inicial: {_fmt_money(total_fin - total_ini)} · {_fmt_pct(_pct_change(total_fin, total_ini))}",
+            _delta_color(total_fin - total_ini),
         ), unsafe_allow_html=True)
 
     with k2:
         st.markdown(_kpi_html(
-            "Portafolio disponible final",
-            _fmt_money(disp_fin),
-            f"var: {_fmt_money(disp_var)}",
-            _delta_color(disp_var),
+            "Posición final ajustada",
+            _fmt_money(total_final_ajustado),
+            f"vs inicial: {_fmt_money(total_var_ajustada)} · {_fmt_pct(total_pct_ajustada)}",
+            _delta_color(total_var_ajustada),
         ), unsafe_allow_html=True)
 
     with k3:
         st.markdown(_kpi_html(
-            "Resultado acumulado (fin)",
-            _fmt_money(res_fin),
-            "suma de resultados individuales",
-            MUTED,
+            "Nominal alquilado total",
+            _fmt_num(nominal_alquilado_total, 0),
+            f"Nominal bruto: {_fmt_num(nominal_final_bruto_total, 0)} · real: {_fmt_num(nominal_final_real_total, 0)}",
+            WARNING,
         ), unsafe_allow_html=True)
 
     with k4:
-        nuevas = mov_counts.get("Posición nueva", 0)
-        aumentos = mov_counts.get("Aumento de posición", 0)
-        disminuc = mov_counts.get("Disminución", 0)
-        cierres = mov_counts.get("Cierre de posición", 0)
-        mantenidas = mov_counts.get("Mantenida", 0)
-
         st.markdown(_kpi_html(
-            "Movimientos",
-            f"{len(df_species)} especies",
-            f"Nuevas {nuevas} · Aumentos {aumentos} · Disminuc. {disminuc} · Cierres {cierres} · Mant. {mantenidas}",
-            MUTED,
+            "Diferencia bruto vs ajustado",
+            _fmt_money(diff_bruto_vs_ajustado),
+            f"Match {qty_match} · cartera sin match {qty_cartera_sin_match} · alquileres sin match {qty_alquileres_sin_match} · alertas {qty_alertas}",
+            DANGER if diff_bruto_vs_ajustado > 0 else MUTED,
         ), unsafe_allow_html=True)
 
-    st.markdown('<div class="cp-section">Comparación inicio vs. fin</div>', unsafe_allow_html=True)
-    st.dataframe(
-        _styled(df_header, {
-            "Inicio": "$ {:,.2f}",
-            "Fin": "$ {:,.2f}",
-            "Variación $": "$ {:+,.2f}",
-            "Variación %": "{:+,.2f}%",
-        }),
-        use_container_width=True,
-        height=240,
-    )
-
-    st.markdown('<div class="cp-section">Detalle general por especie</div>', unsafe_allow_html=True)
-
-    cols_general = [
-        "Especie", "Tipo", "Moneda",
-        "Imp_Ini", "Imp_Fin", "Var_Importe", "Var_Pct",
-        "Var_Resultado", "Movimiento",
-    ]
-    df_general = df_species[cols_general].copy() if not df_species.empty else pd.DataFrame(columns=cols_general)
-
+    # -------------------------
+    # COMPARACION GENERAL
+    # -------------------------
+    st.markdown('<div class="cp-section">1. Comparación general</div>', unsafe_allow_html=True)
     st.dataframe(
         _styled(df_general, {
-            "Imp_Ini": "$ {:,.2f}",
-            "Imp_Fin": "$ {:,.2f}",
-            "Var_Importe": "$ {:+,.2f}",
-            "Var_Pct": "{:+,.2f}%",
-            "Var_Resultado": "$ {:+,.2f}",
+            "Inicio": "$ {:,.2f}",
+            "Fin Bruto": "$ {:,.2f}",
+            "Fin Ajustado": "$ {:,.2f}",
+            "Variación Bruta $": "$ {:+,.2f}",
+            "Variación Bruta %": "{:+,.2f}%",
+            "Variación Ajustada $": "$ {:+,.2f}",
+            "Variación Ajustada %": "{:+,.2f}%",
+        }),
+        use_container_width=True,
+        height=260,
+    )
+
+    # -------------------------
+    # DETALLE VALUADO
+    # -------------------------
+    st.markdown('<div class="cp-section">2. Detalle por especie valuado</div>', unsafe_allow_html=True)
+    st.dataframe(
+        _styled(df_val, {
+            "importe_inicial": "$ {:,.2f}",
+            "importe_final_bruto": "$ {:,.2f}",
+            "importe_final_real": "$ {:,.2f}",
+            "variacion_bruta": "$ {:+,.2f}",
+            "variacion_real": "$ {:+,.2f}",
         }),
         use_container_width=True,
         height=500,
     )
 
-    st.markdown('<div class="cp-section">Por tipo de movimiento</div>', unsafe_allow_html=True)
+    # -------------------------
+    # DETALLE NOMINALES
+    # -------------------------
+    st.markdown('<div class="cp-section">3. Detalle por nominales</div>', unsafe_allow_html=True)
+    st.dataframe(
+        _styled(df_nom, {
+            "nominal_inicial": "{:,.0f}",
+            "nominal_final_bruto": "{:,.0f}",
+            "nominal_alquilado": "{:,.0f}",
+            "nominal_final_real": "{:,.0f}",
+            "variacion_nominal": "{:+,.0f}",
+        }),
+        use_container_width=True,
+        height=500,
+    )
+
+    # -------------------------
+    # AJUSTE POR ALQUILERES
+    # -------------------------
+    st.markdown('<div class="cp-section">4. Ajuste por alquileres</div>', unsafe_allow_html=True)
+    st.dataframe(
+        _styled(df_ajuste, {
+            "nominal_final_bruto": "{:,.0f}",
+            "nominal_alquilado_activo": "{:,.0f}",
+            "nominal_alquilado_historico_vigente": "{:,.0f}",
+            "nominal_alquilado_total": "{:,.0f}",
+            "nominal_final_real": "{:,.0f}",
+            "precio_final": "{:,.4f}",
+            "importe_final_bruto": "$ {:,.2f}",
+            "importe_final_real": "$ {:,.2f}",
+        }),
+        use_container_width=True,
+        height=520,
+    )
+
+    # -------------------------
+    # AUDITORIA
+    # -------------------------
+    st.markdown('<div class="cp-section">5. Auditoría de cruce</div>', unsafe_allow_html=True)
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "match_ok",
+        "cartera_sin_match",
+        "alquileres_sin_match",
+        "alertas",
+    ])
+
+    with tab1:
+        if audit_tables["match_ok"].empty:
+            st.info("No hay matches registrados.")
+        else:
+            st.dataframe(
+                _styled(
+                    audit_tables["match_ok"][[
+                        "Especie", "activo_match", "Cartera Neix",
+                        "nominal_final_bruto", "nominal_alquilado_total",
+                        "nominal_final_real", "precio_final", "importe_final_real"
+                    ]],
+                    {
+                        "nominal_final_bruto": "{:,.0f}",
+                        "nominal_alquilado_total": "{:,.0f}",
+                        "nominal_final_real": "{:,.0f}",
+                        "precio_final": "{:,.4f}",
+                        "importe_final_real": "$ {:,.2f}",
+                    }
+                ),
+                use_container_width=True,
+                height=360,
+            )
+
+    with tab2:
+        if audit_tables["cartera_sin_match"].empty:
+            st.info("No hay especies de cartera sin match.")
+        else:
+            st.dataframe(
+                _styled(
+                    audit_tables["cartera_sin_match"][[
+                        "Especie", "activo_match", "Cartera Neix",
+                        "nominal_final_bruto", "precio_final", "importe_final_bruto"
+                    ]],
+                    {
+                        "nominal_final_bruto": "{:,.0f}",
+                        "precio_final": "{:,.4f}",
+                        "importe_final_bruto": "$ {:,.2f}",
+                    }
+                ),
+                use_container_width=True,
+                height=360,
+            )
+
+    with tab3:
+        if audit_tables["alquileres_sin_match"].empty:
+            st.info("No hay alquileres sin match.")
+        else:
+            st.dataframe(
+                _styled(
+                    audit_tables["alquileres_sin_match"],
+                    {
+                        "nominal_alquilado_activo": "{:,.0f}",
+                        "nominal_alquilado_historico_vigente": "{:,.0f}",
+                        "nominal_alquilado_total": "{:,.0f}",
+                        "cantidad_registros_alquiler": "{:,.0f}",
+                    }
+                ),
+                use_container_width=True,
+                height=360,
+            )
+
+    with tab4:
+        if audit_tables["alertas"].empty:
+            st.success("No se detectaron alertas relevantes.")
+        else:
+            st.dataframe(
+                _styled(audit_tables["alertas"], {}),
+                use_container_width=True,
+                height=360,
+            )
+
+    # -------------------------
+    # EXTRA: MOVIMIENTOS
+    # -------------------------
+    st.markdown('<div class="cp-section">Movimiento por especie</div>', unsafe_allow_html=True)
 
     tab_mant, tab_nueva, tab_aumento, tab_dism, tab_cierre = st.tabs(
         ["Mantenida", "Posición nueva", "Aumento de posición", "Disminución", "Cierre de posición"]
@@ -1077,13 +1796,30 @@ def render() -> None:
     with tab_cierre:
         _render_mov_tab("Cierre de posición", ascending=True)
 
+    # -------------------------
+    # EXPORT
+    # -------------------------
     st.markdown('<div class="cp-section">Exportar</div>', unsafe_allow_html=True)
-    export_bytes = build_export(h_ini, h_fin, d_ini, d_fin, df_header, df_species, groups)
+
+    export_bytes = build_export(
+        h_ini=h_ini,
+        h_fin=h_fin,
+        d_ini=d_ini_raw,
+        d_fin=d_fin_raw,
+        df_general=df_general,
+        df_val=df_val,
+        df_nom=df_nom,
+        df_ajuste=df_ajuste,
+        audit_tables=audit_tables,
+        rentals_live=rentals_live,
+        rentals_summary=rentals_summary,
+        all_groups=groups,
+    )
 
     st.download_button(
-        label="Descargar Excel comparativo consolidado",
+        label="Descargar Excel de cartera ajustada + auditoría",
         data=export_bytes,
-        file_name="cartera_propia_consolidada.xlsx",
+        file_name="cartera_propia_real_ajustada_por_alquileres.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
