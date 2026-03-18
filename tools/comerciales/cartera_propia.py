@@ -240,36 +240,68 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
-
 def load_portfolio(file) -> Tuple[Dict[str, object], pd.DataFrame]:
     """
-    Lee el archivo Excel con fallback de engines.
-    - .xlsx / .xlsm: intenta openpyxl y luego calamine
-    - .xls: intenta xlrd y luego calamine
+    Lee el archivo intentando:
+    1) Excel real (.xls/.xlsx/.xlsm)
+    2) HTML disfrazado de .xls
     """
     name = getattr(file, "name", "archivo").lower()
+    last_error = None
 
+    # -----------------------------
+    # 1) Intento como Excel real
+    # -----------------------------
     if name.endswith(".xls"):
         engines = ["xlrd", "calamine"]
     else:
         engines = ["openpyxl", "calamine"]
-
-    last_error = None
 
     for engine in engines:
         try:
             file.seek(0)
             df_raw = pd.read_excel(file, header=None, engine=engine)
             return _parse_header(df_raw), _parse_detail(df_raw)
-        except ImportError as e:
-            last_error = e
         except Exception as e:
             last_error = e
+
+    # -----------------------------
+    # 2) Intento como HTML disfrazado
+    # -----------------------------
+    try:
+        file.seek(0)
+        content = file.read()
+
+        if isinstance(content, bytes):
+            text = content.decode("utf-8", errors="ignore")
+        else:
+            text = str(content)
+
+        # chequeo básico: si contiene html o tablas
+        if "<html" in text.lower() or "<table" in text.lower():
+            tables = pd.read_html(text)
+
+            if not tables:
+                raise ValueError("El archivo HTML no contiene tablas.")
+
+            # en muchos casos la primera tabla es la correcta
+            df_raw = tables[0].copy()
+
+            # convertir columnas numéricas si vienen como texto
+            for col in df_raw.columns:
+                try:
+                    df_raw[col] = df_raw[col].replace({r"\.": "", ",": "."}, regex=True)
+                except Exception:
+                    pass
+
+            return _parse_header(df_raw), _parse_detail(df_raw)
+
+    except Exception as e:
+        last_error = e
 
     raise ValueError(
         f"Error procesando {getattr(file, 'name', 'archivo')}: {last_error}"
     )
-
 
 # =========================================================
 # CONSOLIDACIÓN MULTI-ARCHIVO
