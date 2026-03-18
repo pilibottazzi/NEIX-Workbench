@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import BytesIO
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+import re
 
 import numpy as np
 import pandas as pd
@@ -17,7 +18,6 @@ MUTED = "#6b7280"
 BORDER = "rgba(17,24,39,0.08)"
 SUCCESS = "#16a34a"
 DANGER = "#dc2626"
-INFO = "#2563eb"
 
 
 # =========================================================
@@ -86,7 +86,7 @@ def _inject_css() -> None:
 
 
 # =========================================================
-# HELPERS GENERALES
+# HELPERS
 # =========================================================
 def _fmt_money(v: float, decimals: int = 2) -> str:
     if pd.isna(v):
@@ -107,21 +107,42 @@ def _pct_change(fin: float, ini: float) -> float:
 
 
 def _norm(x) -> str:
-    return "" if (x is None or (isinstance(x, float) and np.isnan(x))) else str(x).strip()
+    if x is None:
+        return ""
+    try:
+        if pd.isna(x):
+            return ""
+    except Exception:
+        pass
+    return str(x).replace("\xa0", " ").strip()
 
 
 def _to_ts(value) -> Optional[pd.Timestamp]:
     if value is None:
         return None
     if isinstance(value, (pd.Timestamp, datetime)):
-        return pd.Timestamp(value).normalize()
+        try:
+            return pd.Timestamp(value).normalize()
+        except Exception:
+            return None
     try:
         if pd.isna(value):
             return None
     except Exception:
         pass
-    ts = pd.to_datetime(str(value).strip(), dayfirst=True, errors="coerce")
-    return None if pd.isna(ts) else ts.normalize()
+
+    txt = str(value).strip()
+    if not txt:
+        return None
+
+    candidates = [
+        pd.to_datetime(txt, dayfirst=True, errors="coerce"),
+        pd.to_datetime(txt, dayfirst=False, errors="coerce"),
+    ]
+    for ts in candidates:
+        if pd.notna(ts):
+            return pd.Timestamp(ts).normalize()
+    return None
 
 
 def _safe_num(d: Dict, key: str) -> float:
@@ -135,12 +156,66 @@ def _weighted_avg(values: pd.Series, weights: pd.Series) -> float:
     return np.average(values[mask], weights=weights[mask])
 
 
+def _coerce_numeric_scalar(x):
+    s = _norm(x)
+    if s == "":
+        return np.nan
+
+    s_low = s.lower()
+    if s_low in {"nan", "none", "-", "—"}:
+        return np.nan
+
+    s = s.replace("%", "")
+    s = s.replace("$", "")
+    s = s.replace("u$s", "").replace("U$S", "")
+    s = s.replace("usd", "").replace("USD", "")
+    s = s.replace("ars", "").replace("ARS", "")
+    s = s.replace("(", "-").replace(")", "")
+    s = s.replace(" ", "")
+
+    # Casos:
+    # 1.234,56  -> 1234.56
+    # 1,234.56  -> 1234.56
+    # 1234,56   -> 1234.56
+    # 1234.56   -> 1234.56
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        s = s.replace(".", "")
+        s = s.replace(",", ".")
+    else:
+        # solo puntos: puede ser decimal o miles
+        if s.count(".") > 1:
+            s = s.replace(".", "")
+
+    return pd.to_numeric(s, errors="coerce")
+
+
+def _coerce_numeric_series(series: pd.Series) -> pd.Series:
+    return series.apply(_coerce_numeric_scalar)
+
+
+def _looks_like_html(text: str) -> bool:
+    low = text.lower()
+    return (
+        "<html" in low
+        or "<table" in low
+        or "<tr" in low
+        or "<td" in low
+        or "<pre" in low
+        or "<body" in low
+    )
+
+
 # =========================================================
 # DETECCIONES DE NEGOCIO
 # =========================================================
 def _detect_moneda(categoria: str) -> str:
     c = _norm(categoria).upper()
-    if "U$S EXTERIOR" in c or "USD EXTERIOR" in c or "EXTERIOR" in c or "EXT" in c:
+    if "U$S EXTERIOR" in c or "USD EXTERIOR" in c or "EXTERIOR" in c:
         return "USD Exterior"
     if "DOLAR LOCAL" in c or "DÓLAR LOCAL" in c or "USD LOCAL" in c:
         return "USD Local"
@@ -165,51 +240,155 @@ def _detect_tipo(categoria: str) -> str:
 
 
 # =========================================================
-# NORMALIZACIÓN NUMÉRICA HTML/TEXTO
+# LECTURA DE ARCHIVOS
 # =========================================================
-def _coerce_numeric_series(series: pd.Series) -> pd.Series:
-    s = series.astype(str).str.strip()
-    s = s.replace(
-        {
-            "": np.nan,
-            "nan": np.nan,
-            "None": np.nan,
-            "-": np.nan,
-            "—": np.nan,
-        }
-    )
+def _read_as_excel(file, name: str) -> pd.DataFrame:
+    lower_name = name.lower()
 
-    # elimina separadores de miles y cambia coma decimal por punto
-    s = s.str.replace(r"\.", "", regex=True)
-    s = s.str.replace(",", ".", regex=False)
+    # Priorizamos por extensión, pero con fallback amplio
+    if lower_name.endswith(".xlsx") or lower_name.endswith(".xlsm"):
+        engines = ["openpyxl", "calamine", "xlrd"]
+    elif lower_name.endswith(".xls"):
+        engines = ["xlrd", "calamine", "openpyxl"]
+    else:
+        engines = ["openpyxl", "xlrd", "calamine"]
 
-    # elimina símbolos
-    s = s.str.replace("%", "", regex=False)
-    s = s.str.replace("$", "", regex=False)
-    s = s.str.replace("U$S", "", regex=False)
-    s = s.str.replace("USD", "", regex=False)
+    last_error = None
+    for engine in engines:
+        try:
+            file.seek(0)
+            df = pd.read_excel(file, header=None, engine=engine)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                return df
+        except Exception as e:
+            last_error = e
 
-    return pd.to_numeric(s, errors="coerce")
+    raise last_error if last_error else ValueError("No se pudo leer como Excel.")
 
 
 def _clean_html_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
-    # aplana multicolumns si existen
     if isinstance(out.columns, pd.MultiIndex):
         out.columns = [
             " ".join([_norm(x) for x in tup if _norm(x) != ""]).strip()
             for tup in out.columns
         ]
+    else:
+        out.columns = [str(c) for c in out.columns]
 
-    # fuerza nombres de columnas simples
-    out.columns = [str(c) for c in out.columns]
-
-    # limpia espacios raros
     for col in out.columns:
-        out[col] = out[col].apply(lambda x: _norm(x).replace("\xa0", " "))
+        out[col] = out[col].apply(_norm)
 
     return out
+
+
+def _html_to_text_lines(text: str) -> List[str]:
+    txt = text
+    txt = txt.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+    txt = txt.replace("&nbsp;", " ")
+    txt = re.sub(r"<script.*?</script>", "", txt, flags=re.I | re.S)
+    txt = re.sub(r"<style.*?</style>", "", txt, flags=re.I | re.S)
+    txt = re.sub(r"</tr\s*>", "\n", txt, flags=re.I)
+    txt = re.sub(r"</p\s*>", "\n", txt, flags=re.I)
+    txt = re.sub(r"</div\s*>", "\n", txt, flags=re.I)
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    txt = re.sub(r"[ \t]+", " ", txt)
+    txt = re.sub(r"\n{2,}", "\n", txt)
+    lines = [line.strip() for line in txt.splitlines() if line.strip()]
+    return lines
+
+
+def _text_lines_to_dataframe(lines: List[str]) -> pd.DataFrame:
+    rows = []
+
+    # 1) separar por 2+ espacios
+    for line in lines:
+        parts = re.split(r"\s{2,}", line.strip())
+        if len(parts) > 1:
+            rows.append(parts)
+
+    # 2) si eso no funciona, intentamos por tab
+    if not rows:
+        for line in lines:
+            parts = [p.strip() for p in line.split("\t") if p.strip() != ""]
+            if len(parts) > 1:
+                rows.append(parts)
+
+    # 3) si sigue sin funcionar, una columna sola
+    if not rows:
+        rows = [[line] for line in lines]
+
+    max_cols = max(len(r) for r in rows)
+    rows = [r + [""] * (max_cols - len(r)) for r in rows]
+    return pd.DataFrame(rows)
+
+
+def _read_as_html(file) -> pd.DataFrame:
+    file.seek(0)
+    content = file.read()
+
+    if isinstance(content, bytes):
+        text = content.decode("utf-8", errors="ignore")
+    else:
+        text = str(content)
+
+    if not _looks_like_html(text):
+        raise ValueError("El archivo no contiene estructura HTML reconocible.")
+
+    # intento 1: tablas html
+    try:
+        tables = pd.read_html(text)
+        if tables:
+            tables = sorted(tables, key=lambda x: x.shape[0] * x.shape[1], reverse=True)
+            return _clean_html_dataframe(tables[0])
+    except Exception:
+        pass
+
+    # intento 2: html raro / pre / texto dentro del html
+    lines = _html_to_text_lines(text)
+    if not lines:
+        raise ValueError("No tables found")
+
+    return _text_lines_to_dataframe(lines)
+
+
+def load_portfolio(file) -> Tuple[Dict[str, object], pd.DataFrame]:
+    """
+    Intenta leer:
+    1) Excel real
+    2) HTML disfrazado
+    """
+    name = getattr(file, "name", "archivo")
+    last_error = None
+
+    # 1) Excel real
+    try:
+        df_raw = _read_as_excel(file, name)
+        header = _parse_header(df_raw)
+        detail = _parse_detail(df_raw)
+        if header.get("fecha") is not None or not detail.empty:
+            return header, detail
+    except Exception as e:
+        last_error = e
+
+    # 2) HTML / texto
+    try:
+        file.seek(0)
+        raw = file.read()
+        raw_text = raw.decode("utf-8", errors="ignore") if isinstance(raw, bytes) else str(raw)
+
+        if _looks_like_html(raw_text):
+            file.seek(0)
+            df_raw = _read_as_html(file)
+            header = _parse_header(df_raw)
+            detail = _parse_detail(df_raw)
+            if header.get("fecha") is not None or not detail.empty:
+                return header, detail
+    except Exception as e:
+        last_error = e
+
+    raise ValueError(f"Error procesando {name}: {last_error}")
 
 
 # =========================================================
@@ -220,55 +399,89 @@ def _parse_header(df: pd.DataFrame) -> Dict[str, object]:
         "usuario": "",
         "comitente": "",
         "fecha": None,
+        "total_posicion": np.nan,
+        "portafolio_disponible": np.nan,
+        "cc_ars": np.nan,
+        "cc_usd_ext": np.nan,
+        "cc_usd_local": np.nan,
     }
 
     # intento directo original
     try:
-        out["usuario"] = _norm(df.iloc[3, 0])
-        out["comitente"] = _norm(df.iloc[3, 1])
-        out["fecha"] = _to_ts(df.iloc[3, 2])
+        if df.shape[0] > 3 and df.shape[1] > 0:
+            out["usuario"] = _norm(df.iloc[3, 0])
+        if df.shape[0] > 3 and df.shape[1] > 1:
+            out["comitente"] = _norm(df.iloc[3, 1])
+        if df.shape[0] > 3 and df.shape[1] > 2:
+            out["fecha"] = _to_ts(df.iloc[3, 2])
     except Exception:
         pass
 
-    label_map = {
-        "Total Posición": "total_posicion",
-        "Portafolio Disponible": "portafolio_disponible",
-        "Cuenta Corriente $": "cc_ars",
-        "Cuenta Corriente U$S Exterior": "cc_usd_ext",
-        "Cuenta Corriente Dolar Local": "cc_usd_local",
-        "Cuenta Corriente Dólar Local": "cc_usd_local",
+    label_aliases = {
+        "total posición": "total_posicion",
+        "total posicion": "total_posicion",
+        "portafolio disponible": "portafolio_disponible",
+        "cuenta corriente $": "cc_ars",
+        "cuenta corriente ars": "cc_ars",
+        "cuenta corriente u$s exterior": "cc_usd_ext",
+        "cuenta corriente usd exterior": "cc_usd_ext",
+        "cuenta corriente exterior": "cc_usd_ext",
+        "cuenta corriente dolar local": "cc_usd_local",
+        "cuenta corriente dólar local": "cc_usd_local",
+        "cuenta corriente usd local": "cc_usd_local",
     }
 
-    max_rows = min(len(df), 60)
-    max_cols = min(df.shape[1], 12)
+    max_rows = min(len(df), 80)
+    max_cols = min(df.shape[1], 20)
 
-    # búsqueda flexible en todo el bloque superior
+    # búsqueda flexible
     for i in range(max_rows):
         for j in range(max_cols):
             val = _norm(df.iloc[i, j])
+            val_low = val.lower()
 
+            # fecha
             if out["fecha"] is None:
                 ts = _to_ts(val)
                 if ts is not None:
                     out["fecha"] = ts
 
-            if out["usuario"] == "" and ("usuario" in val.lower() or "cliente" in val.lower()):
-                if j + 1 < df.shape[1]:
-                    out["usuario"] = _norm(df.iloc[i, j + 1])
-
-            if out["comitente"] == "" and "comitente" in val.lower():
-                if j + 1 < df.shape[1]:
-                    out["comitente"] = _norm(df.iloc[i, j + 1])
-
-            if val in label_map:
-                for k in range(j + 1, min(j + 7, df.shape[1])):
-                    num = pd.to_numeric(
-                        str(df.iloc[i, k]).replace(".", "").replace(",", "."),
-                        errors="coerce",
-                    )
-                    if pd.notna(num):
-                        out[label_map[val]] = num
+            # usuario
+            if out["usuario"] == "" and any(x in val_low for x in ["usuario", "cliente", "titular"]):
+                for k in range(j + 1, min(j + 4, df.shape[1])):
+                    candidate = _norm(df.iloc[i, k])
+                    if candidate != "":
+                        out["usuario"] = candidate
                         break
+
+            # comitente
+            if out["comitente"] == "" and "comitente" in val_low:
+                for k in range(j + 1, min(j + 4, df.shape[1])):
+                    candidate = _norm(df.iloc[i, k])
+                    if candidate != "":
+                        out["comitente"] = candidate
+                        break
+
+            # métricas
+            for alias, target in label_aliases.items():
+                if alias in val_low:
+                    found = False
+
+                    # buscar a derecha
+                    for k in range(j + 1, min(j + 8, df.shape[1])):
+                        num = _coerce_numeric_scalar(df.iloc[i, k])
+                        if pd.notna(num):
+                            out[target] = num
+                            found = True
+                            break
+
+                    # buscar abajo si no encontró
+                    if not found:
+                        for r in range(i + 1, min(i + 4, len(df))):
+                            num = _coerce_numeric_scalar(df.iloc[r, j])
+                            if pd.notna(num):
+                                out[target] = num
+                                break
 
     return out
 
@@ -284,43 +497,68 @@ def _empty_detail_df() -> pd.DataFrame:
     ])
 
 
-def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
-    expected_cols = [
+def _score_detail_candidate(tmp: pd.DataFrame) -> int:
+    if tmp.shape[1] != 9:
+        return -1
+
+    cols = [
+        "Especie", "Estado", "Cantidad", "Precio", "Importe",
+        "PctTotal", "Costo", "PctVar", "Resultado"
+    ]
+    cand = tmp.copy()
+    cand.columns = cols
+
+    especie_nonempty = cand["Especie"].astype(str).str.strip().ne("").sum()
+    cantidad_num = _coerce_numeric_series(cand["Cantidad"]).notna().sum()
+    importe_num = _coerce_numeric_series(cand["Importe"]).notna().sum()
+    precio_num = _coerce_numeric_series(cand["Precio"]).notna().sum()
+
+    score = int(especie_nonempty + cantidad_num * 2 + importe_num * 2 + precio_num)
+    return score
+
+
+def _find_detail_block(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    cols = [
         "Especie", "Estado", "Cantidad", "Precio", "Importe",
         "PctTotal", "Costo", "PctVar", "Resultado"
     ]
 
-    if df.empty:
-        return _empty_detail_df()
-
-    raw = None
-
-    # intento estructura original exacta
+    # 1) intento estructura original
     try:
         tmp = df.iloc[16:, 1:10].copy()
         if tmp.shape[1] == 9:
-            tmp.columns = expected_cols
-            raw = tmp.reset_index(drop=True)
+            tmp.columns = cols
+            return tmp.reset_index(drop=True)
     except Exception:
         pass
 
-    # fallback flexible: buscar bloque de 9 columnas que tenga pinta de detalle
-    if raw is None:
-        for start_col in range(max(1, df.shape[1] - 8)):
-            tmp = df.iloc[:, start_col:start_col + 9].copy()
-            if tmp.shape[1] != 9:
-                continue
+    # 2) buscar mejor bloque de 9 columnas
+    best_score = -1
+    best_df = None
 
-            tmp.columns = expected_cols
+    ncols = df.shape[1]
+    for start_col in range(0, max(1, ncols - 8)):
+        tmp = df.iloc[:, start_col:start_col + 9].copy()
+        if tmp.shape[1] != 9:
+            continue
 
-            especie_nonempty = tmp["Especie"].astype(str).str.strip().ne("").sum()
-            importe_num = _coerce_numeric_series(tmp["Importe"]).notna().sum()
-            cantidad_num = _coerce_numeric_series(tmp["Cantidad"]).notna().sum()
+        score = _score_detail_candidate(tmp)
+        if score > best_score:
+            best_score = score
+            best_df = tmp.copy()
 
-            if especie_nonempty > 5 and (importe_num > 3 or cantidad_num > 3):
-                raw = tmp.reset_index(drop=True)
-                break
+    if best_df is not None and best_score >= 12:
+        best_df.columns = cols
+        return best_df.reset_index(drop=True)
 
+    return None
+
+
+def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return _empty_detail_df()
+
+    raw = _find_detail_block(df)
     if raw is None:
         return _empty_detail_df()
 
@@ -345,7 +583,13 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
         if especie.startswith("* "):
             continue
 
+        # muchas exportaciones ponen la categoría en Estado
         if _is_subtotal(row):
+            current_cat = row["Estado"]
+            continue
+
+        # si no hay especie pero sí texto en estado, también puede ser categoría
+        if especie == "" and row["Estado"] != "":
             current_cat = row["Estado"]
             continue
 
@@ -357,128 +601,19 @@ def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
     if out.empty:
         return _empty_detail_df()
 
+    out["Categoria"] = out["Categoria"].apply(_norm)
     out["Moneda"] = out["Categoria"].apply(_detect_moneda)
     out["Tipo"] = out["Categoria"].apply(_detect_tipo)
-    out = out[out["Categoria"] != ""].copy()
+
+    # mantenemos incluso sin categoría si trae datos válidos
+    numeric_ok = out[["Cantidad", "Precio", "Importe", "Resultado"]].notna().any(axis=1)
+    out = out[numeric_ok].copy()
 
     return out
 
 
 # =========================================================
-# LECTURA ARCHIVOS
-# =========================================================
-def _read_as_html(file) -> pd.DataFrame:
-    file.seek(0)
-    content = file.read()
-
-    if isinstance(content, bytes):
-        text = content.decode("utf-8", errors="ignore")
-    else:
-        text = str(content)
-
-    if "<html" not in text.lower() and "<table" not in text.lower() and "<pre" not in text.lower():
-        raise ValueError("El archivo no contiene estructura HTML reconocible.")
-
-    # intento 1: tablas html clásicas
-    try:
-        tables = pd.read_html(text)
-        if tables:
-            tables = sorted(tables, key=lambda x: x.shape[0] * x.shape[1], reverse=True)
-            return _clean_html_dataframe(tables[0])
-    except Exception:
-        pass
-
-    # intento 2: bloque <pre> o texto plano dentro del html
-    txt = (
-        text.replace("<br>", "\n")
-            .replace("<br/>", "\n")
-            .replace("<br />", "\n")
-            .replace("&nbsp;", " ")
-    )
-
-    # sacamos tags html de forma simple
-    import re
-    txt = re.sub(r"<script.*?</script>", "", txt, flags=re.S | re.I)
-    txt = re.sub(r"<style.*?</style>", "", txt, flags=re.S | re.I)
-    txt = re.sub(r"<[^>]+>", " ", txt)
-    txt = re.sub(r"[ \t]+", " ", txt)
-    txt = re.sub(r"\n+", "\n", txt).strip()
-
-    lines = [line.strip() for line in txt.splitlines() if line.strip()]
-    if not lines:
-        raise ValueError("No tables found")
-
-    # armamos una pseudo-grilla separando por 2 o más espacios
-    rows = []
-    for line in lines:
-        parts = re.split(r"\s{2,}", line.strip())
-        if len(parts) > 1:
-            rows.append(parts)
-
-    if not rows:
-        raise ValueError("No tables found")
-
-    max_cols = max(len(r) for r in rows)
-    rows = [r + [""] * (max_cols - len(r)) for r in rows]
-
-    return pd.DataFrame(rows)
-    
-
-
-def _read_as_html(file) -> pd.DataFrame:
-    file.seek(0)
-    content = file.read()
-
-    if isinstance(content, bytes):
-        text = content.decode("utf-8", errors="ignore")
-    else:
-        text = str(content)
-
-    if "<html" not in text.lower() and "<table" not in text.lower():
-        raise ValueError("El archivo no contiene estructura HTML reconocible.")
-
-    tables = pd.read_html(text)
-    if not tables:
-        raise ValueError("El HTML no contiene tablas.")
-
-    # Busca la tabla más grande, suele ser la correcta
-    tables = sorted(tables, key=lambda x: x.shape[0] * x.shape[1], reverse=True)
-    df_html = _clean_html_dataframe(tables[0])
-
-    # algunas exportaciones HTML pierden filas/columnas vacías; igual devolvemos la mayor
-    return df_html
-
-
-def load_portfolio(file) -> Tuple[Dict[str, object], pd.DataFrame]:
-    """
-    Intenta leer:
-    1) Excel real
-    2) HTML disfrazado de .xls
-    """
-    name = getattr(file, "name", "archivo").lower()
-    last_error = None
-
-    # 1) intento como Excel real
-    try:
-        df_raw = _read_as_excel(file, name)
-        return _parse_header(df_raw), _parse_detail(df_raw)
-    except Exception as e:
-        last_error = e
-
-    # 2) intento como HTML
-    try:
-        df_raw = _read_as_html(file)
-        return _parse_header(df_raw), _parse_detail(df_raw)
-    except Exception as e:
-        last_error = e
-
-    raise ValueError(
-        f"Error procesando {getattr(file, 'name', 'archivo')}: {last_error}"
-    )
-
-
-# =========================================================
-# AGREGADOS / CONSOLIDACIÓN
+# CONSOLIDACIÓN
 # =========================================================
 def _agg_by_especie(detail: pd.DataFrame) -> pd.DataFrame:
     if detail.empty:
@@ -714,7 +849,7 @@ def render() -> None:
         <p style="color:{MUTED};font-size:0.95rem;margin-top:-0.3rem;margin-bottom:1.2rem;">
         Subí múltiples archivos de distintas comitentes. El sistema agrupa automáticamente por fecha,
         consolida las tenencias de la misma fecha y compara la fecha inicial vs. la final.
-        También soporta archivos .xls que en realidad son HTML exportado por el sistema.
+        Soporta archivos .xlsx, .xlsm, .xls y varios exports raros del sistema.
         </p>
         """,
         unsafe_allow_html=True,
@@ -741,8 +876,8 @@ def render() -> None:
     except ValueError as e:
         st.error(str(e))
         st.caption(
-            "Si algún archivo sigue fallando, probablemente venga con una estructura HTML distinta "
-            "a la habitual y haya que ajustar el parser."
+            "Si algún archivo sigue fallando, probablemente tenga una estructura interna distinta "
+            "y haya que ajustar el parser de ese export puntual."
         )
         return
     except Exception as e:
@@ -778,21 +913,18 @@ def render() -> None:
         height=min(280, 70 + 35 * len(df_detectadas)),
     )
 
-    default_ini = 0
-    default_fin = len(unique_dates) - 1
-
     c1, c2 = st.columns(2)
     fecha_ini = c1.selectbox(
         "Fecha inicial",
         options=unique_dates,
         format_func=lambda x: x.strftime("%d/%m/%Y"),
-        index=default_ini,
+        index=0,
     )
     fecha_fin = c2.selectbox(
         "Fecha final",
         options=unique_dates,
         format_func=lambda x: x.strftime("%d/%m/%Y"),
-        index=default_fin,
+        index=len(unique_dates) - 1,
     )
 
     if fecha_ini >= fecha_fin:
