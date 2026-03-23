@@ -198,6 +198,40 @@ def _inject_css() -> None:
 # =========================================================
 # HELPERS
 # =========================================================
+def _read_excel_robust(file) -> pd.DataFrame:
+    """
+    Lee archivos .xls o .xlsx forzando engine correcto.
+    Resetea puntero para evitar errores al reintentar lectura.
+    """
+    file_name = getattr(file, "name", "").lower()
+
+    try:
+        if file_name.endswith(".xls"):
+            file.seek(0)
+            return pd.read_excel(file, header=None, engine="xlrd")
+        if file_name.endswith(".xlsx"):
+            file.seek(0)
+            return pd.read_excel(file, header=None, engine="openpyxl")
+
+        # fallback si extensión rara
+        file.seek(0)
+        return pd.read_excel(file, header=None)
+    except Exception as first_error:
+        # segundo intento por si la extensión no coincide con el contenido
+        try:
+            file.seek(0)
+            return pd.read_excel(file, header=None, engine="openpyxl")
+        except Exception:
+            try:
+                file.seek(0)
+                return pd.read_excel(file, header=None, engine="xlrd")
+            except Exception:
+                raise ValueError(
+                    f"No se pudo leer el archivo '{getattr(file, 'name', 'sin_nombre')}'. "
+                    f"Verificá que sea un Excel válido (.xls o .xlsx). Error original: {first_error}"
+                )
+
+
 def _to_float(value) -> float:
     if pd.isna(value):
         return 0.0
@@ -243,10 +277,6 @@ def _find_row_index(raw: pd.DataFrame, target: str) -> Optional[int]:
 
 
 def _extract_table_block(raw: pd.DataFrame) -> pd.DataFrame:
-    """
-    Busca el bloque que empieza en la fila donde está 'Ticker'
-    y termina antes de 'TOTAL'.
-    """
     header_idx = _find_row_index(raw, "Ticker")
     if header_idx is None:
         raise ValueError("No se encontró la fila de encabezados del bloque de posiciones.")
@@ -267,11 +297,8 @@ def _extract_table_block(raw: pd.DataFrame) -> pd.DataFrame:
     table.columns = headers
     table = table.loc[:, ~table.columns.isna()]
     table.columns = [str(c).strip() for c in table.columns]
-
-    # limpiar columnas vacías
     table = table[[c for c in table.columns if c != "" and c.lower() != "nan"]].copy()
 
-    # renombre seguro
     rename_map = {
         "Cant. Comprada": "Cant_Comprada",
         "Cant. Vendida": "Cant_Vendida",
@@ -305,10 +332,6 @@ def _extract_table_block(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def _extract_financial_summary(raw: pd.DataFrame) -> pd.DataFrame:
-    """
-    Busca bloque 'RESUMEN FINANCIERO'.
-    Toma concepto en col A/B y valor a la derecha.
-    """
     start_idx = _find_row_index(raw, "RESUMEN FINANCIERO")
     if start_idx is None:
         return pd.DataFrame(columns=["Concepto", "Valor"])
@@ -324,13 +347,11 @@ def _extract_financial_summary(raw: pd.DataFrame) -> pd.DataFrame:
         concept = None
         value = None
 
-        # primera celda textual útil
         for x in row[:4]:
             if pd.notna(x) and str(x).strip() != "":
                 concept = str(x).strip()
                 break
 
-        # último valor útil de la fila
         for x in reversed(row):
             if pd.notna(x) and str(x).strip() != "":
                 value = x
@@ -369,14 +390,13 @@ def _extract_comitente_from_title(raw: pd.DataFrame, fallback_name: str) -> str:
 
 
 def _parse_uploaded_report(file) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, str]]:
-    raw = pd.read_excel(file, header=None)
+    raw = _read_excel_robust(file)
 
     detail = _extract_table_block(raw)
     summary = _extract_financial_summary(raw)
     comitente = _extract_comitente_from_title(raw, file.name)
     period_text = _extract_period_text(raw)
 
-    # quitar total del detalle
     detail = detail[detail["Ticker"].str.upper() != "TOTAL"].copy()
     detail["Comitente"] = comitente
 
@@ -487,7 +507,7 @@ def render() -> None:
             "Subí los 3 archivos de comitentes",
             type=["xls", "xlsx"],
             accept_multiple_files=True,
-            help="Idealmente, subí los excels ya armados con el formato del reporte: Detalle de Posiciones y Rendimiento.",
+            help="Subí los excels con el formato del reporte: Detalle de Posiciones y Rendimiento.",
         )
 
     with top_right:
@@ -535,7 +555,6 @@ def render() -> None:
         st.warning("No se pudo construir el consolidado.")
         return
 
-    # filtros
     filter_col1, filter_col2, filter_col3 = st.columns([1, 1, 1], gap="medium")
     with filter_col1:
         comitentes = sorted(detail_all["Comitente"].dropna().unique().tolist())
@@ -570,7 +589,6 @@ def render() -> None:
         st.warning("Con los filtros aplicados no hay registros para mostrar.")
         return
 
-    # KPIs
     capital_invertido = df["Costo_Total_USD"].sum()
     cobrado = df["Cobrado_RTA_DIV_USD"].sum()
     ventas = df["Ventas_USD"].sum()
@@ -646,7 +664,6 @@ def render() -> None:
         unsafe_allow_html=True,
     )
 
-    # tablas resumen
     by_asset = (
         df.groupby("Ticker", as_index=False)
         .agg(
@@ -658,7 +675,10 @@ def render() -> None:
             Ventas_USD=("Ventas_USD", "sum"),
             Rendimiento_Neto_USD=("Rendimiento_Neto_USD", "sum"),
         )
-        .sort_values(sort_metric, ascending=True if sort_metric in ["Rendimiento_Neto_USD", "Costo_Total_USD"] else False)
+        .sort_values(
+            sort_metric,
+            ascending=True if sort_metric in ["Rendimiento_Neto_USD", "Costo_Total_USD"] else False,
+        )
         .reset_index(drop=True)
     )
 
@@ -678,7 +698,6 @@ def render() -> None:
 
     current_positions = df[df["Saldo_Tenencia"] > 0].copy().sort_values("Rendimiento_Neto_USD")
 
-    # charts
     chart_by_asset = px.bar(
         by_asset.sort_values("Rendimiento_Neto_USD"),
         x="Rendimiento_Neto_USD",
@@ -743,7 +762,6 @@ def render() -> None:
         yaxis_title=None,
     )
 
-    # meta visual
     period_texts = [m["period_text"] for m in metas if m.get("period_text")]
     if period_texts:
         st.caption(" | ".join(period_texts[:3]))
@@ -767,7 +785,7 @@ def render() -> None:
             st.markdown(
                 f"""
                 **Consolidado actual**
-                
+
                 El resultado neto consolidado asciende a **{_fmt_usd(rendimiento)}**, sobre una base de capital
                 invertido de **{_fmt_usd(capital_invertido)}**, lo que implica un rendimiento de
                 **{_fmt_pct(rendimiento_pct)}** sobre capital.
@@ -802,15 +820,15 @@ def render() -> None:
                 }
             )
 
-            st.dataframe(
-                summary_resume.style.format(
-                    {
-                        "Valor": lambda x: _fmt_pct(x) if abs(x) < 500 and summary_resume.loc[summary_resume["Valor"] == x, "Concepto"].iloc[0] == "% sobre capital" else f"{x:,.2f}"
-                    }
-                ),
-                use_container_width=True,
-                hide_index=True,
+            summary_resume_display = summary_resume.copy()
+            summary_resume_display["Valor"] = summary_resume_display.apply(
+                lambda row: _fmt_pct(row["Valor"])
+                if row["Concepto"] == "% sobre capital"
+                else _fmt_usd(row["Valor"]),
+                axis=1,
             )
+
+            st.dataframe(summary_resume_display, use_container_width=True, hide_index=True)
 
         with top_r:
             st.plotly_chart(chart_by_asset, use_container_width=True)
@@ -902,13 +920,10 @@ def render() -> None:
         if not summary_all.empty:
             st.markdown('<div class="neix-section-title">Resumen financiero por comitente</div>', unsafe_allow_html=True)
             sum_filtered = summary_all[summary_all["Comitente"].isin(selected_comitentes)].copy()
-            st.dataframe(
-                sum_filtered.style.format({"Valor": "USD {:,.2f}"}),
-                use_container_width=True,
-                hide_index=True,
-            )
+            if not sum_filtered.empty:
+                sum_filtered["Valor"] = sum_filtered["Valor"].apply(_fmt_usd)
+                st.dataframe(sum_filtered, use_container_width=True, hide_index=True)
 
-    # export
     export_bytes = _build_export_excel(
         detail_all=df,
         summary_all=summary_all[summary_all["Comitente"].isin(selected_comitentes)].copy() if not summary_all.empty else pd.DataFrame(),
@@ -933,9 +948,6 @@ def render() -> None:
         )
 
 
-# =========================================================
-# MODO STANDALONE
-# =========================================================
 if __name__ == "__main__":
     st.set_page_config(
         page_title="NEIX · Rendimiento de Cartera",
