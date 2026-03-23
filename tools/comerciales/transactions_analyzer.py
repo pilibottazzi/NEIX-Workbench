@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 from io import BytesIO
@@ -28,8 +29,8 @@ def _inject_css() -> None:
         f"""
         <style>
           .block-container {{
-            max-width: 1380px;
-            padding-top: 1.15rem;
+            max-width: 1420px;
+            padding-top: 1.1rem;
             padding-bottom: 2rem;
           }}
 
@@ -44,8 +45,8 @@ def _inject_css() -> None:
           .neix-hero {{
             background: linear-gradient(135deg, #121926 0%, #1b2435 100%);
             border: 1px solid rgba(255,255,255,0.04);
-            border-radius: 24px;
-            padding: 1.4rem 1.5rem 1.15rem 1.5rem;
+            border-radius: 26px;
+            padding: 1.45rem 1.55rem 1.2rem 1.55rem;
             color: white;
             box-shadow: 0 16px 40px rgba(17,24,39,0.10);
             margin-bottom: 1rem;
@@ -95,7 +96,7 @@ def _inject_css() -> None:
             font-size: 1.03rem;
             font-weight: 800;
             color: {NEIX_DARK};
-            margin: 0.4rem 0 0.7rem 0;
+            margin: 0.35rem 0 0.75rem 0;
             letter-spacing: -0.01em;
           }}
 
@@ -103,7 +104,7 @@ def _inject_css() -> None:
             background: {CARD_BG};
             border: 1px solid {BORDER};
             border-radius: 22px;
-            padding: 1rem 1rem 0.9rem 1rem;
+            padding: 1rem 1rem 0.95rem 1rem;
             box-shadow: 0 10px 30px rgba(17,24,39,0.04);
           }}
 
@@ -118,7 +119,7 @@ def _inject_css() -> None:
 
           .neix-kpi-label {{
             color: {NEIX_MUTED};
-            font-size: 0.80rem;
+            font-size: 0.79rem;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.06em;
@@ -127,7 +128,7 @@ def _inject_css() -> None:
 
           .neix-kpi-value {{
             color: {NEIX_DARK};
-            font-size: 1.7rem;
+            font-size: 1.65rem;
             font-weight: 800;
             letter-spacing: -0.03em;
             line-height: 1.05;
@@ -155,7 +156,7 @@ def _inject_css() -> None:
           }}
 
           div[data-testid="stFileUploader"] {{
-            background: rgba(255,255,255,0.72);
+            background: rgba(255,255,255,0.74);
             border: 1px dashed rgba(17,24,39,0.16);
             border-radius: 18px;
             padding: 0.35rem 0.5rem 0.1rem 0.5rem;
@@ -199,10 +200,6 @@ def _inject_css() -> None:
 # HELPERS
 # =========================================================
 def _read_excel_robust(file) -> pd.DataFrame:
-    """
-    Lee archivos .xls o .xlsx forzando engine correcto.
-    Resetea puntero para evitar errores al reintentar lectura.
-    """
     file_name = getattr(file, "name", "").lower()
 
     try:
@@ -213,11 +210,9 @@ def _read_excel_robust(file) -> pd.DataFrame:
             file.seek(0)
             return pd.read_excel(file, header=None, engine="openpyxl")
 
-        # fallback si extensión rara
         file.seek(0)
         return pd.read_excel(file, header=None)
     except Exception as first_error:
-        # segundo intento por si la extensión no coincide con el contenido
         try:
             file.seek(0)
             return pd.read_excel(file, header=None, engine="openpyxl")
@@ -227,9 +222,15 @@ def _read_excel_robust(file) -> pd.DataFrame:
                 return pd.read_excel(file, header=None, engine="xlrd")
             except Exception:
                 raise ValueError(
-                    f"No se pudo leer el archivo '{getattr(file, 'name', 'sin_nombre')}'. "
-                    f"Verificá que sea un Excel válido (.xls o .xlsx). Error original: {first_error}"
+                    f"No se pudo leer '{getattr(file, 'name', 'archivo')}'. "
+                    f"Error original: {first_error}"
                 )
+
+
+def _norm_text(value) -> str:
+    if pd.isna(value):
+        return ""
+    return str(value).strip()
 
 
 def _to_float(value) -> float:
@@ -240,7 +241,7 @@ def _to_float(value) -> float:
     if s == "":
         return 0.0
 
-    s = s.replace("U$S", "").replace("USD", "").replace("ARS", "").strip()
+    s = s.replace("U$S", "").replace("USD", "").replace("ARS", "").replace("$", "").strip()
     s = s.replace(".", "").replace(",", ".")
     s = s.replace("%", "")
 
@@ -252,6 +253,10 @@ def _to_float(value) -> float:
 
 def _fmt_usd(value: float) -> str:
     return f"USD {value:,.2f}"
+
+
+def _fmt_num(value: float) -> str:
+    return f"{value:,.0f}"
 
 
 def _fmt_pct(value: float) -> str:
@@ -266,154 +271,293 @@ def _delta_class(value: float) -> str:
     return "neix-kpi-delta-neutral"
 
 
-def _find_row_index(raw: pd.DataFrame, target: str) -> Optional[int]:
-    target_up = str(target).strip().upper()
-
+def _find_row_index_contains(raw: pd.DataFrame, target: str) -> Optional[int]:
+    target_up = target.strip().upper()
     for i in range(len(raw)):
-        row_values = [str(x).strip().upper() for x in raw.iloc[i].tolist()]
-        if target_up in row_values:
+        vals = [_norm_text(x).upper() for x in raw.iloc[i].tolist()]
+        if target_up in vals:
             return i
     return None
 
 
-def _extract_table_block(raw: pd.DataFrame) -> pd.DataFrame:
-    header_idx = _find_row_index(raw, "Ticker")
-    if header_idx is None:
-        raise ValueError("No se encontró la fila de encabezados del bloque de posiciones.")
-
-    headers = [str(x).strip() for x in raw.iloc[header_idx].tolist()]
-
-    end_idx = None
-    for i in range(header_idx + 1, len(raw)):
-        first_col = str(raw.iloc[i, 0]).strip().upper()
-        if first_col == "TOTAL":
-            end_idx = i
-            break
-
-    if end_idx is None:
-        raise ValueError("No se encontró la fila TOTAL del bloque de posiciones.")
-
-    table = raw.iloc[header_idx + 1 : end_idx + 1].copy()
-    table.columns = headers
-    table = table.loc[:, ~table.columns.isna()]
-    table.columns = [str(c).strip() for c in table.columns]
-    table = table[[c for c in table.columns if c != "" and c.lower() != "nan"]].copy()
-
-    rename_map = {
-        "Cant. Comprada": "Cant_Comprada",
-        "Cant. Vendida": "Cant_Vendida",
-        "Saldo Tenencia": "Saldo_Tenencia",
-        "Costo Total (USD)": "Costo_Total_USD",
-        "Cobrado RTA/DIV (USD)": "Cobrado_RTA_DIV_USD",
-        "Ventas (USD)": "Ventas_USD",
-        "Rendimiento Neto (USD)": "Rendimiento_Neto_USD",
-    }
-    table = table.rename(columns=rename_map)
-
-    expected = [
-        "Ticker",
-        "Cant_Comprada",
-        "Cant_Vendida",
-        "Saldo_Tenencia",
-        "Costo_Total_USD",
-        "Cobrado_RTA_DIV_USD",
-        "Ventas_USD",
-        "Rendimiento_Neto_USD",
-    ]
-    missing = [c for c in expected if c not in table.columns]
-    if missing:
-        raise ValueError(f"Faltan columnas esperadas en el bloque principal: {missing}")
-
-    for col in expected[1:]:
-        table[col] = table[col].apply(_to_float)
-
-    table["Ticker"] = table["Ticker"].astype(str).str.strip()
-    return table
-
-
-def _extract_financial_summary(raw: pd.DataFrame) -> pd.DataFrame:
-    start_idx = _find_row_index(raw, "RESUMEN FINANCIERO")
-    if start_idx is None:
-        return pd.DataFrame(columns=["Concepto", "Valor"])
-
-    items: List[Dict[str, object]] = []
-
-    for i in range(start_idx + 1, min(start_idx + 25, len(raw))):
-        row = raw.iloc[i].tolist()
-        non_null = [x for x in row if pd.notna(x) and str(x).strip() != ""]
-        if len(non_null) == 0:
-            continue
-
-        concept = None
-        value = None
-
-        for x in row[:4]:
-            if pd.notna(x) and str(x).strip() != "":
-                concept = str(x).strip()
-                break
-
-        for x in reversed(row):
-            if pd.notna(x) and str(x).strip() != "":
-                value = x
-                break
-
-        if concept is None:
-            continue
-
-        if str(concept).strip().upper() == "RESUMEN FINANCIERO":
-            continue
-
-        items.append({"Concepto": concept, "Valor": _to_float(value)})
-
-    out = pd.DataFrame(items)
-    if not out.empty:
-        out["Concepto"] = out["Concepto"].astype(str).str.strip()
-    return out
-
-
-def _extract_period_text(raw: pd.DataFrame) -> Optional[str]:
-    for i in range(min(8, len(raw))):
-        row_values = [str(x).strip() for x in raw.iloc[i].tolist() if pd.notna(x) and str(x).strip() != ""]
-        row_text = " | ".join(row_values)
-        if "Período:" in row_text or "Periodo:" in row_text:
-            return row_text
+def _find_row_index_startswith(raw: pd.DataFrame, target: str) -> Optional[int]:
+    target_up = target.strip().upper()
+    for i in range(len(raw)):
+        vals = [_norm_text(x).upper() for x in raw.iloc[i].tolist()]
+        joined = " | ".join([v for v in vals if v])
+        if joined.startswith(target_up):
+            return i
     return None
 
 
-def _extract_comitente_from_title(raw: pd.DataFrame, fallback_name: str) -> str:
-    for i in range(min(5, len(raw))):
-        row_values = [str(x).strip() for x in raw.iloc[i].tolist() if pd.notna(x) and str(x).strip() != ""]
-        row_text = " ".join(row_values)
-        if "COMITENTE" in row_text.upper():
-            return row_text.replace("— DETALLE DE POSICIONES Y RENDIMIENTO", "").strip()
-    return Path(fallback_name).stem
-
-
-def _parse_uploaded_report(file) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, str]]:
-    raw = _read_excel_robust(file)
-
-    detail = _extract_table_block(raw)
-    summary = _extract_financial_summary(raw)
-    comitente = _extract_comitente_from_title(raw, file.name)
-    period_text = _extract_period_text(raw)
-
-    detail = detail[detail["Ticker"].str.upper() != "TOTAL"].copy()
-    detail["Comitente"] = comitente
-
+def _extract_metadata_from_activity(raw: pd.DataFrame, fallback_name: str) -> Dict[str, str]:
     meta = {
-        "comitente": comitente,
-        "period_text": period_text or "",
-        "filename": file.name,
+        "usuario": "",
+        "comitente": Path(fallback_name).stem,
+        "fecha_desde": "",
+        "fecha_hasta": "",
+        "filename": fallback_name,
     }
 
-    if not summary.empty:
-        summary["Comitente"] = comitente
+    # en tu formato:
+    # fila 3 encabezados: Usuario | Comitente | Fecha Desde | Fecha Hasta ...
+    # fila 4 valores
+    try:
+        headers_row = raw.iloc[2].tolist()
+        values_row = raw.iloc[3].tolist()
 
-    return detail, summary, meta
+        headers = [_norm_text(x).upper() for x in headers_row]
+        values = [_norm_text(x) for x in values_row]
+
+        mapping = dict(zip(headers, values))
+
+        if "USUARIO" in mapping:
+            meta["usuario"] = mapping["USUARIO"]
+        if "COMITENTE" in mapping:
+            meta["comitente"] = mapping["COMITENTE"]
+        if "FECHA DESDE" in mapping:
+            meta["fecha_desde"] = mapping["FECHA DESDE"]
+        if "FECHA HASTA" in mapping:
+            meta["fecha_hasta"] = mapping["FECHA HASTA"]
+    except Exception:
+        pass
+
+    return meta
 
 
-def _styled_detail(df: pd.DataFrame):
-    show_cols = [
+def _parse_activity_detail(raw: pd.DataFrame) -> pd.DataFrame:
+    header_idx = _find_row_index_contains(raw, "Fecha de Emisión")
+    if header_idx is None:
+        raise ValueError("No encontré la fila de encabezados del bloque Detalle.")
+
+    headers = [_norm_text(x) for x in raw.iloc[header_idx].tolist()]
+    detail = raw.iloc[header_idx + 1 :].copy()
+    detail.columns = headers
+
+    detail = detail.loc[:, [c for c in detail.columns if c != ""]].copy()
+
+    expected_cols = [
+        "Fecha de Emisión",
+        "Fecha Liquidación",
+        "Comprobante",
+        "Nro. de Comprobante",
+        "Ticker",
+        "Cantidad",
+        "Precio",
+        "Moneda",
+        "Importe Pesos",
+        "Importe En Moneda",
+    ]
+    missing = [c for c in expected_cols if c not in detail.columns]
+    if missing:
+        raise ValueError(f"Faltan columnas en Activity: {missing}")
+
+    # limpiar filas vacías reales
+    detail = detail[
+        detail[expected_cols]
+        .astype(str)
+        .apply(lambda row: any(str(x).strip() not in {"", "nan", "None"} for x in row), axis=1)
+    ].copy()
+
+    # normalizar
+    detail["Comprobante"] = detail["Comprobante"].astype(str).str.strip().str.upper()
+    detail["Ticker"] = detail["Ticker"].fillna("").astype(str).str.strip().str.upper()
+    detail["Moneda"] = detail["Moneda"].fillna("").astype(str).str.strip()
+
+    detail["Cantidad_num"] = detail["Cantidad"].apply(_to_float)
+    detail["Precio_num"] = detail["Precio"].apply(_to_float)
+    detail["Importe_Pesos_num"] = detail["Importe Pesos"].apply(_to_float)
+    detail["Importe_Moneda_num"] = detail["Importe En Moneda"].apply(_to_float)
+
+    detail["Fecha_Emision_dt"] = pd.to_datetime(detail["Fecha de Emisión"], dayfirst=True, errors="coerce")
+    detail["Fecha_Liquidacion_dt"] = pd.to_datetime(detail["Fecha Liquidación"], dayfirst=True, errors="coerce")
+
+    return detail
+
+
+def _is_usd_row(moneda: str) -> bool:
+    m = _norm_text(moneda).upper()
+    return m in {"DOLAR LOCAL", "U$S EXTERIOR", "USD EXTERIOR", "USD", "US$"}
+
+
+def _is_pesos_row(moneda: str) -> bool:
+    return _norm_text(moneda).upper() == "PESOS"
+
+
+def _classify_flow_columns(detail: pd.DataFrame) -> pd.DataFrame:
+    df = detail.copy()
+
+    df["USD_Flow"] = df.apply(
+        lambda r: r["Importe_Moneda_num"] if _is_usd_row(r["Moneda"]) else 0.0,
+        axis=1,
+    )
+
+    df["ARS_Flow"] = df.apply(
+        lambda r: r["Importe_Pesos_num"] if _is_pesos_row(r["Moneda"]) else 0.0,
+        axis=1,
+    )
+
+    return df
+
+
+def _build_summary_from_activity(detail: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Construye tabla por ticker similar al reporte que querés:
+    - Cant. Comprada
+    - Cant. Vendida
+    - Saldo Tenencia
+    - Costo Total (USD)
+    - Cobrado RTA/DIV (USD)
+    - Ventas (USD)
+    - Rendimiento Neto (USD)
+
+    Supuestos prácticos:
+    - Compras: COMPRA / LICITACION con flujo USD negativo
+    - Ventas: VENTA con flujo USD positivo
+    - Cobrado RTA/DIV: RTA/AMORT / CREDITO RTA con flujo USD positivo
+    - Gastos USD: PAU$ / DEBITO RTA / similares => afectan rendimiento
+    - Saldo Tenencia: compras - ventas, usando cantidad
+    """
+    df = _classify_flow_columns(detail)
+
+    trade_tickers = df["Ticker"].replace("", pd.NA).dropna().unique().tolist()
+    if not trade_tickers:
+        raise ValueError("No encontré tickers operables dentro del Activity.")
+
+    rows = []
+
+    buy_types = {"COMPRA", "LICITACION"}
+    sell_types = {"VENTA"}
+    income_types = {"RTA/AMORT", "CREDITO RTA", "DIVIDENDO", "CREDITO DIV", "RTA", "AMORT"}
+    expense_types = {"PAU$", "DEBITO RTA"}
+
+    for ticker in sorted(trade_tickers):
+        dft = df[df["Ticker"] == ticker].copy()
+
+        qty_bought = dft.loc[
+            (dft["Comprobante"].isin(buy_types)) & (dft["Cantidad_num"] > 0),
+            "Cantidad_num",
+        ].sum()
+
+        qty_sold = abs(
+            dft.loc[
+                (dft["Comprobante"].isin(sell_types)) & (dft["Cantidad_num"] < 0),
+                "Cantidad_num",
+            ].sum()
+        )
+
+        # si alguna venta viene positiva, también la tomo
+        qty_sold += dft.loc[
+            (dft["Comprobante"].isin(sell_types)) & (dft["Cantidad_num"] > 0),
+            "Cantidad_num",
+        ].sum()
+
+        cost_total_usd = abs(
+            dft.loc[
+                (dft["Comprobante"].isin(buy_types)) & (dft["USD_Flow"] < 0),
+                "USD_Flow",
+            ].sum()
+        )
+
+        ventas_usd = dft.loc[
+            (dft["Comprobante"].isin(sell_types)) & (dft["USD_Flow"] > 0),
+            "USD_Flow",
+        ].sum()
+
+        cobrado_rta_div_usd = dft.loc[
+            (dft["Comprobante"].isin(income_types)) & (dft["USD_Flow"] > 0),
+            "USD_Flow",
+        ].sum()
+
+        gastos_usd = abs(
+            dft.loc[
+                (dft["Comprobante"].isin(expense_types)) & (dft["USD_Flow"] < 0),
+                "USD_Flow",
+            ].sum()
+        )
+
+        # rend. neto "cash" por ticker
+        rendimiento_neto_usd = ventas_usd + cobrado_rta_div_usd - cost_total_usd - gastos_usd
+
+        saldo_tenencia = qty_bought - qty_sold
+
+        rows.append(
+            {
+                "Ticker": ticker,
+                "Cant_Comprada": qty_bought,
+                "Cant_Vendida": qty_sold,
+                "Saldo_Tenencia": saldo_tenencia,
+                "Costo_Total_USD": cost_total_usd,
+                "Cobrado_RTA_DIV_USD": cobrado_rta_div_usd,
+                "Ventas_USD": ventas_usd,
+                "Gastos_USD": gastos_usd,
+                "Rendimiento_Neto_USD": rendimiento_neto_usd,
+            }
+        )
+
+    by_ticker = pd.DataFrame(rows)
+
+    # resumen financiero consolidado
+    capital_ingresado_usd = df.loc[
+        (df["Comprobante"] == "RECIBO") & (df["USD_Flow"] > 0),
+        "USD_Flow",
+    ].sum()
+
+    capital_ingresado_ars = df.loc[
+        (df["Comprobante"] == "RECIBO") & (df["ARS_Flow"] > 0),
+        "ARS_Flow",
+    ].sum()
+
+    total_compras_usd = by_ticker["Costo_Total_USD"].sum()
+    total_ventas_usd = by_ticker["Ventas_USD"].sum()
+    total_cobrado_usd = by_ticker["Cobrado_RTA_DIV_USD"].sum()
+    total_gastos_usd = by_ticker["Gastos_USD"].sum()
+
+    gastos_custodia_ars = abs(
+        df.loc[
+            (df["Comprobante"] == "GS CUSTODIA") & (df["ARS_Flow"] < 0),
+            "ARS_Flow",
+        ].sum()
+    )
+
+    # cash flow puro en USD, sin ARS
+    rendimiento_neto_cash_usd = capital_ingresado_usd - total_compras_usd + total_ventas_usd + total_cobrado_usd - total_gastos_usd
+    pct_sobre_capital_usd = (rendimiento_neto_cash_usd / capital_ingresado_usd * 100) if capital_ingresado_usd else 0.0
+
+    resumen_financiero = pd.DataFrame(
+        [
+            {"Concepto": "Capital ingresado (USD)", "Valor": capital_ingresado_usd},
+            {"Concepto": "Capital ingresado (ARS)", "Valor": capital_ingresado_ars},
+            {"Concepto": "Total compras (USD)", "Valor": total_compras_usd},
+            {"Concepto": "Total ventas (USD)", "Valor": total_ventas_usd},
+            {"Concepto": "Cobrado en RTA/Dividendos (USD)", "Valor": total_cobrado_usd},
+            {"Concepto": "Gastos custodia (ARS)", "Valor": gastos_custodia_ars},
+            {"Concepto": "Gastos PAU$ / Débitos (USD)", "Valor": total_gastos_usd},
+            {"Concepto": "Rendimiento neto USD (cash flow)", "Valor": rendimiento_neto_cash_usd},
+            {"Concepto": "% sobre capital USD", "Valor": pct_sobre_capital_usd},
+        ]
+    )
+
+    return by_ticker, resumen_financiero
+
+
+def _parse_uploaded_activity(file) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, str]]:
+    raw = _read_excel_robust(file)
+    meta = _extract_metadata_from_activity(raw, file.name)
+    detail = _parse_activity_detail(raw)
+    summary_ticker, summary_fin = _build_summary_from_activity(detail)
+
+    comitente = meta["comitente"]
+
+    detail["Comitente"] = comitente
+    summary_ticker["Comitente"] = comitente
+    summary_fin["Comitente"] = comitente
+
+    return detail, summary_ticker, summary_fin, meta
+
+
+def _styled_asset_table(df: pd.DataFrame):
+    cols = [
         "Comitente",
         "Ticker",
         "Cant_Comprada",
@@ -422,9 +566,10 @@ def _styled_detail(df: pd.DataFrame):
         "Costo_Total_USD",
         "Cobrado_RTA_DIV_USD",
         "Ventas_USD",
+        "Gastos_USD",
         "Rendimiento_Neto_USD",
     ]
-    tmp = df[show_cols].copy()
+    tmp = df[cols].copy()
 
     return (
         tmp.style.format(
@@ -435,40 +580,27 @@ def _styled_detail(df: pd.DataFrame):
                 "Costo_Total_USD": "USD {:,.2f}",
                 "Cobrado_RTA_DIV_USD": "USD {:,.2f}",
                 "Ventas_USD": "USD {:,.2f}",
+                "Gastos_USD": "USD {:,.2f}",
                 "Rendimiento_Neto_USD": "USD {:,.2f}",
             }
-        )
-        .applymap(
-            lambda v: "color: #ff3b30; font-weight: 700;" if isinstance(v, (int, float)) and v < 0 else "",
-            subset=["Costo_Total_USD", "Rendimiento_Neto_USD"],
-        )
-        .applymap(
-            lambda v: "color: #059669; font-weight: 700;" if isinstance(v, (int, float)) and v > 0 else "",
-            subset=["Cobrado_RTA_DIV_USD", "Ventas_USD"],
         )
     )
 
 
 def _build_export_excel(
-    detail_all: pd.DataFrame,
-    summary_all: pd.DataFrame,
-    kpis: Dict[str, float],
+    movimientos: pd.DataFrame,
+    resumen_tickers: pd.DataFrame,
+    resumen_financiero: pd.DataFrame,
     by_asset: pd.DataFrame,
     by_comitente: pd.DataFrame,
 ) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        detail_all.to_excel(writer, sheet_name="Detalle Consolidado", index=False)
-        summary_all.to_excel(writer, sheet_name="Resumen Financiero", index=False)
+        movimientos.to_excel(writer, sheet_name="Movimientos", index=False)
+        resumen_tickers.to_excel(writer, sheet_name="Resumen Tickers", index=False)
+        resumen_financiero.to_excel(writer, sheet_name="Resumen Financiero", index=False)
         by_asset.to_excel(writer, sheet_name="Por Activo", index=False)
         by_comitente.to_excel(writer, sheet_name="Por Comitente", index=False)
-
-        pd.DataFrame(
-            {
-                "KPI": list(kpis.keys()),
-                "Valor": list(kpis.values()),
-            }
-        ).to_excel(writer, sheet_name="KPIs", index=False)
 
     output.seek(0)
     return output.getvalue()
@@ -486,14 +618,14 @@ def render() -> None:
             <div class="neix-kicker">NEIX Workbench · Mesa / Clientes</div>
             <h1 class="neix-title">Dashboard Ejecutivo — Rendimiento de Cartera</h1>
             <div class="neix-subtitle">
-                Consolidado de comitentes en USD, con foco en posición actual, rendimiento neto,
-                carry cobrado y lectura ejecutiva por activo y por cuenta.
+                Lectura consolidada de archivos Activity por comitente, con foco en posición, cash performance
+                en USD, carry cobrado y apertura ejecutiva por activo y por cuenta.
             </div>
             <div class="neix-pill-row">
+                <div class="neix-pill">Activity Ready</div>
                 <div class="neix-pill">Minimalista</div>
                 <div class="neix-pill">Ejecutivo</div>
                 <div class="neix-pill">Multi-comitente</div>
-                <div class="neix-pill">WorkBench Ready</div>
             </div>
         </div>
         """,
@@ -504,21 +636,21 @@ def render() -> None:
 
     with top_left:
         uploaded_files = st.file_uploader(
-            "Subí los 3 archivos de comitentes",
+            "Subí los 3 archivos Activity de comitentes",
             type=["xls", "xlsx"],
             accept_multiple_files=True,
-            help="Subí los excels con el formato del reporte: Detalle de Posiciones y Rendimiento.",
+            help="Este módulo ahora está hecho para los Activity crudos, no para el reporte resumido.",
         )
 
     with top_right:
         st.markdown('<div class="neix-card">', unsafe_allow_html=True)
-        st.markdown('<div class="neix-section-title">Criterio del dashboard</div>', unsafe_allow_html=True)
+        st.markdown('<div class="neix-section-title">Cómo interpreta el archivo</div>', unsafe_allow_html=True)
         st.caption(
-            "• Todo en USD\n"
-            "\n• Consolidación por activo y por comitente"
-            "\n\n• Posición actual = saldo de tenencia"
-            "\n\n• Resultado = rendimiento neto reportado"
-            "\n\n• Pensado para comité, mesa y seguimiento ejecutivo"
+            "• Lee el bloque Activity crudo\n"
+            "\n• Reconstruye compras, ventas, cupones y gastos"
+            "\n\n• Calcula posición por ticker"
+            "\n\n• Consolida por comitente"
+            "\n\n• KPI principal: cash performance en USD"
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -526,17 +658,18 @@ def render() -> None:
         st.info("Subí los archivos para visualizar el dashboard.")
         return
 
-    detail_frames: List[pd.DataFrame] = []
-    summary_frames: List[pd.DataFrame] = []
+    movimientos_frames: List[pd.DataFrame] = []
+    resumen_ticker_frames: List[pd.DataFrame] = []
+    resumen_fin_frames: List[pd.DataFrame] = []
     metas: List[Dict[str, str]] = []
     parse_errors: List[str] = []
 
     for file in uploaded_files:
         try:
-            detail_df, summary_df, meta = _parse_uploaded_report(file)
-            detail_frames.append(detail_df)
-            if not summary_df.empty:
-                summary_frames.append(summary_df)
+            movimientos_df, resumen_ticker_df, resumen_fin_df, meta = _parse_uploaded_activity(file)
+            movimientos_frames.append(movimientos_df)
+            resumen_ticker_frames.append(resumen_ticker_df)
+            resumen_fin_frames.append(resumen_fin_df)
             metas.append(meta)
         except Exception as e:
             parse_errors.append(f"{file.name}: {e}")
@@ -545,29 +678,25 @@ def render() -> None:
         st.error("No pude leer correctamente algunos archivos:")
         for err in parse_errors:
             st.write(f"• {err}")
-        if not detail_frames:
-            return
 
-    detail_all = pd.concat(detail_frames, ignore_index=True) if detail_frames else pd.DataFrame()
-    summary_all = pd.concat(summary_frames, ignore_index=True) if summary_frames else pd.DataFrame()
-
-    if detail_all.empty:
-        st.warning("No se pudo construir el consolidado.")
+    if not resumen_ticker_frames:
+        st.warning("No se pudo construir información útil con los archivos cargados.")
         return
 
-    filter_col1, filter_col2, filter_col3 = st.columns([1, 1, 1], gap="medium")
-    with filter_col1:
-        comitentes = sorted(detail_all["Comitente"].dropna().unique().tolist())
-        selected_comitentes = st.multiselect(
-            "Comitentes",
-            options=comitentes,
-            default=comitentes,
-        )
+    movimientos_all = pd.concat(movimientos_frames, ignore_index=True)
+    resumen_tickers_all = pd.concat(resumen_ticker_frames, ignore_index=True)
+    resumen_fin_all = pd.concat(resumen_fin_frames, ignore_index=True)
 
-    with filter_col2:
+    # filtros
+    f1, f2, f3 = st.columns([1, 1, 1], gap="medium")
+    with f1:
+        comitentes = sorted(resumen_tickers_all["Comitente"].dropna().astype(str).unique().tolist())
+        selected_comitentes = st.multiselect("Comitentes", options=comitentes, default=comitentes)
+
+    with f2:
         only_open_positions = st.toggle("Solo posiciones abiertas", value=False)
 
-    with filter_col3:
+    with f3:
         sort_metric = st.selectbox(
             "Orden principal",
             options=[
@@ -580,41 +709,35 @@ def render() -> None:
             index=0,
         )
 
-    df = detail_all[detail_all["Comitente"].isin(selected_comitentes)].copy()
+    resumen_tickers = resumen_tickers_all[resumen_tickers_all["Comitente"].isin(selected_comitentes)].copy()
+    resumen_fin = resumen_fin_all[resumen_fin_all["Comitente"].isin(selected_comitentes)].copy()
+    movimientos = movimientos_all[movimientos_all["Comitente"].isin(selected_comitentes)].copy()
 
     if only_open_positions:
-        df = df[df["Saldo_Tenencia"] > 0].copy()
+        resumen_tickers = resumen_tickers[resumen_tickers["Saldo_Tenencia"] > 0].copy()
 
-    if df.empty:
-        st.warning("Con los filtros aplicados no hay registros para mostrar.")
+    if resumen_tickers.empty:
+        st.warning("Con los filtros aplicados no hay información para mostrar.")
         return
 
-    capital_invertido = df["Costo_Total_USD"].sum()
-    cobrado = df["Cobrado_RTA_DIV_USD"].sum()
-    ventas = df["Ventas_USD"].sum()
-    rendimiento = df["Rendimiento_Neto_USD"].sum()
-    posiciones_abiertas = int((df["Saldo_Tenencia"] > 0).sum())
-    capital_base = abs(capital_invertido) if capital_invertido != 0 else 0.0
-    rendimiento_pct = (rendimiento / capital_base * 100) if capital_base else 0.0
-
-    kpis = {
-        "Capital invertido USD": capital_invertido,
-        "Cobrado USD": cobrado,
-        "Ventas USD": ventas,
-        "Rendimiento neto USD": rendimiento,
-        "% sobre capital USD": rendimiento_pct,
-    }
-
-    st.markdown("")
+    # KPIs principales
+    capital_ingresado_usd = resumen_fin.loc[resumen_fin["Concepto"] == "Capital ingresado (USD)", "Valor"].sum()
+    total_compras_usd = resumen_fin.loc[resumen_fin["Concepto"] == "Total compras (USD)", "Valor"].sum()
+    total_ventas_usd = resumen_fin.loc[resumen_fin["Concepto"] == "Total ventas (USD)", "Valor"].sum()
+    total_cobrado_usd = resumen_fin.loc[resumen_fin["Concepto"] == "Cobrado en RTA/Dividendos (USD)", "Valor"].sum()
+    total_gastos_usd = resumen_fin.loc[resumen_fin["Concepto"] == "Gastos PAU$ / Débitos (USD)", "Valor"].sum()
+    rendimiento_cash_usd = resumen_fin.loc[resumen_fin["Concepto"] == "Rendimiento neto USD (cash flow)", "Valor"].sum()
+    rendimiento_pct = (rendimiento_cash_usd / capital_ingresado_usd * 100) if capital_ingresado_usd else 0.0
+    posiciones_abiertas = int((resumen_tickers["Saldo_Tenencia"] > 0).sum())
 
     k1, k2, k3, k4, k5 = st.columns(5, gap="medium")
 
     k1.markdown(
         f"""
         <div class="neix-kpi">
-            <div class="neix-kpi-label">Capital invertido</div>
-            <div class="neix-kpi-value">{_fmt_usd(capital_invertido)}</div>
-            <div class="{_delta_class(capital_invertido)}">Base consolidada</div>
+            <div class="neix-kpi-label">Capital ingresado</div>
+            <div class="neix-kpi-value">{_fmt_usd(capital_ingresado_usd)}</div>
+            <div class="{_delta_class(capital_ingresado_usd)}">Base fondeada</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -623,9 +746,9 @@ def render() -> None:
     k2.markdown(
         f"""
         <div class="neix-kpi">
-            <div class="neix-kpi-label">Cobrado RTA / DIV</div>
-            <div class="neix-kpi-value">{_fmt_usd(cobrado)}</div>
-            <div class="{_delta_class(cobrado)}">Carry cobrado</div>
+            <div class="neix-kpi-label">Compras USD</div>
+            <div class="neix-kpi-value">{_fmt_usd(total_compras_usd)}</div>
+            <div class="{_delta_class(-total_compras_usd)}">Consumo de capital</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -634,9 +757,9 @@ def render() -> None:
     k3.markdown(
         f"""
         <div class="neix-kpi">
-            <div class="neix-kpi-label">Ventas</div>
-            <div class="neix-kpi-value">{_fmt_usd(ventas)}</div>
-            <div class="{_delta_class(ventas)}">Realizado por ventas</div>
+            <div class="neix-kpi-label">Ventas USD</div>
+            <div class="neix-kpi-value">{_fmt_usd(total_ventas_usd)}</div>
+            <div class="{_delta_class(total_ventas_usd)}">Realizado</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -645,9 +768,9 @@ def render() -> None:
     k4.markdown(
         f"""
         <div class="neix-kpi">
-            <div class="neix-kpi-label">Rendimiento neto</div>
-            <div class="neix-kpi-value">{_fmt_usd(rendimiento)}</div>
-            <div class="{_delta_class(rendimiento)}">Resultado consolidado</div>
+            <div class="neix-kpi-label">Cobrado RTA / DIV</div>
+            <div class="neix-kpi-value">{_fmt_usd(total_cobrado_usd)}</div>
+            <div class="{_delta_class(total_cobrado_usd)}">Carry cobrado</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -656,16 +779,17 @@ def render() -> None:
     k5.markdown(
         f"""
         <div class="neix-kpi">
-            <div class="neix-kpi-label">% sobre capital</div>
-            <div class="neix-kpi-value">{_fmt_pct(rendimiento_pct)}</div>
-            <div class="{_delta_class(rendimiento_pct)}">{posiciones_abiertas} posiciones abiertas</div>
+            <div class="neix-kpi-label">Rendimiento neto</div>
+            <div class="neix-kpi-value">{_fmt_usd(rendimiento_cash_usd)}</div>
+            <div class="{_delta_class(rendimiento_cash_usd)}">{_fmt_pct(rendimiento_pct)} · {posiciones_abiertas} abiertas</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+    # tablas consolidadas
     by_asset = (
-        df.groupby("Ticker", as_index=False)
+        resumen_tickers.groupby("Ticker", as_index=False)
         .agg(
             Cant_Comprada=("Cant_Comprada", "sum"),
             Cant_Vendida=("Cant_Vendida", "sum"),
@@ -673,31 +797,34 @@ def render() -> None:
             Costo_Total_USD=("Costo_Total_USD", "sum"),
             Cobrado_RTA_DIV_USD=("Cobrado_RTA_DIV_USD", "sum"),
             Ventas_USD=("Ventas_USD", "sum"),
+            Gastos_USD=("Gastos_USD", "sum"),
             Rendimiento_Neto_USD=("Rendimiento_Neto_USD", "sum"),
         )
         .sort_values(
             sort_metric,
-            ascending=True if sort_metric in ["Rendimiento_Neto_USD", "Costo_Total_USD"] else False,
+            ascending=True if sort_metric in {"Rendimiento_Neto_USD", "Costo_Total_USD"} else False,
         )
         .reset_index(drop=True)
     )
 
     by_comitente = (
-        df.groupby("Comitente", as_index=False)
+        resumen_tickers.groupby("Comitente", as_index=False)
         .agg(
             Posiciones_Abiertas=("Saldo_Tenencia", lambda s: int((s > 0).sum())),
             Cantidad_Activos=("Ticker", "nunique"),
             Costo_Total_USD=("Costo_Total_USD", "sum"),
             Cobrado_RTA_DIV_USD=("Cobrado_RTA_DIV_USD", "sum"),
             Ventas_USD=("Ventas_USD", "sum"),
+            Gastos_USD=("Gastos_USD", "sum"),
             Rendimiento_Neto_USD=("Rendimiento_Neto_USD", "sum"),
         )
         .sort_values("Rendimiento_Neto_USD")
         .reset_index(drop=True)
     )
 
-    current_positions = df[df["Saldo_Tenencia"] > 0].copy().sort_values("Rendimiento_Neto_USD")
+    current_positions = resumen_tickers[resumen_tickers["Saldo_Tenencia"] > 0].copy().sort_values("Rendimiento_Neto_USD")
 
+    # gráficos
     chart_by_asset = px.bar(
         by_asset.sort_values("Rendimiento_Neto_USD"),
         x="Rendimiento_Neto_USD",
@@ -727,7 +854,7 @@ def render() -> None:
         text_auto=".2s",
     )
     chart_by_comitente.update_layout(
-        height=max(320, 75 * len(by_comitente)),
+        height=max(320, 72 * len(by_comitente)),
         plot_bgcolor="white",
         paper_bgcolor="white",
         margin=dict(l=10, r=10, t=55, b=10),
@@ -740,7 +867,8 @@ def render() -> None:
 
     position_mix = current_positions.copy()
     if position_mix.empty:
-        position_mix = df.nlargest(min(10, len(df)), "Saldo_Tenencia").copy()
+        position_mix = by_asset.nlargest(min(10, len(by_asset)), "Saldo_Tenencia").copy()
+        position_mix["Comitente"] = "Consolidado"
 
     chart_positions = px.bar(
         position_mix.sort_values("Saldo_Tenencia"),
@@ -762,18 +890,24 @@ def render() -> None:
         yaxis_title=None,
     )
 
-    period_texts = [m["period_text"] for m in metas if m.get("period_text")]
-    if period_texts:
-        st.caption(" | ".join(period_texts[:3]))
+    # metadata visual
+    if metas:
+        periods = []
+        for m in metas:
+            txt = f"Comitente {m.get('comitente','')}"
+            if m.get("fecha_desde") or m.get("fecha_hasta"):
+                txt += f" · {m.get('fecha_desde','')} → {m.get('fecha_hasta','')}"
+            periods.append(txt)
+        st.caption(" | ".join(periods))
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["Resumen Ejecutivo", "Posición Actual", "Rendimiento", "Por Comitente", "Detalle"]
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        ["Resumen Ejecutivo", "Posición Actual", "Rendimiento", "Por Comitente", "Movimientos", "Resumen Financiero"]
     )
 
     with tab1:
-        top_l, top_r = st.columns([1.1, 0.9], gap="large")
+        left, right = st.columns([1.05, 0.95], gap="large")
 
-        with top_l:
+        with left:
             st.markdown('<div class="neix-section-title">Lectura ejecutiva</div>', unsafe_allow_html=True)
             st.markdown('<div class="neix-card">', unsafe_allow_html=True)
 
@@ -784,10 +918,10 @@ def render() -> None:
 
             st.markdown(
                 f"""
-                **Consolidado actual**
+                **Vista consolidada**
 
-                El resultado neto consolidado asciende a **{_fmt_usd(rendimiento)}**, sobre una base de capital
-                invertido de **{_fmt_usd(capital_invertido)}**, lo que implica un rendimiento de
+                El cash performance consolidado asciende a **{_fmt_usd(rendimiento_cash_usd)}**
+                sobre un capital ingresado de **{_fmt_usd(capital_ingresado_usd)}**, equivalente a
                 **{_fmt_pct(rendimiento_pct)}** sobre capital.
 
                 **Activo con peor contribución:** {worst_asset.iloc[0]['Ticker']} ({_fmt_usd(worst_asset.iloc[0]['Rendimiento_Neto_USD'])})  
@@ -797,44 +931,39 @@ def render() -> None:
                 **Comitente con mejor resultado:** {best_comitente.iloc[0]['Comitente']} ({_fmt_usd(best_comitente.iloc[0]['Rendimiento_Neto_USD'])})
                 """
             )
-
             st.markdown("</div>", unsafe_allow_html=True)
 
-            st.markdown('<div class="neix-section-title">Resumen financiero consolidado</div>', unsafe_allow_html=True)
-            summary_resume = pd.DataFrame(
+            resumen_display = pd.DataFrame(
                 {
                     "Concepto": [
-                        "Capital invertido",
+                        "Capital ingresado",
+                        "Compras USD",
+                        "Ventas USD",
                         "Cobrado RTA / DIV",
-                        "Ventas",
+                        "Gastos USD",
                         "Rendimiento neto",
                         "% sobre capital",
                     ],
                     "Valor": [
-                        capital_invertido,
-                        cobrado,
-                        ventas,
-                        rendimiento,
-                        rendimiento_pct,
+                        _fmt_usd(capital_ingresado_usd),
+                        _fmt_usd(total_compras_usd),
+                        _fmt_usd(total_ventas_usd),
+                        _fmt_usd(total_cobrado_usd),
+                        _fmt_usd(total_gastos_usd),
+                        _fmt_usd(rendimiento_cash_usd),
+                        _fmt_pct(rendimiento_pct),
                     ],
                 }
             )
 
-            summary_resume_display = summary_resume.copy()
-            summary_resume_display["Valor"] = summary_resume_display.apply(
-                lambda row: _fmt_pct(row["Valor"])
-                if row["Concepto"] == "% sobre capital"
-                else _fmt_usd(row["Valor"]),
-                axis=1,
-            )
+            st.markdown('<div class="neix-section-title">Resumen consolidado</div>', unsafe_allow_html=True)
+            st.dataframe(resumen_display, use_container_width=True, hide_index=True)
 
-            st.dataframe(summary_resume_display, use_container_width=True, hide_index=True)
-
-        with top_r:
+        with right:
             st.plotly_chart(chart_by_asset, use_container_width=True)
 
     with tab2:
-        left, right = st.columns([1.05, 0.95], gap="large")
+        left, right = st.columns([1.02, 0.98], gap="large")
 
         with left:
             st.markdown('<div class="neix-section-title">Posiciones abiertas</div>', unsafe_allow_html=True)
@@ -848,6 +977,7 @@ def render() -> None:
                         "Saldo_Tenencia",
                         "Costo_Total_USD",
                         "Cobrado_RTA_DIV_USD",
+                        "Gastos_USD",
                         "Rendimiento_Neto_USD",
                     ]
                 ].copy()
@@ -858,6 +988,7 @@ def render() -> None:
                             "Saldo_Tenencia": "{:,.0f}",
                             "Costo_Total_USD": "USD {:,.2f}",
                             "Cobrado_RTA_DIV_USD": "USD {:,.2f}",
+                            "Gastos_USD": "USD {:,.2f}",
                             "Rendimiento_Neto_USD": "USD {:,.2f}",
                         }
                     ),
@@ -869,31 +1000,17 @@ def render() -> None:
             st.plotly_chart(chart_positions, use_container_width=True)
 
     with tab3:
-        left, right = st.columns([1.0, 1.0], gap="large")
+        left, right = st.columns([1, 1], gap="large")
 
         with left:
             st.markdown('<div class="neix-section-title">Ranking por activo</div>', unsafe_allow_html=True)
-            st.dataframe(
-                by_asset.style.format(
-                    {
-                        "Cant_Comprada": "{:,.0f}",
-                        "Cant_Vendida": "{:,.0f}",
-                        "Saldo_Tenencia": "{:,.0f}",
-                        "Costo_Total_USD": "USD {:,.2f}",
-                        "Cobrado_RTA_DIV_USD": "USD {:,.2f}",
-                        "Ventas_USD": "USD {:,.2f}",
-                        "Rendimiento_Neto_USD": "USD {:,.2f}",
-                    }
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
+            st.dataframe(_styled_asset_table(resumen_tickers), use_container_width=True, hide_index=True)
 
         with right:
             st.plotly_chart(chart_by_asset, use_container_width=True)
 
     with tab4:
-        left, right = st.columns([0.95, 1.05], gap="large")
+        left, right = st.columns([0.96, 1.04], gap="large")
 
         with left:
             st.markdown('<div class="neix-section-title">Resumen por comitente</div>', unsafe_allow_html=True)
@@ -903,6 +1020,7 @@ def render() -> None:
                         "Costo_Total_USD": "USD {:,.2f}",
                         "Cobrado_RTA_DIV_USD": "USD {:,.2f}",
                         "Ventas_USD": "USD {:,.2f}",
+                        "Gastos_USD": "USD {:,.2f}",
                         "Rendimiento_Neto_USD": "USD {:,.2f}",
                     }
                 ),
@@ -914,32 +1032,51 @@ def render() -> None:
             st.plotly_chart(chart_by_comitente, use_container_width=True)
 
     with tab5:
-        st.markdown('<div class="neix-section-title">Detalle consolidado</div>', unsafe_allow_html=True)
-        st.dataframe(_styled_detail(df), use_container_width=True, hide_index=True)
+        st.markdown('<div class="neix-section-title">Movimientos crudos</div>', unsafe_allow_html=True)
 
-        if not summary_all.empty:
-            st.markdown('<div class="neix-section-title">Resumen financiero por comitente</div>', unsafe_allow_html=True)
-            sum_filtered = summary_all[summary_all["Comitente"].isin(selected_comitentes)].copy()
-            if not sum_filtered.empty:
-                sum_filtered["Valor"] = sum_filtered["Valor"].apply(_fmt_usd)
-                st.dataframe(sum_filtered, use_container_width=True, hide_index=True)
+        move_show = movimientos[
+            [
+                "Comitente",
+                "Fecha de Emisión",
+                "Fecha Liquidación",
+                "Comprobante",
+                "Nro. de Comprobante",
+                "Ticker",
+                "Cantidad",
+                "Precio",
+                "Moneda",
+                "Importe Pesos",
+                "Importe En Moneda",
+            ]
+        ].copy()
+
+        st.dataframe(move_show, use_container_width=True, hide_index=True)
+
+    with tab6:
+        st.markdown('<div class="neix-section-title">Resumen financiero por comitente</div>', unsafe_allow_html=True)
+        fin_show = resumen_fin.copy()
+        fin_show["Valor"] = fin_show.apply(
+            lambda row: _fmt_pct(row["Valor"]) if row["Concepto"] == "% sobre capital USD" else f"{row['Valor']:,.2f}",
+            axis=1,
+        )
+        st.dataframe(fin_show, use_container_width=True, hide_index=True)
 
     export_bytes = _build_export_excel(
-        detail_all=df,
-        summary_all=summary_all[summary_all["Comitente"].isin(selected_comitentes)].copy() if not summary_all.empty else pd.DataFrame(),
-        kpis=kpis,
+        movimientos=movimientos,
+        resumen_tickers=resumen_tickers,
+        resumen_financiero=resumen_fin,
         by_asset=by_asset,
         by_comitente=by_comitente,
     )
 
     st.markdown("")
-    d1, d2 = st.columns([0.72, 0.28], gap="large")
-    with d1:
+    c1, c2 = st.columns([0.72, 0.28], gap="large")
+    with c1:
         st.caption(
-            "El dashboard consolida los reportes cargados y permite lectura ejecutiva por cuenta y por activo. "
-            "La lógica asume que cada archivo conserva la estructura del reporte mostrado en tu ejemplo."
+            "Este módulo está preparado para leer Activity crudo y reconstruir una vista ejecutiva consolidada. "
+            "La posición y el rendimiento se estiman a partir de compras, ventas, rentas/amortizaciones y gastos en USD."
         )
-    with d2:
+    with c2:
         st.download_button(
             "Descargar consolidado Excel",
             data=export_bytes,
@@ -948,6 +1085,9 @@ def render() -> None:
         )
 
 
+# =========================================================
+# STANDALONE
+# =========================================================
 if __name__ == "__main__":
     st.set_page_config(
         page_title="NEIX · Rendimiento de Cartera",
