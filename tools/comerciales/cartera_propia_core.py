@@ -170,7 +170,7 @@ def read_any_file(file_obj_or_path: Any) -> pd.DataFrame:
             except Exception:
                 return pd.read_csv(path, sep=";", encoding="latin1")
         if suffix in {".xlsx", ".xlsm", ".xls"}:
-            return pd.read_excel(path)
+            return _read_excel_from_path(path)
         raise ValueError(f"Formato no soportado: {suffix}")
 
     name = getattr(file_obj_or_path, "name", "uploaded_file")
@@ -187,8 +187,189 @@ def read_any_file(file_obj_or_path: Any) -> pd.DataFrame:
     if suffix in {".xlsx", ".xlsm", ".xls"}:
         if hasattr(file_obj_or_path, "seek"):
             file_obj_or_path.seek(0)
-        return pd.read_excel(file_obj_or_path)
+        return _read_excel_smart(file_obj_or_path)
     raise ValueError(f"Formato no soportado: {suffix}")
+
+
+def _read_excel_from_path(path: Path) -> pd.DataFrame:
+    """Lee excel desde path usando el parser inteligente."""
+    df_raw = pd.read_excel(path, header=None)
+    if _es_portafolio_valorizado(df_raw):
+        result = _parse_portafolio_valorizado(df_raw)
+        if not result.empty:
+            return result
+    return pd.read_excel(path)
+
+
+# =============================================================================
+# PARSER ESPECÍFICO: "Portafolio valorizado a una fecha" (formato NEIX/BYMA)
+# =============================================================================
+
+def _es_portafolio_valorizado(df_raw: pd.DataFrame) -> bool:
+    """Detecta si el archivo es del formato 'Portafolio valorizado a una fecha'."""
+    for i in range(min(5, len(df_raw))):
+        val = str(df_raw.iloc[i, 0]).lower()
+        if "portafolio valorizado" in val:
+            return True
+    return False
+
+
+def _parse_portafolio_valorizado(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Parsea el formato 'Portafolio valorizado a una fecha' exportado por BYMA/NEIX.
+
+    Estructura del archivo:
+      - Fila 2:  keys de metadata (Usuario, Comitente, ...)
+      - Fila 3:  valores (JULIAN GONZALEZ, 999, 2026-02-28, ...)
+      - Fila 15: header real (Nombre de la Especie, Estado, Cantidad, Precio, Importe, ...)
+      - Fila 16+: datos con filas de subtotal intercaladas.
+
+    IMPORTANTE: los marcadores de subtotal/sección tienen el valor literal 'asd'
+    en la columna 'Nombre de la Especie' (col 1), NO en col 0 como se asumía antes.
+    El nombre de la sección (ej: 'Acciones PESOS') aparece en la columna siguiente.
+
+    Devuelve DataFrame con columnas: cuenta, especie_h, moneda, cantidad, importe
+    """
+    # ── extraer cuenta del metadata ───────────────────────────────────────────
+    cuenta = None
+    for i in range(min(8, len(df_raw))):
+        row_vals = [str(v).strip() for v in df_raw.iloc[i].values]
+        if "Comitente" in row_vals:
+            try:
+                idx_cta = row_vals.index("Comitente")
+                cuenta = int(float(str(df_raw.iloc[i + 1, idx_cta])))
+            except (ValueError, IndexError):
+                pass
+            break
+
+    # ── encontrar fila del header real ────────────────────────────────────────
+    header_row = None
+    for i in range(len(df_raw)):
+        row_str = " ".join(str(v) for v in df_raw.iloc[i].values)
+        if "Nombre de la Especie" in row_str and "Cantidad" in row_str:
+            header_row = i
+            break
+
+    if header_row is None:
+        return pd.DataFrame()
+
+    # ── construir DataFrame con header correcto ───────────────────────────────
+    headers = [
+        str(v).strip() if str(v) not in ("nan", "NaN", "") else f"_col{j}"
+        for j, v in enumerate(df_raw.iloc[header_row].values)
+    ]
+    data_rows = df_raw.iloc[header_row + 1:].reset_index(drop=True)
+    data_rows.columns = headers
+
+    col_especie = next((c for c in headers if "Nombre" in c), None)
+    col_cant    = next((c for c in headers if c == "Cantidad"), None)
+    col_importe = next((c for c in headers if c == "Importe"), None)
+
+    if not col_especie or not col_cant:
+        return pd.DataFrame()
+
+    # indice de col_especie para buscar nombre de sección en col siguiente
+    idx_especie = headers.index(col_especie)
+
+    def _moneda_de_texto(texto: str) -> str:
+        t = str(texto).upper()
+        if any(k in t for k in ("USD", "DOLAR", "U$S", "EXTERIOR", "CABLE")):
+            return "USD"
+        return "ARS"
+
+    # Valores a ignorar en col_especie (CC, resúmenes de moneda, etc.)
+    _SKIP_UP = frozenset({
+        "PESOS", "U$S EXTERIOR", "DOLAR LOCAL", "CUENTA CORRIENTE",
+        "NAN", "", "ASD",
+    })
+    # Prefijos de filas de categoría/subtotal con nombre de sección
+    _SKIP_PREFIJOS = (
+        "ACCIONES", "TITULOS", "FUTUROS", "OPCIONES",
+        "FONDOS", "CAUCIONES", "CEDEARS", "OBLIGACIONES",
+    )
+
+    rows_out = []
+    moneda_actual = "ARS"
+
+    for _, row in data_rows.iterrows():
+        especie_raw = str(row.get(col_especie, "")).strip()
+        especie_up  = especie_raw.upper()
+
+        # ── marcador de subtotal: valor literal 'asd' en col_especie ──────────
+        # El nombre de la sección está en la primera celda no-vacía a la derecha
+        if especie_up == "ASD":
+            for h in headers[idx_especie + 1:]:
+                v = str(row.get(h, "")).strip()
+                if v and v.lower() not in ("nan", ""):
+                    moneda_actual = _moneda_de_texto(v)
+                    break
+            continue
+
+        # ── filas de resumen de moneda (CC, Pesos, U$S Exterior, etc.) ────────
+        if especie_up in _SKIP_UP:
+            moneda_actual = _moneda_de_texto(especie_up)
+            continue
+
+        # ── filas de categoría nombrada (ej: "Acciones PESOS", "Titulos Publicos") ──
+        if any(especie_up.startswith(p) for p in _SKIP_PREFIJOS):
+            moneda_actual = _moneda_de_texto(especie_up)
+            continue
+
+        # ── fila vacía o inválida ─────────────────────────────────────────────
+        if not especie_raw or especie_raw.lower() == "nan":
+            continue
+
+        # ── fila de datos real ────────────────────────────────────────────────
+        cant_raw = row.get(col_cant)
+        imp_raw  = row.get(col_importe, 0.0) if col_importe else 0.0
+
+        try:
+            cant = float(str(cant_raw).replace(",", ".")) if pd.notna(cant_raw) else 0.0
+        except (ValueError, TypeError):
+            cant = 0.0
+
+        try:
+            imp = float(str(imp_raw).replace(",", ".")) if pd.notna(imp_raw) else 0.0
+        except (ValueError, TypeError):
+            imp = 0.0
+
+        rows_out.append({
+            "cuenta":    cuenta or 0,
+            "especie_h": normalize_text(especie_raw),
+            "moneda":    moneda_actual,
+            "cantidad":  cant,
+            "importe":   imp,
+        })
+
+    if not rows_out:
+        return pd.DataFrame()
+
+    df_out = pd.DataFrame(rows_out)
+    df_out = (
+        df_out.groupby(["cuenta", "especie_h", "moneda"], as_index=False)
+        .agg({"cantidad": "sum", "importe": "sum"})
+    )
+    return df_out
+
+
+def _read_excel_smart(file_obj: Any) -> pd.DataFrame:
+    """
+    Lee un Excel intentando primero con header=0 estándar.
+    Si detecta el formato 'Portafolio valorizado a una fecha', usa el parser específico.
+    """
+    if hasattr(file_obj, "seek"):
+        file_obj.seek(0)
+    df_raw = pd.read_excel(file_obj, header=None)
+
+    if _es_portafolio_valorizado(df_raw):
+        result = _parse_portafolio_valorizado(df_raw)
+        if not result.empty:
+            return result
+
+    # Fallback: leer con header=0 estándar
+    if hasattr(file_obj, "seek"):
+        file_obj.seek(0)
+    return pd.read_excel(file_obj)
 
 
 # =============================================================================
@@ -205,6 +386,17 @@ def _prep_df(
     if df_raw is None or df_raw.empty:
         alerts.append(f"Archivo de {nombre} vacío.")
         return pd.DataFrame(columns=["cuenta", "especie_h", "moneda", "cantidad", "importe"]), alerts
+
+    # Shortcut: si el archivo ya viene pre-parseado por _parse_portafolio_valorizado
+    # tiene exactamente las columnas que necesitamos — no re-normalizar.
+    _cols_preparsed = {"cuenta", "especie_h", "moneda", "cantidad", "importe"}
+    if _cols_preparsed.issubset(set(df_raw.columns)):
+        out = df_raw[list(_cols_preparsed)].copy()
+        out["cuenta"] = pd.to_numeric(out["cuenta"], errors="coerce").fillna(0).astype(int)
+        out["cantidad"] = pd.to_numeric(out["cantidad"], errors="coerce").fillna(0.0)
+        out["importe"]  = pd.to_numeric(out["importe"],  errors="coerce").fillna(0.0)
+        out = out[out["especie_h"].astype(str).str.strip() != ""].copy()
+        return out, alerts
 
     df = normalize_columns(df_raw)
 
