@@ -10,7 +10,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 import numpy as np
 import pandas as pd
@@ -63,17 +63,58 @@ def find_first_existing(df: pd.DataFrame, candidates: Iterable[str]) -> Optional
 
 
 def to_numeric_safe(series: pd.Series) -> pd.Series:
+    """
+    Convierte una serie de strings a float manejando formatos ARS y USD.
+
+    FIX respecto a versión anterior: detecta el formato numérico ANTES de
+    normalizar separadores, evitando que '1234.56' se convierta en '123456'
+    por el reemplazo ciego de puntos.
+
+    Lógica de detección:
+    - Tiene coma Y punto → el último de los dos es el decimal
+      · '1.234,56' → europeo  (punto=miles, coma=decimal)
+      · '1,234.56' → anglosajón (coma=miles, punto=decimal)
+    - Solo coma → si hay ≤ 2 dígitos después de la última coma, es decimal
+    - Solo punto → punto como decimal (estándar)
+    """
     s = series.astype(str).str.strip()
-    s = s.str.replace("\u00a0", "", regex=False)
-    s = s.str.replace("U$S", "", regex=False)
-    s = s.str.replace("US$", "", regex=False)
-    s = s.str.replace("$", "", regex=False)
-    s = s.str.replace("(", "-", regex=False)
-    s = s.str.replace(")", "", regex=False)
-    s = s.str.replace(".", "", regex=False)
-    s = s.str.replace(",", ".", regex=False)
-    s = s.str.replace(r"^(.+)-$", r"-\1", regex=True)
-    return pd.to_numeric(s, errors="coerce").fillna(0.0)
+    s = s.str.replace("\u00a0", "", regex=False)   # espacio no separable
+    s = s.str.replace("U$S",   "", regex=False)
+    s = s.str.replace("US$",   "", regex=False)
+    s = s.str.replace("$",     "", regex=False)
+    s = s.str.replace("%",     "", regex=False)
+    s = s.str.replace(r"^\((.+)\)$", r"-\1", regex=True)   # (1234) → -1234
+    s = s.str.replace(r"^([^-].+)-$", r"-\1", regex=True)  # 1234-  → -1234
+    s = s.str.strip()
+
+    def _parse_one(val: str) -> float:
+        val = val.strip()
+        if val in ("", "nan", "none", "-", "n/a", "nd"):
+            return 0.0
+        has_dot   = "." in val
+        has_comma = "," in val
+        try:
+            if has_dot and has_comma:
+                last_dot   = val.rfind(".")
+                last_comma = val.rfind(",")
+                if last_comma > last_dot:
+                    # europeo: 1.234,56
+                    val = val.replace(".", "").replace(",", ".")
+                else:
+                    # anglosajón: 1,234.56
+                    val = val.replace(",", "")
+            elif has_comma and not has_dot:
+                parts = val.split(",")
+                if len(parts) == 2 and len(parts[1]) <= 2:
+                    val = val.replace(",", ".")   # decimal: 1234,56
+                else:
+                    val = val.replace(",", "")    # miles: 1,234,567
+            # solo punto o sin separadores: ya está bien
+            return float(val)
+        except (ValueError, TypeError):
+            return 0.0
+
+    return pd.Series([_parse_one(v) for v in s], index=series.index, dtype=float)
 
 
 def format_num(x: Any, decimals: int = 2) -> str:
@@ -220,13 +261,127 @@ class PeriodoConciliacion:
 
 
 # =============================================================================
+# SISTEMA DE REGLAS ENCHUFABLE
+# =============================================================================
+
+@dataclass
+class Regla:
+    """
+    Una regla de conciliación vectorizada.
+
+    fn(df, tolerance) → pd.Series[str]
+      Recibe el DataFrame de trabajo (con ini, act, fin, pos, dif_final,
+      moneda, especie_h, cuenta) y devuelve una Serie de strings:
+      tag si aplica, '' si no aplica.
+
+    Ejemplo de regla custom:
+        def r_al_series(df, tol):
+            mask = df["especie_h"].str.startswith("AL")
+            return pd.Series(np.where(mask, "R4_AL_SERIES", ""), index=df.index)
+
+        engine.add(Regla("al_series", "R4_AL_SERIES", r_al_series, "Bonos AL"))
+    """
+    nombre:      str
+    tag:         str
+    fn:          Callable[[pd.DataFrame, float], pd.Series]
+    descripcion: str = ""
+
+
+# ── implementaciones de las 4 reglas base ────────────────────────────────────
+
+def _r0_cierre_exacto(df: pd.DataFrame, tol: float) -> pd.Series:
+    return pd.Series(np.where(df["dif_final"].abs() <= tol, "R0_CIERRE_EXACTO", ""), index=df.index)
+
+
+def _r1_solo_posiciones(df: pd.DataFrame, tol: float) -> pd.Series:
+    mask = (df["fin"].abs() <= tol) & (df["pos"].abs() > tol)
+    return pd.Series(np.where(mask, "R1_SOLO_POSICIONES", ""), index=df.index)
+
+
+def _r2_sin_activity(df: pd.DataFrame, tol: float) -> pd.Series:
+    return pd.Series(np.where(df["act"].abs() <= tol, "R2_SIN_ACTIVITY", ""), index=df.index)
+
+
+def _r3_sin_inicial(df: pd.DataFrame, tol: float) -> pd.Series:
+    return pd.Series(np.where(df["ini"].abs() <= tol, "R3_SIN_INICIAL", ""), index=df.index)
+
+
+DEFAULT_REGLAS: list[Regla] = [
+    Regla("cierre_exacto",   "R0_CIERRE_EXACTO",   _r0_cierre_exacto,   "Diferencia dentro de tolerancia"),
+    Regla("solo_posiciones", "R1_SOLO_POSICIONES",  _r1_solo_posiciones, "Sin fin en portafolio pero sí en posiciones"),
+    Regla("sin_activity",    "R2_SIN_ACTIVITY",     _r2_sin_activity,    "Sin movimientos en el período"),
+    Regla("sin_inicial",     "R3_SIN_INICIAL",      _r3_sin_inicial,     "Especie nueva, sin posición inicial"),
+]
+
+
+class RuleEngine:
+    """
+    Motor de reglas vectorizado y enchufable.
+
+    Uso básico (reglas por defecto):
+        engine = RuleEngine()
+
+    Agregar una regla extra:
+        engine.add(Regla("mi_regla", "R4_X", mi_fn, "descripción"))
+
+    Quitar una regla:
+        engine.remove("sin_activity")
+
+    Reemplazar una regla:
+        engine.replace("sin_activity", Regla(...))
+    """
+
+    def __init__(self, reglas: list[Regla] | None = None):
+        self._reglas: list[Regla] = list(reglas if reglas is not None else DEFAULT_REGLAS)
+
+    def add(self, regla: Regla) -> None:
+        self._reglas.append(regla)
+
+    def remove(self, nombre: str) -> None:
+        self._reglas = [r for r in self._reglas if r.nombre != nombre]
+
+    def replace(self, nombre: str, nueva: Regla) -> None:
+        self._reglas = [nueva if r.nombre == nombre else r for r in self._reglas]
+
+    @property
+    def nombres(self) -> list[str]:
+        return [r.nombre for r in self._reglas]
+
+    def aplicar(self, df: pd.DataFrame, tolerance: float) -> tuple[pd.Series, pd.Series]:
+        """
+        Aplica todas las reglas de forma vectorizada.
+        Devuelve (reglas_txt, reglas_conteo) como Series sobre el índice de df.
+        """
+        resultados: list[pd.Series] = []
+        for regla in self._reglas:
+            try:
+                tags = regla.fn(df, tolerance).astype(str)
+            except Exception:
+                tags = pd.Series("", index=df.index)
+            resultados.append(tags)
+
+        combined = pd.concat(resultados, axis=1)
+        combined.columns = [r.nombre for r in self._reglas]
+
+        reglas_txt    = combined.apply(lambda row: " | ".join(v for v in row if v), axis=1)
+        reglas_conteo = combined.apply(lambda row: sum(1 for v in row if v), axis=1)
+        return reglas_txt, reglas_conteo
+
+
+# =============================================================================
 # MOTOR DE CONCILIACIÓN
 # =============================================================================
 
 class ConciliadorMensual:
-    def __init__(self, periodo: PeriodoConciliacion, tolerance: float = 0.01):
-        self.periodo = periodo
-        self.tolerance = tolerance
+    def __init__(
+        self,
+        periodo: PeriodoConciliacion,
+        tolerance: float = 0.01,
+        rule_engine: RuleEngine | None = None,
+    ):
+        self.periodo     = periodo
+        self.tolerance   = tolerance
+        self.rule_engine = rule_engine if rule_engine is not None else RuleEngine()
 
     @staticmethod
     def _ensure_base(
@@ -302,57 +457,50 @@ class ConciliadorMensual:
             return _empty_result_df(), resumen, pd.DataFrame(), pd.DataFrame()
 
         out = base.copy()
-        out["comp"]             = 0.0
-        out["ini_ajust"]        = out["ini"]
-        out["act_ajust"]        = out["act"]
-        out["fin_ajust"]        = out["fin"]
-        out["comp_ajust"]       = out["comp"]
-        out["dif_cant"]         = out["ini"] + out["act"] - out["fin"]
+        out["comp"]               = 0.0
+        out["ini_ajust"]          = out["ini"]
+        out["act_ajust"]          = out["act"]
+        out["fin_ajust"]          = out["fin"]
+        out["comp_ajust"]         = out["comp"]
+        out["dif_cant"]           = out["ini"] + out["act"] - out["fin"]
         out["dif_final_original"] = out["dif_cant"]
-        out["dif_final"]        = out["ini_ajust"] + out["act_ajust"] + out["comp_ajust"] - out["fin_ajust"]
+        out["dif_final"]          = out["ini_ajust"] + out["act_ajust"] + out["comp_ajust"] - out["fin_ajust"]
 
+        # precio de referencia (vectorizado)
         with np.errstate(divide="ignore", invalid="ignore"):
-            precio_ini = np.where(out["ini"] != 0, out["importe_ini"] / out["ini"], np.nan)
             precio_fin = np.where(out["fin"] != 0, out["importe_fin"] / out["fin"], np.nan)
+            precio_ini = np.where(out["ini"] != 0, out["importe_ini"] / out["ini"], np.nan)
             precio_pos = np.where(out["pos"] != 0, out["importe_pos"] / out["pos"], np.nan)
 
         out["precio_ref"] = (
-            pd.Series(precio_fin)
-            .fillna(pd.Series(precio_ini))
-            .fillna(pd.Series(precio_pos))
+            pd.Series(precio_fin, index=out.index)
+            .fillna(pd.Series(precio_ini, index=out.index))
+            .fillna(pd.Series(precio_pos, index=out.index))
             .fillna(0.0)
         )
         out["dif_importe"] = out["dif_final"] * out["precio_ref"]
 
-        reglas, match_status = [], []
-        for _, row in out.iterrows():
-            tags = []
-            if abs(row["dif_final"]) <= self.tolerance:
-                tags.append("R0_CIERRE_EXACTO")
-            if abs(row["fin"]) <= self.tolerance and abs(row["pos"]) > self.tolerance:
-                tags.append("R1_SOLO_POSICIONES")
-            if abs(row["act"]) <= self.tolerance:
-                tags.append("R2_SIN_ACTIVITY")
-            if abs(row["ini"]) <= self.tolerance:
-                tags.append("R3_SIN_INICIAL")
-            reglas.append(" | ".join(tags) if tags else "")
-            match_status.append("match_ok" if abs(row["dif_final"]) <= self.tolerance else "sin_match")
+        # reglas vectorizadas via RuleEngine (reemplaza el iterrows anterior)
+        reglas_txt, reglas_conteo = self.rule_engine.aplicar(out, self.tolerance)
+        out["reglas_txt"]       = reglas_txt
+        out["reglas_aplicadas"] = reglas_conteo
 
-        out["reglas_txt"]      = reglas
-        out["reglas_aplicadas"] = [0 if x == "" else len(x.split(" | ")) for x in reglas]
-        out["match_status"]    = match_status
-        out["status"]          = np.where(out["dif_final"].abs() <= self.tolerance, "CERRADA", "PENDIENTE")
+        # status y match (vectorizado)
+        cerrado = out["dif_final"].abs() <= self.tolerance
+        out["status"]       = np.where(cerrado, "CERRADA",   "PENDIENTE")
+        out["match_status"] = np.where(cerrado, "match_ok",  "sin_match")
 
-        df_aud = out[["cuenta", "especie_h", "moneda", "ini", "act", "fin", "pos", "dif_final", "status", "reglas_txt"]].copy()
+        df_aud   = out[["cuenta", "especie_h", "moneda", "ini", "act", "fin", "pos",
+                         "dif_final", "status", "reglas_txt"]].copy()
         df_match = out[["cuenta", "especie_h", "moneda", "match_status", "status", "dif_final"]].copy()
 
-        total      = len(out)
-        cerradas   = int((out["status"] == "CERRADA").sum())
-        pendientes = int((out["status"] == "PENDIENTE").sum())
+        total          = len(out)
+        cerradas       = int(cerrado.sum())
+        pendientes     = total - cerradas
         dif_total_abs  = float(out["dif_final"].abs().sum())
         dif_total_neto = float(out["dif_final"].sum())
-        pct_cierre = (cerradas / total * 100) if total else 0.0
-        semaforo = "OK" if pendientes == 0 else ("WARN" if dif_total_abs <= 1 else "BAD")
+        pct_cierre     = (cerradas / total * 100) if total else 0.0
+        semaforo       = "OK" if pendientes == 0 else ("WARN" if dif_total_abs <= 1 else "BAD")
 
         resumen = {
             "cuenta": cuenta, "especies": total, "cerradas": cerradas,
@@ -452,7 +600,8 @@ def auditoria_intercuenta(df_all: pd.DataFrame, pares_comp: list[tuple[int, int]
         merged["suma_neta"]      = merged["dif_origen"] + merged["dif_destino"]
         merged["cuenta_origen"]  = origen
         merged["cuenta_destino"] = destino
-        rows.append(merged[["cuenta_origen", "cuenta_destino", "especie_h", "moneda", "dif_origen", "dif_destino", "suma_neta"]])
+        rows.append(merged[["cuenta_origen", "cuenta_destino", "especie_h", "moneda",
+                             "dif_origen", "dif_destino", "suma_neta"]])
     return _safe_concat(rows)
 
 
