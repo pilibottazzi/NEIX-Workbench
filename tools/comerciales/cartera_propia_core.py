@@ -1,756 +1,702 @@
 from __future__ import annotations
 
-import argparse
-import logging
+import io
+import re
+import unicodedata
 from dataclasses import dataclass, field
-from datetime import date
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Iterable, Optional
 
 import numpy as np
 import pandas as pd
 
 
 # =============================================================================
-# CORE (SE MANTIENE IGUAL)
-# =============================================================================
-from tools.comerciales.cartera_propia_core import (
-    CUENTAS_DEFAULT,
-    PeriodoConciliacion,
-    ConciliadorMensual,
-    auditoria_intercuenta,
-    build_resumen_cuentas,
-    build_top_pendientes,
-    build_reglas_aplicadas,
-    preparar_activity,
-    preparar_portafolio,
-    preparar_posiciones,
-    read_any_file,
-)
-
-
-# =============================================================================
-# LOGGING
+# CONFIG BASE
 # =============================================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
-log = logging.getLogger("cierre_mensual_unificado")
+CUENTAS_DEFAULT = [904, 905, 906, 907, 908, 909, 910, 992, 997, 999]
 
-
-# =============================================================================
-# CONFIG
-# =============================================================================
-
-@dataclass
-class ConfigPeriodo:
-    ini_date: date
-    fin_date: date
-    tc_mep: float
-    tc_cable: float
-    datos_path: Path
-    output_path: Path
-    mesa_target: float = 0.0
-    one_pager_path: Optional[Path] = None
-    cuentas: List[int] = field(default_factory=lambda: list(CUENTAS_DEFAULT))
-
-    @property
-    def periodo_str(self) -> str:
-        return f"{self.ini_date:%Y-%m-%d} a {self.fin_date:%Y-%m-%d}"
+DEFAULT_PARES_COMP = [
+    (904, 992),
+    (997, 999),
+]
 
 
 # =============================================================================
 # HELPERS GENERALES
 # =============================================================================
 
+def _strip_accents(text: str) -> str:
+    text = str(text)
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(c)
+    )
+
+
 def normalize_text(x: Any) -> str:
     if pd.isna(x):
         return ""
-    return str(x).strip().upper()
+    x = _strip_accents(str(x))
+    x = re.sub(r"\s+", " ", x.strip())
+    return x.upper()
+
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out.columns = [
+        normalize_text(c).lower().replace(" ", "_").replace(".", "").replace("/", "_")
+        for c in out.columns
+    ]
+    return out
+
+
+def find_first_existing(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
+    cols = set(df.columns)
+    for c in candidates:
+        if c in cols:
+            return c
+    return None
 
 
 def to_numeric_safe(series: pd.Series) -> pd.Series:
     s = series.astype(str).str.strip()
-    s = s.str.replace(".", "", regex=False)
-    s = s.str.replace(",", ".", regex=False)
-    s = s.str.replace("$", "", regex=False)
+
+    # normalizaciones comunes
+    s = s.str.replace("\u00a0", "", regex=False)
     s = s.str.replace("U$S", "", regex=False)
+    s = s.str.replace("US$", "", regex=False)
+    s = s.str.replace("$", "", regex=False)
+
+    # paréntesis negativos
     s = s.str.replace("(", "-", regex=False)
     s = s.str.replace(")", "", regex=False)
-    s = s.str.replace(" ", "", regex=False)
+
+    # si tiene formato 1.234,56
+    s = s.str.replace(".", "", regex=False)
+    s = s.str.replace(",", ".", regex=False)
+
+    # guión final negativo
+    s = s.str.replace(r"^(.+)-$", r"-\1", regex=True)
+
     return pd.to_numeric(s, errors="coerce").fillna(0.0)
 
 
-def safe_group_sum(df: pd.DataFrame, group_cols: List[str], value_cols: List[str]) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame(columns=group_cols + value_cols)
+def format_num(x: Any, decimals: int = 2) -> str:
+    try:
+        return f"{float(x):,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return "0"
 
-    agg_map = {c: "sum" for c in value_cols if c in df.columns}
-    if not agg_map:
-        return pd.DataFrame(columns=group_cols + value_cols)
 
-    return df.groupby(group_cols, dropna=False, as_index=False).agg(agg_map)
+def _empty_result_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "cuenta",
+            "especie_h",
+            "moneda",
+            "ini",
+            "act",
+            "fin",
+            "comp",
+            "ini_ajust",
+            "act_ajust",
+            "fin_ajust",
+            "comp_ajust",
+            "dif_cant",
+            "dif_final_original",
+            "dif_final",
+            "dif_importe",
+            "precio_ref",
+            "status",
+            "reglas_aplicadas",
+            "match_status",
+        ]
+    )
+
+
+def _safe_concat(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    frames = [f for f in frames if f is not None and not f.empty]
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
 
 # =============================================================================
-# CARGA DE DATOS
+# LECTURA DE ARCHIVOS
 # =============================================================================
 
-class CargaDatos:
+def read_any_file(file_obj_or_path: Any) -> pd.DataFrame:
     """
-    Batch loader unificado.
-    Conserva la idea de PY1/PY3:
-      - portafolios ini/fin por cuenta
-      - activity por cuenta
-      - posiciones por cuenta
-      - alquileres
-      - ib ini/fin
-      - ratios adr
-      - one pager
+    Lee csv/xlsx/xls/xlsm desde:
+    - path string / Path
+    - UploadedFile de Streamlit
     """
+    if file_obj_or_path is None:
+        return pd.DataFrame()
 
-    def __init__(self, config: ConfigPeriodo):
-        self.config = config
+    # Path / string
+    if isinstance(file_obj_or_path, (str, Path)):
+        path = Path(file_obj_or_path)
+        suffix = path.suffix.lower()
 
-    def _path_candidates(self, patterns: List[str]) -> Optional[Path]:
-        for p in patterns:
-            candidate = self.config.datos_path / p
-            if candidate.exists():
-                return candidate
-        return None
+        if suffix == ".csv":
+            try:
+                return pd.read_csv(path)
+            except Exception:
+                return pd.read_csv(path, sep=";", encoding="latin1")
+        if suffix in {".xlsx", ".xlsm", ".xls"}:
+            return pd.read_excel(path)
 
-    def _load_generic(self, path: Optional[Path]) -> pd.DataFrame:
-        if path is None or not path.exists():
-            return pd.DataFrame()
+        raise ValueError(f"Formato no soportado: {suffix}")
+
+    # UploadedFile / file-like
+    name = getattr(file_obj_or_path, "name", "uploaded_file")
+    suffix = Path(name).suffix.lower()
+
+    if hasattr(file_obj_or_path, "seek"):
+        file_obj_or_path.seek(0)
+
+    if suffix == ".csv":
         try:
-            return read_any_file(path)
-        except Exception as e:
-            log.warning(f"No se pudo leer {path.name}: {e}")
-            return pd.DataFrame()
+            return pd.read_csv(file_obj_or_path)
+        except Exception:
+            if hasattr(file_obj_or_path, "seek"):
+                file_obj_or_path.seek(0)
+            return pd.read_csv(file_obj_or_path, sep=";", encoding="latin1")
 
-    def _load_portafolio(self, cuenta: int, stage: str) -> pd.DataFrame:
-        path = self._path_candidates([
-            f"portafolio_{cuenta}_{stage}.csv",
-            f"portafolio_{cuenta}_{stage}.xlsx",
-            f"portafolio_{cuenta}_{stage}.xls",
-            f"portafolio_{cuenta}_{stage}.xlsm",
-            f"cartera_{cuenta}_{stage}.csv",
-            f"cartera_{cuenta}_{stage}.xlsx",
-        ])
-        raw = self._load_generic(path)
-        df, alerts = preparar_portafolio(raw) if not raw.empty else (pd.DataFrame(), [])
-        for a in alerts:
-            log.warning(f"Cta {cuenta} {stage}: {a}")
-        return df
+    if suffix in {".xlsx", ".xlsm", ".xls"}:
+        if hasattr(file_obj_or_path, "seek"):
+            file_obj_or_path.seek(0)
+        return pd.read_excel(file_obj_or_path)
 
-    def _load_activity(self, cuenta: int) -> pd.DataFrame:
-        path = self._path_candidates([
-            f"activity_{cuenta}.csv",
-            f"activity_{cuenta}.xlsx",
-            f"activity_{cuenta}.xls",
-            f"activity_{cuenta}.xlsm",
-            f"movimientos_{cuenta}.csv",
-            f"movimientos_{cuenta}.xlsx",
-        ])
-        raw = self._load_generic(path)
-        df, alerts = preparar_activity(raw) if not raw.empty else (pd.DataFrame(), [])
-        for a in alerts:
-            log.warning(f"Cta {cuenta} activity: {a}")
-        return df
-
-    def _load_posiciones(self, cuenta: int) -> pd.DataFrame:
-        path = self._path_candidates([
-            f"posiciones_{cuenta}.csv",
-            f"posiciones_{cuenta}.xlsx",
-            f"posiciones_{cuenta}.xls",
-            f"posiciones_{cuenta}.xlsm",
-        ])
-        raw = self._load_generic(path)
-        df, alerts = preparar_posiciones(raw) if not raw.empty else (pd.DataFrame(), [])
-        for a in alerts:
-            log.warning(f"Cta {cuenta} posiciones: {a}")
-        return df
-
-    def cargar_todos(self) -> Dict[str, Any]:
-        log.info("=== PASO 1: CARGA DE DATOS ===")
-
-        portafolios_ini: Dict[int, pd.DataFrame] = {}
-        portafolios_fin: Dict[int, pd.DataFrame] = {}
-        activities: Dict[int, pd.DataFrame] = {}
-        posiciones: Dict[int, pd.DataFrame] = {}
-
-        for cta in self.config.cuentas:
-            portafolios_ini[cta] = self._load_portafolio(cta, "ini")
-            portafolios_fin[cta] = self._load_portafolio(cta, "fin")
-            activities[cta] = self._load_activity(cta)
-            posiciones[cta] = self._load_posiciones(cta)
-
-            log.info(
-                f"Cta {cta} | ini={len(portafolios_ini[cta])} "
-                f"fin={len(portafolios_fin[cta])} act={len(activities[cta])} pos={len(posiciones[cta])}"
-            )
-
-        ib_ini = self._load_generic(self._path_candidates(["ib_positions_ini.csv", "ib_positions_ini.xlsx"]))
-        ib_fin = self._load_generic(self._path_candidates(["ib_positions_fin.csv", "ib_positions_fin.xlsx"]))
-        alquileres = self._load_generic(self._path_candidates(["alquileres.csv", "alquileres.xlsx"]))
-        ratios_adr = self._load_generic(self._path_candidates(["ratios_adr.csv", "ratios_adr.xlsx"]))
-
-        one_pager = pd.DataFrame()
-        if self.config.one_pager_path and self.config.one_pager_path.exists():
-            one_pager = self._load_generic(self.config.one_pager_path)
-
-        return {
-            "portafolios_ini": portafolios_ini,
-            "portafolios_fin": portafolios_fin,
-            "activities": activities,
-            "posiciones": posiciones,
-            "ib_ini": ib_ini,
-            "ib_fin": ib_fin,
-            "alquileres": alquileres,
-            "ratios_adr": ratios_adr,
-            "one_pager": one_pager,
-        }
+    raise ValueError(f"Formato no soportado: {suffix}")
 
 
 # =============================================================================
-# ALQUILERES
+# PREPARACIÓN DE INPUTS
 # =============================================================================
 
-class ModuloAlquileres:
-    """
-    Mantenemos el bloque batch de PY1/PY3.
-    Si no hay archivo de alquileres, devuelve vacío.
-    """
+def preparar_posiciones(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    alerts: list[str] = []
 
-    def __init__(self, config: ConfigPeriodo):
-        self.config = config
+    if df_raw is None or df_raw.empty:
+        alerts.append("Archivo de posiciones vacío.")
+        return pd.DataFrame(columns=["cuenta", "especie_h", "moneda", "cantidad", "importe"]), alerts
 
-    def calcular_delta_alquiler(self, df_alq: pd.DataFrame, df_dif: pd.DataFrame) -> pd.DataFrame:
-        if df_alq is None or df_alq.empty:
-            return pd.DataFrame(columns=["Comitente", "Especie", "AlqIni", "AlqFin", "DeltaAlquiler"])
+    df = normalize_columns(df_raw)
 
-        df = df_alq.copy()
-        cols = {c.lower().strip(): c for c in df.columns}
+    c_cuenta = find_first_existing(df, ["cuenta", "comitente", "codigo", "nro_cuenta"])
+    c_especie = find_first_existing(df, ["especie", "instrumento", "ticker", "simbolo", "codigo_especie"])
+    c_moneda = find_first_existing(df, ["moneda", "currency"])
+    c_cantidad = find_first_existing(df, ["cantidad", "cant", "nominales", "nominal"])
+    c_importe = find_first_existing(df, ["importe", "monto", "valor_mercado", "market_value", "total"])
 
-        rename_map = {}
-        for c in df.columns:
-            cl = c.lower().strip()
-            if "cta" in cl or "cuenta" in cl or "comitente" in cl:
-                rename_map[c] = "Comitente"
-            elif "especie" in cl or "ticker" in cl:
-                rename_map[c] = "Especie"
-            elif "alq" in cl and "ini" in cl:
-                rename_map[c] = "AlqIni"
-            elif "alq" in cl and "fin" in cl:
-                rename_map[c] = "AlqFin"
+    faltantes = [x for x in [c_cuenta, c_especie, c_cantidad] if x is None]
+    if faltantes:
+        alerts.append("No se detectaron todas las columnas clave de posiciones.")
 
-        df = df.rename(columns=rename_map)
+    out = pd.DataFrame()
+    out["cuenta"] = pd.to_numeric(df[c_cuenta], errors="coerce") if c_cuenta else np.nan
+    out["especie_h"] = df[c_especie].astype(str).map(normalize_text) if c_especie else ""
+    out["moneda"] = df[c_moneda].astype(str).map(normalize_text) if c_moneda else "ARS"
+    out["cantidad"] = to_numeric_safe(df[c_cantidad]) if c_cantidad else 0.0
+    out["importe"] = to_numeric_safe(df[c_importe]) if c_importe else 0.0
 
-        for col in ["Comitente", "Especie", "AlqIni", "AlqFin"]:
-            if col not in df.columns:
-                if col in {"AlqIni", "AlqFin"}:
-                    df[col] = 0.0
-                else:
-                    df[col] = ""
+    out = out.dropna(subset=["cuenta"])
+    out["cuenta"] = out["cuenta"].astype(int)
+    out = out[out["especie_h"] != ""].copy()
 
-        df["Comitente"] = pd.to_numeric(df["Comitente"], errors="coerce").fillna(0).astype(int)
-        df["Especie"] = df["Especie"].astype(str).str.strip()
-        df["AlqIni"] = to_numeric_safe(df["AlqIni"])
-        df["AlqFin"] = to_numeric_safe(df["AlqFin"])
-        df["DeltaAlquiler"] = df["AlqFin"] - df["AlqIni"]
+    out = (
+        out.groupby(["cuenta", "especie_h", "moneda"], as_index=False)
+        .agg({"cantidad": "sum", "importe": "sum"})
+    )
 
-        out = df[["Comitente", "Especie", "AlqIni", "AlqFin", "DeltaAlquiler"]].copy()
-        out = safe_group_sum(out, ["Comitente", "Especie"], ["AlqIni", "AlqFin", "DeltaAlquiler"])
-
-        log.info(f"Alquileres procesados: {len(out)} filas")
-        return out
+    return out, alerts
 
 
-# =============================================================================
-# RESULTADO MENSUAL
-# =============================================================================
+def preparar_activity(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    alerts: list[str] = []
 
-class ResultadoMensual:
-    """
-    Une la tabla de diferencias con alquileres y arma una salida consolidada.
-    """
+    if df_raw is None or df_raw.empty:
+        alerts.append("Archivo de activity vacío.")
+        return pd.DataFrame(columns=["cuenta", "especie_h", "moneda", "cantidad", "importe"]), alerts
 
-    def __init__(self, config: ConfigPeriodo):
-        self.config = config
+    df = normalize_columns(df_raw)
 
-    def calcular(self, df_dif: pd.DataFrame, df_alq: pd.DataFrame) -> pd.DataFrame:
-        if df_dif is None or df_dif.empty:
-            return pd.DataFrame()
+    c_cuenta = find_first_existing(df, ["cuenta", "comitente", "codigo", "nro_cuenta"])
+    c_especie = find_first_existing(df, ["especie", "instrumento", "ticker", "simbolo", "codigo_especie"])
+    c_moneda = find_first_existing(df, ["moneda", "currency"])
+    c_cantidad = find_first_existing(df, ["cantidad", "cant", "nominales", "nominal"])
+    c_importe = find_first_existing(df, ["importe", "monto", "net_amount", "amount", "total"])
 
-        out = df_dif.copy()
+    if c_cuenta is None or c_especie is None:
+        alerts.append("No se detectaron columnas clave de activity.")
 
-        if df_alq is not None and not df_alq.empty:
-            merge_cols_left = ["cuenta", "especie_h"]
-            merge_cols_right = ["Comitente", "Especie"]
+    out = pd.DataFrame()
+    out["cuenta"] = pd.to_numeric(df[c_cuenta], errors="coerce") if c_cuenta else np.nan
+    out["especie_h"] = df[c_especie].astype(str).map(normalize_text) if c_especie else ""
+    out["moneda"] = df[c_moneda].astype(str).map(normalize_text) if c_moneda else "ARS"
+    out["cantidad"] = to_numeric_safe(df[c_cantidad]) if c_cantidad else 0.0
+    out["importe"] = to_numeric_safe(df[c_importe]) if c_importe else 0.0
 
-            df_alq2 = df_alq.copy()
-            out = out.merge(
-                df_alq2,
-                left_on=merge_cols_left,
-                right_on=merge_cols_right,
-                how="left",
-            )
-            out["DeltaAlquiler"] = out["DeltaAlquiler"].fillna(0.0)
-        else:
-            out["DeltaAlquiler"] = 0.0
+    out = out.dropna(subset=["cuenta"])
+    out["cuenta"] = out["cuenta"].astype(int)
+    out = out[out["especie_h"] != ""].copy()
 
-        if "dif_importe" not in out.columns:
-            out["dif_importe"] = 0.0
+    out = (
+        out.groupby(["cuenta", "especie_h", "moneda"], as_index=False)
+        .agg({"cantidad": "sum", "importe": "sum"})
+    )
 
-        out["resultado_base_ars"] = out["dif_importe"].fillna(0.0)
-        out["resultado_alquiler_ars"] = out["DeltaAlquiler"].fillna(0.0)
-        out["resultado_total_ars"] = out["resultado_base_ars"] + out["resultado_alquiler_ars"]
-        out["resultado_total_usd_mep"] = out["resultado_total_ars"] / self.config.tc_mep
-        out["resultado_total_usd_cable"] = out["resultado_total_ars"] / self.config.tc_cable
-
-        return out
+    return out, alerts
 
 
-# =============================================================================
-# ACTIVITY ANALYZER
-# =============================================================================
+def preparar_portafolio(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    alerts: list[str] = []
 
-class ActivityAnalyzer:
-    """
-    Conserva el paso del batch grande.
-    """
+    if df_raw is None or df_raw.empty:
+        alerts.append("Archivo de portafolio vacío.")
+        return pd.DataFrame(columns=["cuenta", "especie_h", "moneda", "cantidad", "importe"]), alerts
 
-    def __init__(self, config: ConfigPeriodo):
-        self.config = config
+    df = normalize_columns(df_raw)
 
-    def procesar_cuenta(self, cuenta: int, df_act: pd.DataFrame, df_resultado: pd.DataFrame) -> Dict[str, float]:
-        if df_act is None or df_act.empty:
-            return {
-                "cuenta": cuenta,
-                "rdo_ida_vuelta": 0.0,
-                "rdo_real_904": 0.0,
-                "operaciones": 0,
-            }
+    c_cuenta = find_first_existing(df, ["cuenta", "comitente", "codigo", "nro_cuenta"])
+    c_especie = find_first_existing(df, ["especie", "instrumento", "ticker", "simbolo", "codigo_especie"])
+    c_moneda = find_first_existing(df, ["moneda", "currency"])
+    c_cantidad = find_first_existing(df, ["cantidad", "cant", "nominales", "nominal"])
+    c_importe = find_first_existing(df, ["importe", "monto", "valor_mercado", "market_value", "total"])
 
-        out = {
-            "cuenta": cuenta,
-            "rdo_ida_vuelta": 0.0,
-            "rdo_real_904": 0.0,
-            "operaciones": len(df_act),
-        }
+    if c_cuenta is None or c_especie is None:
+        alerts.append("No se detectaron columnas clave de portafolio.")
 
-        if "importe" in df_act.columns:
-            out["rdo_ida_vuelta"] = float(to_numeric_safe(df_act["importe"]).sum())
+    out = pd.DataFrame()
+    out["cuenta"] = pd.to_numeric(df[c_cuenta], errors="coerce") if c_cuenta else np.nan
+    out["especie_h"] = df[c_especie].astype(str).map(normalize_text) if c_especie else ""
+    out["moneda"] = df[c_moneda].astype(str).map(normalize_text) if c_moneda else "ARS"
+    out["cantidad"] = to_numeric_safe(df[c_cantidad]) if c_cantidad else 0.0
+    out["importe"] = to_numeric_safe(df[c_importe]) if c_importe else 0.0
 
-        return out
+    out = out.dropna(subset=["cuenta"])
+    out["cuenta"] = out["cuenta"].astype(int)
+    out = out[out["especie_h"] != ""].copy()
 
-    def procesar_todas(self, activities: Dict[int, pd.DataFrame], df_resultado: pd.DataFrame) -> Dict[Any, Dict[str, float]]:
-        results: Dict[Any, Dict[str, float]] = {}
-        total_904 = 0.0
+    out = (
+        out.groupby(["cuenta", "especie_h", "moneda"], as_index=False)
+        .agg({"cantidad": "sum", "importe": "sum"})
+    )
 
-        for cta, df_act in activities.items():
-            r = self.procesar_cuenta(cta, df_act, df_resultado)
-            results[cta] = r
-            total_904 += r.get("rdo_real_904", 0.0)
-
-        results["rdo_real_904"] = total_904
-        return results
+    return out, alerts
 
 
 # =============================================================================
-# RECONSTRUCCIÓN IB
+# MODELO DE PERÍODO
 # =============================================================================
 
-class ReconstruccionIB:
-    def __init__(self, config: ConfigPeriodo):
-        self.config = config
+@dataclass
+class PeriodoConciliacion:
+    fecha_ini: str
+    fecha_fin: str
+    cuentas: list[int] = field(default_factory=lambda: list(CUENTAS_DEFAULT))
+    pares_comp: list[tuple[int, int]] = field(default_factory=lambda: list(DEFAULT_PARES_COMP))
 
-    def reconstruir(
-        self,
-        df_dif_992: pd.DataFrame,
-        ib_ini: pd.DataFrame,
-        ib_fin: pd.DataFrame,
-        ratios_adr: pd.DataFrame,
+    @property
+    def fecha_ini_ts(self) -> pd.Timestamp:
+        return pd.to_datetime(self.fecha_ini)
+
+    @property
+    def fecha_fin_ts(self) -> pd.Timestamp:
+        return pd.to_datetime(self.fecha_fin)
+
+
+# =============================================================================
+# MOTOR DE CONCILIACIÓN
+# =============================================================================
+
+class ConciliadorMensual:
+    def __init__(self, periodo: PeriodoConciliacion, tolerance: float = 0.01):
+        self.periodo = periodo
+        self.tolerance = tolerance
+
+    @staticmethod
+    def _ensure_base(
+        df: Optional[pd.DataFrame],
+        cuenta: int,
+        nombre_cantidad: str,
+        nombre_importe: str,
     ) -> pd.DataFrame:
-        if df_dif_992 is None or df_dif_992.empty:
-            return pd.DataFrame()
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["cuenta", "especie_h", "moneda", nombre_cantidad, nombre_importe])
 
-        out = df_dif_992.copy()
-        out["recon_tipo"] = "992_IB"
+        out = df.copy()
+
+        keep = [c for c in ["cuenta", "especie_h", "moneda", "cantidad", "importe"] if c in out.columns]
+        out = out[keep].copy()
+
+        if "cuenta" not in out.columns:
+            out["cuenta"] = cuenta
+        if "especie_h" not in out.columns:
+            out["especie_h"] = ""
+        if "moneda" not in out.columns:
+            out["moneda"] = "ARS"
+        if "cantidad" not in out.columns:
+            out["cantidad"] = 0.0
+        if "importe" not in out.columns:
+            out["importe"] = 0.0
+
+        out = out.rename(columns={"cantidad": nombre_cantidad, "importe": nombre_importe})
+        out["cuenta"] = pd.to_numeric(out["cuenta"], errors="coerce").fillna(cuenta).astype(int)
+        out["especie_h"] = out["especie_h"].astype(str).map(normalize_text)
+        out["moneda"] = out["moneda"].astype(str).map(normalize_text)
+
+        for c in [nombre_cantidad, nombre_importe]:
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
+
+        return out
+
+    def _merge_fuentes(
+        self,
+        cuenta: int,
+        df_posiciones: pd.DataFrame,
+        df_activity: pd.DataFrame,
+        df_portafolio_ini: pd.DataFrame,
+        df_portafolio_fin: pd.DataFrame,
+    ) -> pd.DataFrame:
+        # prioridad:
+        # ini -> portafolio_ini
+        # fin -> portafolio_fin
+        # act -> activity
+        # posiciones queda como info auxiliar si vino
+        ini = self._ensure_base(df_portafolio_ini, cuenta, "ini", "importe_ini")
+        act = self._ensure_base(df_activity, cuenta, "act", "importe_act")
+        fin = self._ensure_base(df_portafolio_fin, cuenta, "fin", "importe_fin")
+        pos = self._ensure_base(df_posiciones, cuenta, "pos", "importe_pos")
+
+        keys = ["cuenta", "especie_h", "moneda"]
+
+        out = ini.merge(act, on=keys, how="outer")
+        out = out.merge(fin, on=keys, how="outer")
+        out = out.merge(pos, on=keys, how="outer")
+
+        for col in [
+            "ini", "importe_ini",
+            "act", "importe_act",
+            "fin", "importe_fin",
+            "pos", "importe_pos",
+        ]:
+            if col not in out.columns:
+                out[col] = 0.0
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+
+        return out
+
+    def conciliar_cuenta(
+        self,
+        cuenta: int,
+        df_posiciones: pd.DataFrame,
+        df_activity: pd.DataFrame,
+        df_portafolio_ini: pd.DataFrame,
+        df_portafolio_fin: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, dict[str, Any], pd.DataFrame, pd.DataFrame]:
+        base = self._merge_fuentes(
+            cuenta=cuenta,
+            df_posiciones=df_posiciones,
+            df_activity=df_activity,
+            df_portafolio_ini=df_portafolio_ini,
+            df_portafolio_fin=df_portafolio_fin,
+        )
+
+        if base.empty:
+            resumen = {
+                "cuenta": cuenta,
+                "especies": 0,
+                "cerradas": 0,
+                "pendientes": 0,
+                "reglas_aplicadas": 0,
+                "dif_total_abs": 0.0,
+                "dif_total_neto": 0.0,
+                "pct_cierre": 0.0,
+                "semaforo": "WARN",
+            }
+            return _empty_result_df(), resumen, pd.DataFrame(), pd.DataFrame()
+
+        out = base.copy()
+
+        # conciliación base
+        out["comp"] = 0.0
+        out["ini_ajust"] = out["ini"]
+        out["act_ajust"] = out["act"]
+        out["fin_ajust"] = out["fin"]
+        out["comp_ajust"] = out["comp"]
+
+        out["dif_cant"] = out["ini"] + out["act"] - out["fin"]
+        out["dif_final_original"] = out["dif_cant"]
+        out["dif_final"] = out["ini_ajust"] + out["act_ajust"] + out["comp_ajust"] - out["fin_ajust"]
+
+        # precio de referencia
+        with np.errstate(divide="ignore", invalid="ignore"):
+            precio_ini = np.where(out["ini"] != 0, out["importe_ini"] / out["ini"], np.nan)
+            precio_fin = np.where(out["fin"] != 0, out["importe_fin"] / out["fin"], np.nan)
+            precio_pos = np.where(out["pos"] != 0, out["importe_pos"] / out["pos"], np.nan)
+
+        out["precio_ref"] = pd.Series(precio_fin).fillna(pd.Series(precio_ini)).fillna(pd.Series(precio_pos)).fillna(0.0)
+        out["dif_importe"] = out["dif_final"] * out["precio_ref"]
+
+        # reglas simples
+        reglas = []
+        match_status = []
+
+        for _, row in out.iterrows():
+            applied = 0
+            tags = []
+
+            # regla 1: cierre exacto
+            if abs(row["dif_final"]) <= self.tolerance:
+                tags.append("R0_CIERRE_EXACTO")
+
+            # regla 2: sin fin pero sí posiciones
+            if abs(row["fin"]) <= self.tolerance and abs(row["pos"]) > self.tolerance:
+                tags.append("R1_SOLO_POSICIONES")
+
+            # regla 3: sin activity
+            if abs(row["act"]) <= self.tolerance:
+                tags.append("R2_SIN_ACTIVITY")
+
+            # regla 4: sin portafolio inicial
+            if abs(row["ini"]) <= self.tolerance:
+                tags.append("R3_SIN_INICIAL")
+
+            applied = len(tags)
+            reglas.append(" | ".join(tags) if tags else "")
+            match_status.append("match_ok" if abs(row["dif_final"]) <= self.tolerance else "sin_match")
+
+        out["reglas_txt"] = reglas
+        out["reglas_aplicadas"] = [0 if x == "" else len(x.split(" | ")) for x in reglas]
+        out["match_status"] = match_status
+        out["status"] = np.where(out["dif_final"].abs() <= self.tolerance, "CERRADA", "PENDIENTE")
+
+        # auditoría
+        df_aud = out[[
+            "cuenta", "especie_h", "moneda",
+            "ini", "act", "fin", "pos",
+            "dif_final", "status", "reglas_txt",
+        ]].copy()
+
+        # match table
+        df_match = out[[
+            "cuenta", "especie_h", "moneda",
+            "match_status", "status", "dif_final",
+        ]].copy()
+
+        # resumen
+        total = len(out)
+        cerradas = int((out["status"] == "CERRADA").sum())
+        pendientes = int((out["status"] == "PENDIENTE").sum())
+        reglas_count = int(out["reglas_aplicadas"].sum())
+        dif_total_abs = float(out["dif_final"].abs().sum())
+        dif_total_neto = float(out["dif_final"].sum())
+        pct_cierre = (cerradas / total * 100) if total else 0.0
+
+        if pendientes == 0:
+            semaforo = "OK"
+        elif dif_total_abs <= 1:
+            semaforo = "WARN"
+        else:
+            semaforo = "BAD"
+
+        resumen = {
+            "cuenta": cuenta,
+            "especies": total,
+            "cerradas": cerradas,
+            "pendientes": pendientes,
+            "reglas_aplicadas": reglas_count,
+            "dif_total_abs": dif_total_abs,
+            "dif_total_neto": dif_total_neto,
+            "pct_cierre": pct_cierre,
+            "semaforo": semaforo,
+        }
+
+        cols_finales = [
+            "cuenta",
+            "especie_h",
+            "moneda",
+            "ini",
+            "act",
+            "fin",
+            "comp",
+            "ini_ajust",
+            "act_ajust",
+            "fin_ajust",
+            "comp_ajust",
+            "dif_cant",
+            "dif_final_original",
+            "dif_final",
+            "dif_importe",
+            "precio_ref",
+            "status",
+            "reglas_aplicadas",
+            "match_status",
+        ]
+        out = out[cols_finales].copy()
+
+        return out, resumen, df_aud, df_match
+
+    def generar_reporte(self, resultados: list[pd.DataFrame]) -> pd.DataFrame:
+        if not resultados:
+            return _empty_result_df()
+
+        out = _safe_concat(resultados)
+        if out.empty:
+            return _empty_result_df()
+
+        out = out.sort_values(
+            by=["cuenta", "status", "dif_final", "especie_h"],
+            ascending=[True, True, False, True],
+            kind="stable",
+        ).reset_index(drop=True)
+
         return out
 
 
 # =============================================================================
-# CONSOLIDACIÓN
+# TABLAS DERIVADAS
 # =============================================================================
 
-class ResultadoConsolidado:
-    def __init__(self, config: ConfigPeriodo):
-        self.config = config
-
-    def extraer_por_cuenta(self, df_resultado: pd.DataFrame) -> pd.DataFrame:
-        if df_resultado is None or df_resultado.empty:
-            return pd.DataFrame(columns=["Cuenta", "ARS", "USD_MEP", "USD_CABLE"])
-
-        resumen = (
-            df_resultado.groupby("cuenta", dropna=False)
-            .agg(
-                ARS=("resultado_total_ars", "sum"),
-                USD_MEP=("resultado_total_usd_mep", "sum"),
-                USD_CABLE=("resultado_total_usd_cable", "sum"),
-            )
-            .reset_index()
-            .rename(columns={"cuenta": "Cuenta"})
+def build_resumen_cuentas(df_all: pd.DataFrame) -> pd.DataFrame:
+    if df_all is None or df_all.empty:
+        return pd.DataFrame(
+            columns=[
+                "cuenta", "especies", "cerradas", "pendientes",
+                "reglas_aplicadas", "dif_total_abs", "dif_total_neto",
+                "pct_cierre", "semaforo",
+            ]
         )
-        resumen["Cuenta"] = resumen["Cuenta"].apply(lambda x: f"Cta {int(x)}")
-        return resumen
 
-    def consolidar(self, resumen: pd.DataFrame) -> Dict[str, float]:
-        if resumen is None or resumen.empty:
-            return {
-                "total_ars": 0.0,
-                "total_usd_mep": 0.0,
-                "total_usd_cable": 0.0,
-                "indicador": "NEUTRO",
-            }
-
-        total_ars = float(resumen["ARS"].sum())
-        total_usd_mep = float(resumen["USD_MEP"].sum())
-        total_usd_cable = float(resumen["USD_CABLE"].sum())
-
-        if total_usd_mep > 0:
-            ind = "POSITIVO"
-        elif total_usd_mep < 0:
-            ind = "NEGATIVO"
-        else:
-            ind = "NEUTRO"
-
-        return {
-            "total_ars": total_ars,
-            "total_usd_mep": total_usd_mep,
-            "total_usd_cable": total_usd_cable,
-            "indicador": ind,
-        }
-
-
-# =============================================================================
-# CONCILIACIÓN CON MESA
-# =============================================================================
-
-class ConciliacionMesa:
-    def __init__(self, config: ConfigPeriodo):
-        self.config = config
-
-    def cargar_one_pager(self, df_one_pager: pd.DataFrame) -> Dict[str, float]:
-        if df_one_pager is None or df_one_pager.empty:
-            return {
-                "pulga_ytd": 0.0,
-                "middle_ytd": 0.0,
-                "otros_ytd": 0.0,
-            }
-
-        return {
-            "pulga_ytd": 0.0,
-            "middle_ytd": 0.0,
-            "otros_ytd": 0.0,
-        }
-
-    def prorratear(self, comp_ytd: Dict[str, float]) -> Dict[str, float]:
-        return {
-            "pulga_periodo": comp_ytd.get("pulga_ytd", 0.0),
-            "middle_periodo": comp_ytd.get("middle_ytd", 0.0),
-            "otros_periodo": comp_ytd.get("otros_ytd", 0.0),
-        }
-
-    def separar_rdo_real_posicional(self, df_resultado: pd.DataFrame) -> Dict[str, float]:
-        if df_resultado is None or df_resultado.empty:
-            return {"rdo_real": 0.0, "rdo_posicional": 0.0}
-
-        total = float(df_resultado["resultado_total_usd_mep"].sum())
-        return {
-            "rdo_real": total,
-            "rdo_posicional": 0.0,
-        }
-
-    def armar_cascada(
-        self,
-        rdo_real: float,
-        pulga: float,
-        mesa_target: float,
-        rdo_ida_vuelta: float,
-        middle: float,
-        rdo_904: float,
-        otros: float,
-    ) -> Dict[str, float]:
-        subtotal = rdo_real + pulga + middle + rdo_904 + otros + rdo_ida_vuelta
-        brecha = subtotal - mesa_target
-
-        return {
-            "rdo_real": rdo_real,
-            "pulga": pulga,
-            "middle": middle,
-            "rdo_904": rdo_904,
-            "otros": otros,
-            "rdo_ida_vuelta": rdo_ida_vuelta,
-            "mesa_target": mesa_target,
-            "subtotal": subtotal,
-            "brecha": brecha,
-        }
-
-
-# =============================================================================
-# EXCEL FINAL
-# =============================================================================
-
-class GeneradorExcel:
-    def __init__(self, config: ConfigPeriodo):
-        self.config = config
-
-    def generar(
-        self,
-        output_path: Path,
-        df_dif: pd.DataFrame,
-        df_resultado: pd.DataFrame,
-        df_alq: pd.DataFrame,
-        resumen: pd.DataFrame,
-        total: Dict[str, float],
-        cascada: Dict[str, float],
-        recon_ib: pd.DataFrame,
-        datos_manual: Dict[str, Any],
-        df_resumen_core: Optional[pd.DataFrame] = None,
-        df_top: Optional[pd.DataFrame] = None,
-        df_reglas: Optional[pd.DataFrame] = None,
-        df_intercuenta: Optional[pd.DataFrame] = None,
-        df_auditoria: Optional[pd.DataFrame] = None,
-        df_match: Optional[pd.DataFrame] = None,
-    ) -> None:
-        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-            if df_dif is not None and not df_dif.empty:
-                df_dif.to_excel(writer, sheet_name="Diferencias", index=False)
-            if df_resultado is not None and not df_resultado.empty:
-                df_resultado.to_excel(writer, sheet_name="Resultado Mensual", index=False)
-            if df_alq is not None and not df_alq.empty:
-                df_alq.to_excel(writer, sheet_name="Detalle Alquileres", index=False)
-            if resumen is not None and not resumen.empty:
-                resumen.to_excel(writer, sheet_name="Resumen Cuentas", index=False)
-            if recon_ib is not None and not recon_ib.empty:
-                recon_ib.to_excel(writer, sheet_name="Recon 992 Detalle", index=False)
-
-            pd.DataFrame([total]).to_excel(writer, sheet_name="Total Consolidado", index=False)
-            pd.DataFrame([cascada]).to_excel(writer, sheet_name="Cascada Mesa", index=False)
-            pd.DataFrame([datos_manual]).to_excel(writer, sheet_name="Manual Data", index=False)
-
-            if df_resumen_core is not None and not df_resumen_core.empty:
-                df_resumen_core.to_excel(writer, sheet_name="Resumen Core", index=False)
-            if df_top is not None and not df_top.empty:
-                df_top.to_excel(writer, sheet_name="Top Pendientes", index=False)
-            if df_reglas is not None and not df_reglas.empty:
-                df_reglas.to_excel(writer, sheet_name="Reglas", index=False)
-            if df_intercuenta is not None and not df_intercuenta.empty:
-                df_intercuenta.to_excel(writer, sheet_name="Intercuenta", index=False)
-            if df_auditoria is not None and not df_auditoria.empty:
-                df_auditoria.to_excel(writer, sheet_name="Auditoria", index=False)
-            if df_match is not None and not df_match.empty:
-                df_match.to_excel(writer, sheet_name="Match", index=False)
-
-        log.info(f"Excel generado: {output_path}")
-
-
-# =============================================================================
-# ORQUESTADOR PRINCIPAL UNIFICADO
-# =============================================================================
-
-def ejecutar_cierre(config: ConfigPeriodo) -> Dict[str, Any]:
-    log.info("====== CONCILIACIÓN Y RESULTADO DE CARTERA PROPIA ======")
-    log.info(f"Período: {config.periodo_str}")
-    log.info(f"TC MEP: {config.tc_mep:,.2f} | Cable: {config.tc_cable:,.2f}")
-
-    # PASO 1: Carga
-    cargador = CargaDatos(config)
-    datos = cargador.cargar_todos()
-
-    # PASO 2: Conciliación base usando CORE
-    log.info("=== PASO 2: CONCILIACIÓN BASE (CORE) ===")
-    periodo = PeriodoConciliacion(
-        fecha_ini=str(config.ini_date),
-        fecha_fin=str(config.fin_date),
-        cuentas=config.cuentas,
-    )
-    conciliador = ConciliadorMensual(periodo)
-
-    resultados = []
-    auditorias = []
-    matches = []
-
-    for cuenta in config.cuentas:
-        try:
-            df_res, resumen, df_aud, df_match = conciliador.conciliar_cuenta(
-                cuenta=cuenta,
-                df_posiciones=datos["posiciones"].get(cuenta, pd.DataFrame()),
-                df_activity=datos["activities"].get(cuenta, pd.DataFrame()),
-                df_portafolio_ini=datos["portafolios_ini"].get(cuenta, pd.DataFrame()),
-                df_portafolio_fin=datos["portafolios_fin"].get(cuenta, pd.DataFrame()),
-            )
-            resultados.append(df_res)
-            auditorias.append(df_aud)
-            matches.append(df_match)
-        except Exception as e:
-            log.exception(f"Cta {cuenta}: error en conciliación core: {e}")
-
-    df_dif = conciliador.generar_reporte(resultados)
-    df_auditoria = pd.concat(auditorias, ignore_index=True) if auditorias else pd.DataFrame()
-    df_match = pd.concat(matches, ignore_index=True) if matches else pd.DataFrame()
-
-    df_resumen_core = build_resumen_cuentas(df_dif)
-    df_top = build_top_pendientes(df_dif)
-    df_reglas = build_reglas_aplicadas(df_dif)
-    df_intercuenta = auditoria_intercuenta(df_dif, periodo.pares_comp)
-
-    # PASO 3: Alquileres
-    log.info("=== PASO 3: ALQUILERES ===")
-    mod_alq = ModuloAlquileres(config)
-    df_alq = mod_alq.calcular_delta_alquiler(datos["alquileres"], df_dif)
-
-    # PASO 4: Resultado mensual
-    log.info("=== PASO 4: RESULTADO MENSUAL ===")
-    calc_rdo = ResultadoMensual(config)
-    df_resultado = calc_rdo.calcular(df_dif, df_alq)
-
-    # PASO 5: Activity Analyzer
-    log.info("=== PASO 5: ANÁLISIS ACTIVITY ===")
-    analyzer = ActivityAnalyzer(config)
-    act_results = analyzer.procesar_todas(datos["activities"], df_resultado)
-
-    # PASO 6: Reconstrucción IB
-    log.info("=== PASO 6: RECONSTRUCCIÓN IB ===")
-    recon_mod = ReconstruccionIB(config)
-    recon_ib = recon_mod.reconstruir(
-        df_dif[df_dif["cuenta"] == 992] if not df_dif.empty and "cuenta" in df_dif.columns else pd.DataFrame(),
-        datos["ib_ini"],
-        datos["ib_fin"],
-        datos["ratios_adr"],
+    resumen = (
+        df_all.groupby("cuenta", as_index=False)
+        .agg(
+            especies=("especie_h", "count"),
+            cerradas=("status", lambda s: int((s == "CERRADA").sum())),
+            pendientes=("status", lambda s: int((s == "PENDIENTE").sum())),
+            reglas_aplicadas=("reglas_aplicadas", "sum"),
+            dif_total_abs=("dif_final", lambda s: float(np.abs(s).sum())),
+            dif_total_neto=("dif_final", "sum"),
+        )
     )
 
-    # PASO 7: Consolidación
-    log.info("=== PASO 7: CONSOLIDACIÓN ===")
-    consolidador = ResultadoConsolidado(config)
-    resumen = consolidador.extraer_por_cuenta(df_resultado)
-    total = consolidador.consolidar(resumen)
-
-    # PASO 8: Conciliación con mesa
-    log.info("=== PASO 8: CONCILIACIÓN CON MESA ===")
-    conc_mesa = ConciliacionMesa(config)
-    comp_ytd = conc_mesa.cargar_one_pager(datos["one_pager"])
-    comp_periodo = conc_mesa.prorratear(comp_ytd)
-    sep = conc_mesa.separar_rdo_real_posicional(df_resultado)
-    rdo_iv_total = sum(
-        r.get("rdo_ida_vuelta", 0.0)
-        for r in act_results.values()
-        if isinstance(r, dict)
+    resumen["pct_cierre"] = np.where(
+        resumen["especies"] > 0,
+        resumen["cerradas"] / resumen["especies"] * 100,
+        0.0,
     )
 
-    cascada = conc_mesa.armar_cascada(
-        rdo_real=sep["rdo_real"],
-        pulga=comp_periodo["pulga_periodo"],
-        mesa_target=config.mesa_target,
-        rdo_ida_vuelta=rdo_iv_total,
-        middle=comp_periodo["middle_periodo"],
-        rdo_904=act_results.get("rdo_real_904", 0.0),
-        otros=comp_periodo["otros_periodo"],
-    )
-    cascada["rdo_posicional"] = sep["rdo_posicional"]
-
-    # PASO 9: Excel final
-    log.info("=== PASO 9: GENERAR EXCEL ===")
-    datos_manual = {
-        "total_consolidado": total,
-        "n_especies": len(df_dif),
-        "n_conciliadas": int((df_dif["dif_final"].abs() < 0.01).sum()) if not df_dif.empty else 0,
-        "cascada": cascada,
-    }
-
-    GeneradorExcel(config).generar(
-        output_path=config.output_path,
-        df_dif=df_dif,
-        df_resultado=df_resultado,
-        df_alq=df_alq,
-        resumen=resumen,
-        total=total,
-        cascada=cascada,
-        recon_ib=recon_ib,
-        datos_manual=datos_manual,
-        df_resumen_core=df_resumen_core,
-        df_top=df_top,
-        df_reglas=df_reglas,
-        df_intercuenta=df_intercuenta,
-        df_auditoria=df_auditoria,
-        df_match=df_match,
+    resumen["semaforo"] = np.select(
+        [
+            resumen["pendientes"] == 0,
+            resumen["dif_total_abs"] <= 1,
+        ],
+        [
+            "OK",
+            "WARN",
+        ],
+        default="BAD",
     )
 
-    log.info("")
-    log.info("====== RESULTADO FINAL ======")
-    log.info(f"{total['total_usd_mep']:,.0f} USD ({total['indicador']})")
-    log.info(
-        f"{len(df_dif)} especies | "
-        f"{int((df_dif['dif_final'].abs() < 0.01).sum()) if not df_dif.empty else 0} conciliadas"
-    )
-    log.info(f"Archivo: {config.output_path}")
+    return resumen.sort_values("cuenta").reset_index(drop=True)
 
-    return {
-        "df_dif": df_dif,
-        "df_resultado": df_resultado,
-        "df_alq": df_alq,
-        "df_resumen_core": df_resumen_core,
-        "df_top": df_top,
-        "df_reglas": df_reglas,
-        "df_intercuenta": df_intercuenta,
-        "df_auditoria": df_auditoria,
-        "df_match": df_match,
-        "resumen": resumen,
-        "total": total,
-        "cascada": cascada,
-        "recon_ib": recon_ib,
-        "act_results": act_results,
-    }
+
+def build_top_pendientes(df_all: pd.DataFrame, top_n: int = 25) -> pd.DataFrame:
+    if df_all is None or df_all.empty:
+        return pd.DataFrame()
+
+    df = df_all[df_all["status"] == "PENDIENTE"].copy()
+    if df.empty:
+        return pd.DataFrame(columns=df_all.columns)
+
+    df["abs_dif"] = df["dif_final"].abs()
+    df = df.sort_values(["abs_dif", "cuenta", "especie_h"], ascending=[False, True, True])
+    df = df.drop(columns=["abs_dif"])
+
+    return df.head(top_n).reset_index(drop=True)
+
+
+def build_reglas_aplicadas(df_all: pd.DataFrame) -> pd.DataFrame:
+    if df_all is None or df_all.empty:
+        return pd.DataFrame(columns=["cuenta", "especie_h", "reglas_aplicadas", "status"])
+
+    out = df_all[["cuenta", "especie_h", "reglas_aplicadas", "status"]].copy()
+    out = out[out["reglas_aplicadas"] > 0].reset_index(drop=True)
+    return out
+
+
+def auditoria_intercuenta(df_all: pd.DataFrame, pares_comp: list[tuple[int, int]]) -> pd.DataFrame:
+    if df_all is None or df_all.empty or not pares_comp:
+        return pd.DataFrame(
+            columns=["cuenta_origen", "cuenta_destino", "especie_h", "moneda", "dif_origen", "dif_destino", "suma_neta"]
+        )
+
+    rows = []
+
+    for origen, destino in pares_comp:
+        df_o = df_all[df_all["cuenta"] == origen][["especie_h", "moneda", "dif_final"]].copy()
+        df_d = df_all[df_all["cuenta"] == destino][["especie_h", "moneda", "dif_final"]].copy()
+
+        if df_o.empty and df_d.empty:
+            continue
+
+        df_o = df_o.rename(columns={"dif_final": "dif_origen"})
+        df_d = df_d.rename(columns={"dif_final": "dif_destino"})
+
+        merged = df_o.merge(df_d, on=["especie_h", "moneda"], how="outer")
+        merged["dif_origen"] = merged["dif_origen"].fillna(0.0)
+        merged["dif_destino"] = merged["dif_destino"].fillna(0.0)
+        merged["suma_neta"] = merged["dif_origen"] + merged["dif_destino"]
+        merged["cuenta_origen"] = origen
+        merged["cuenta_destino"] = destino
+
+        rows.append(merged[[
+            "cuenta_origen", "cuenta_destino",
+            "especie_h", "moneda",
+            "dif_origen", "dif_destino", "suma_neta",
+        ]])
+
+    return _safe_concat(rows)
 
 
 # =============================================================================
-# CLI
+# EXCEL EXPORT
 # =============================================================================
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Cierre mensual unificado de cartera propia")
-    parser.add_argument("--ini-date", required=True, help="Fecha inicio YYYY-MM-DD")
-    parser.add_argument("--fin-date", required=True, help="Fecha fin YYYY-MM-DD")
-    parser.add_argument("--datos", required=True, help="Carpeta con archivos de entrada")
-    parser.add_argument("--tc-mep", type=float, required=True, help="Tipo de cambio MEP")
-    parser.add_argument("--tc-cable", type=float, default=None, help="TC cable (default=tc-mep)")
-    parser.add_argument("--mesa-target", type=float, default=0.0, help="Rdo mesa período USD")
-    parser.add_argument("--one-pager", default=None, help="Ruta a ONE_PAGER")
-    parser.add_argument("--output", default="resultado_mensual_unificado.xlsx", help="Archivo final")
-    parser.add_argument("--cuentas", nargs="*", type=int, default=None, help="Lista de cuentas opcional")
-    return parser.parse_args()
+def build_excel_bytes(
+    df_resumen: pd.DataFrame,
+    df_top_pend: pd.DataFrame,
+    df_pend: pd.DataFrame,
+    df_all: pd.DataFrame,
+    df_auditoria: pd.DataFrame,
+    df_reglas: pd.DataFrame,
+    df_match: pd.DataFrame,
+    df_intercuenta: pd.DataFrame,
+) -> bytes:
+    output = io.BytesIO()
 
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        if df_resumen is not None:
+            df_resumen.to_excel(writer, sheet_name="Resumen", index=False)
+        if df_top_pend is not None:
+            df_top_pend.to_excel(writer, sheet_name="Top Pendientes", index=False)
+        if df_pend is not None:
+            df_pend.to_excel(writer, sheet_name="Pendientes", index=False)
+        if df_all is not None:
+            df_all.to_excel(writer, sheet_name="Detalle", index=False)
+        if df_auditoria is not None:
+            df_auditoria.to_excel(writer, sheet_name="Auditoria", index=False)
+        if df_reglas is not None:
+            df_reglas.to_excel(writer, sheet_name="Reglas", index=False)
+        if df_match is not None:
+            df_match.to_excel(writer, sheet_name="Match", index=False)
+        if df_intercuenta is not None:
+            df_intercuenta.to_excel(writer, sheet_name="Intercuenta", index=False)
 
-def main() -> None:
-    args = parse_args()
-
-    config = ConfigPeriodo(
-        ini_date=date.fromisoformat(args.ini_date),
-        fin_date=date.fromisoformat(args.fin_date),
-        tc_mep=args.tc_mep,
-        tc_cable=args.tc_cable or args.tc_mep,
-        datos_path=Path(args.datos),
-        output_path=Path(args.output),
-        mesa_target=args.mesa_target,
-        one_pager_path=Path(args.one_pager) if args.one_pager else None,
-        cuentas=args.cuentas or list(CUENTAS_DEFAULT),
-    )
-
-    ejecutar_cierre(config)
-
-
-if __name__ == "__main__":
-    main()
+    output.seek(0)
+    return output.getvalue()
