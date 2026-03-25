@@ -454,6 +454,8 @@ def render(_=None):
                 df_resumen=df_res, df_top_pend=df_top, df_pend=df_pend,
                 df_all=df_all, df_auditoria=df_aud, df_reglas=df_reglas,
                 df_match=df_match, df_intercuenta=df_intercuenta,
+                periodo=periodo,
+                tolerancia=s.get("tolerancia", 0.01),
             )
 
             nombre = "conciliacion"
@@ -525,16 +527,24 @@ def _ejecutar(s: dict, fc: dict) -> None:
         df_pos, a4 = preparar_posiciones(raw_pos)
         alerts_globales += [x for x in a1 + a2 + a3 + a4 if "vacío" not in x]
 
-        def _filtrar(df: pd.DataFrame) -> pd.DataFrame:
+        def _filtrar(df: pd.DataFrame, nombre_archivo: str) -> pd.DataFrame:
+            # FIX #1: si el CSV no tiene ninguna fila para esta cuenta
+            # devolvemos DataFrame vacío (no todo el archivo).
+            # El fallback anterior contaminaba la cuenta con datos de otras.
             if df.empty or "cuenta" not in df.columns:
-                return df
+                return pd.DataFrame()
             sub = df[df["cuenta"] == cta]
-            return sub if not sub.empty else df
+            if sub.empty:
+                alerts_globales.append(
+                    f"Cta {cta} — {nombre_archivo}: sin filas para cuenta={cta} "
+                    f"(cuentas encontradas: {sorted(df['cuenta'].unique().tolist())})"
+                )
+            return sub
 
-        df_ini = _filtrar(df_ini)
-        df_fin = _filtrar(df_fin)
-        df_act = _filtrar(df_act)
-        df_pos = _filtrar(df_pos)
+        df_ini = _filtrar(df_ini, f"port_ini_{cta}")
+        df_fin = _filtrar(df_fin, f"port_fin_{cta}")
+        df_act = _filtrar(df_act, f"activity_{cta}")
+        df_pos = _filtrar(df_pos, f"pos_{cta}")
 
         df_cta, resumen, df_aud, df_match = conciliador.conciliar_cuenta(
             cuenta=cta,
