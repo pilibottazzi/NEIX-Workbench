@@ -259,10 +259,14 @@ def render(_=None):
             st.error("Formato de pares inválido.")
             pares = list(DEFAULT_PARES_COMP)
 
-        s["periodo"]    = PeriodoConciliacion(
-            fecha_ini=str(fecha_ini), fecha_fin=str(fecha_fin),
-            cuentas=cuentas, pares_comp=pares,
-        )
+        try:
+            s["periodo"] = PeriodoConciliacion(
+                fecha_ini=str(fecha_ini), fecha_fin=str(fecha_fin),
+                cuentas=cuentas, pares_comp=pares,
+            )
+        except ValueError as e:
+            st.error(f"⚠️ Período inválido: {e}")
+            s.pop("periodo", None)   # no dejar un período roto guardado
         s["tolerancia"] = tolerancia
 
     # =========================================================================
@@ -271,9 +275,24 @@ def render(_=None):
     # de lo que cambie en Configuración. Solo se borran con "Limpiar archivos".
     # =========================================================================
     with tab_archivos:
-        periodo: PeriodoConciliacion = s.get("periodo", PeriodoConciliacion(
-            fecha_ini=str(date.today()), fecha_fin=str(date.today()),
-        ))
+        # Fallback seguro: si todavía no hay período configurado usamos uno
+        # dummy con fechas distintas para no disparar la validación fecha_ini == fin.
+        _periodo_fallback = s.get("periodo")
+        if _periodo_fallback is None:
+            from datetime import timedelta
+            _hoy = date.today()
+            try:
+                _periodo_fallback = PeriodoConciliacion(
+                    fecha_ini=str(_hoy.replace(day=1)),
+                    fecha_fin=str(_hoy),
+                )
+            except ValueError:
+                # Si hoy es día 1 (ini == fin), desplazamos fin +1
+                _periodo_fallback = PeriodoConciliacion(
+                    fecha_ini=str(_hoy),
+                    fecha_fin=str(_hoy + timedelta(days=1)),
+                )
+        periodo: PeriodoConciliacion = _periodo_fallback
 
         st.markdown(
             f"Archivos para **{periodo.fecha_ini} → {periodo.fecha_fin}**. "
