@@ -220,7 +220,6 @@ def pill_html(text: str, level: str) -> str:
 
 def render_toolbar():
     st.markdown('<div class="section-title">Conciliación mensual de cartera propia</div>', unsafe_allow_html=True)    
-    st.markdown('<div class="section-title">Parámetros de corrida</div>', unsafe_allow_html=True)
 
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
