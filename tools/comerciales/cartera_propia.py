@@ -40,11 +40,49 @@ _COLORES_CUENTA = [
 ]
 
 
-def _fmt(x, dec=2):
+def _fmt_num(x, dec=0) -> str:
+    """Número con separadores estilo AR: punto para miles, coma para decimal."""
     try:
-        return f"{float(x):,.{dec}f}"
+        v = float(x)
+        # Formatear con separadores anglosajones y luego invertir
+        s = f"{v:,.{dec}f}"          # ej: "1,234,567.89"
+        s = s.replace(",", "X").replace(".", ",").replace("X", ".")  # → "1.234.567,89"
+        return s
     except Exception:
         return str(x)
+
+
+def _fmt_ars(x, dec=0) -> str:
+    """Importe en ARS: $ 1.234.567"""
+    try:
+        v = float(x)
+        num = _fmt_num(v, dec)
+        return f"$ {num}"
+    except Exception:
+        return str(x)
+
+
+def _fmt_usd(x, dec=0) -> str:
+    """Importe en USD: U$S 1.234.567"""
+    try:
+        v = float(x)
+        num = _fmt_num(v, dec)
+        return f"U$S {num}"
+    except Exception:
+        return str(x)
+
+
+def _fmt_moneda(x, moneda: str, dec=0) -> str:
+    """Formatea con signo según moneda (ARS o USD)."""
+    moneda_up = str(moneda).upper()
+    if "USD" in moneda_up or "U$S" in moneda_up:
+        return _fmt_usd(x, dec)
+    return _fmt_ars(x, dec)
+
+
+def _fmt(x, dec=2):
+    """Legado — número genérico sin signo."""
+    return _fmt_num(x, dec)
 
 
 def _state() -> dict:
@@ -177,14 +215,14 @@ def _show_kpis(resumenes: list[dict]) -> None:
     pct_global = (total_cerr / total_esp * 100) if total_esp else 0.0
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Especies totales", total_esp)
-    c2.metric("Cerradas", f"{total_cerr}  ({pct_global:.1f}%)")
+    c1.metric("Especies totales", _fmt_num(total_esp, 0))
+    c2.metric("Cerradas", f"{_fmt_num(total_cerr, 0)}  ({pct_global:.1f}%)")
     c3.metric(
-        "Pendientes", total_pend,
+        "Pendientes", _fmt_num(total_pend, 0),
         delta=None if total_pend == 0 else f"-{total_pend}",
         delta_color="inverse",
     )
-    c4.metric("Dif. total abs.", _fmt(total_dif))
+    c4.metric("Dif. total abs.", _fmt_ars(total_dif))
 
 
 # =============================================================================
@@ -375,7 +413,7 @@ def render(_=None):
             _ejecutar(s, fc)
 
     # =========================================================================
-    # TAB 3 — Resultado  (FIX #5: gráficos)
+    # TAB 3 — Resultado
     # =========================================================================
     with tab_resultado:
         if "resumenes" not in s:
@@ -384,15 +422,15 @@ def render(_=None):
             resumenes: list[dict] = s["resumenes"]
             df_all: pd.DataFrame  = s["df_all"]
 
-            # KPIs
+            # ── KPIs ─────────────────────────────────────────────────────────
             _show_kpis(resumenes)
             st.divider()
 
-            # Barra de progreso de cierre
+            # ── Barra de cierre global ────────────────────────────────────────
             _grafico_pct_cierre(df_all)
-            st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
-            # Gráficos
+            # ── Gráficos ──────────────────────────────────────────────────────
             col_g1, col_g2 = st.columns(2)
             with col_g1:
                 _grafico_pendientes_por_cuenta(df_all)
@@ -401,24 +439,40 @@ def render(_=None):
 
             st.divider()
 
-            # Tabla resumen por cuenta
+            # ── Resumen por cuenta (tabla limpia) ─────────────────────────────
             st.markdown("#### Resumen por cuenta")
             df_res = build_resumen_cuentas(df_all)
             if not df_res.empty:
-                df_res["🚦"] = df_res["semaforo"].map(_SEMAFORO)
-                st.dataframe(
-                    df_res[["🚦", "cuenta", "especies", "cerradas", "pendientes",
-                             "dif_total_abs", "dif_total_neto", "pct_cierre"]],
-                    use_container_width=True, hide_index=True,
-                )
+                df_display = pd.DataFrame({
+                    "Estado":     df_res["semaforo"].map(_SEMAFORO),
+                    "Cuenta":     df_res["cuenta"],
+                    "Especies":   df_res["especies"],
+                    "Cerradas":   df_res["cerradas"],
+                    "Pendientes": df_res["pendientes"],
+                    "% Cierre":   df_res["pct_cierre"].map(lambda x: f"{x:.1f}%"),
+                    "Dif. neta (ARS)": df_res["dif_total_neto"].map(_fmt_ars),
+                })
+                st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-            # Top pendientes
-            df_top = build_top_pendientes(df_all, top_n=25)
-            if not df_top.empty:
-                st.markdown("#### Top 25 pendientes")
-                st.dataframe(df_top, use_container_width=True, hide_index=True)
-            else:
+            # ── Pendientes (tabla clara) ───────────────────────────────────────
+            df_pend = df_all[df_all["status"] == "PENDIENTE"].copy() if not df_all.empty else pd.DataFrame()
+            if df_pend.empty:
                 st.success("🎉 Sin diferencias pendientes.")
+            else:
+                st.markdown(f"#### Pendientes · {len(df_pend)} especie(s)")
+                df_pend_display = pd.DataFrame({
+                    "Cuenta":     df_pend["cuenta"],
+                    "Especie":    df_pend["especie_h"],
+                    "Moneda":     df_pend["moneda"],
+                    "Posición ini": [_fmt_moneda(v, m) for v, m in zip(df_pend["ini"], df_pend["moneda"])],
+                    "Activity":     [_fmt_moneda(v, m) for v, m in zip(df_pend["act"], df_pend["moneda"])],
+                    "Posición fin": [_fmt_moneda(v, m) for v, m in zip(df_pend["fin"], df_pend["moneda"])],
+                    "Diferencia":   [_fmt_moneda(v, m) for v, m in zip(df_pend["dif_final"], df_pend["moneda"])],
+                })
+                # ordenar por abs diferencia descendente
+                df_pend_display["_abs"] = df_pend["dif_final"].abs().values
+                df_pend_display = df_pend_display.sort_values("_abs", ascending=False).drop(columns=["_abs"])
+                st.dataframe(df_pend_display, use_container_width=True, hide_index=True)
 
     # =========================================================================
     # TAB 4 — Detalle
@@ -429,27 +483,57 @@ def render(_=None):
         else:
             df_all = s["df_all"]
 
-            col_f1, col_f2, col_f3 = st.columns(3)
+            # ── Filtros ───────────────────────────────────────────────────────
+            col_f1, col_f2, col_f3, col_f4 = st.columns([2, 2, 2, 3])
             cuentas_disp = sorted(df_all["cuenta"].unique().tolist()) if not df_all.empty else []
+            monedas_disp = sorted(df_all["moneda"].unique().tolist()) if not df_all.empty else []
+
             cta_sel    = col_f1.multiselect("Cuenta",  cuentas_disp, default=cuentas_disp, key="cp_det_cta")
-            status_sel = col_f2.multiselect("Status",  ["CERRADA", "PENDIENTE"], default=["CERRADA", "PENDIENTE"], key="cp_det_status")
-            buscar     = col_f3.text_input("Buscar especie", key="cp_det_esp")
+            status_sel = col_f2.multiselect("Estado",  ["CERRADA", "PENDIENTE"], default=["CERRADA", "PENDIENTE"], key="cp_det_status")
+            mon_sel    = col_f3.multiselect("Moneda",  monedas_disp, default=monedas_disp, key="cp_det_moneda")
+            buscar     = col_f4.text_input("🔍 Buscar especie", key="cp_det_esp", placeholder="Ej: AL30, GGAL...")
 
             df_view = df_all.copy()
             if cta_sel:
                 df_view = df_view[df_view["cuenta"].isin(cta_sel)]
             if status_sel:
                 df_view = df_view[df_view["status"].isin(status_sel)]
+            if mon_sel:
+                df_view = df_view[df_view["moneda"].isin(mon_sel)]
             if buscar:
                 df_view = df_view[df_view["especie_h"].str.contains(buscar.upper(), na=False)]
 
-            st.caption(f"{len(df_view)} filas mostradas")
-            st.dataframe(df_view, use_container_width=True, hide_index=True)
+            # ── Tabla limpia: solo columnas útiles ────────────────────────────
+            st.caption(f"{len(df_view)} especie(s) mostrada(s)")
 
-            if s.get("df_intercuenta") is not None and not s["df_intercuenta"].empty:
+            if not df_view.empty:
+                df_clean = pd.DataFrame({
+                    "Estado":       df_view["status"].map({"CERRADA": "✅ Cerrada", "PENDIENTE": "🔴 Pendiente"}),
+                    "Cuenta":       df_view["cuenta"],
+                    "Especie":      df_view["especie_h"],
+                    "Moneda":       df_view["moneda"],
+                    "Posición ini": [_fmt_moneda(v, m) for v, m in zip(df_view["ini"],       df_view["moneda"])],
+                    "Activity":     [_fmt_moneda(v, m) for v, m in zip(df_view["act"],       df_view["moneda"])],
+                    "Posición fin": [_fmt_moneda(v, m) for v, m in zip(df_view["fin"],       df_view["moneda"])],
+                    "Diferencia":   [_fmt_moneda(v, m) for v, m in zip(df_view["dif_final"], df_view["moneda"])],
+                })
+                st.dataframe(df_clean, use_container_width=True, hide_index=True)
+
+            # ── Auditoría inter-cuenta ────────────────────────────────────────
+            df_ic = s.get("df_intercuenta")
+            if df_ic is not None and not df_ic.empty:
                 st.divider()
-                st.markdown("#### Auditoría inter-cuenta")
-                st.dataframe(s["df_intercuenta"], use_container_width=True, hide_index=True)
+                st.markdown("#### Movimientos entre cuentas")
+                df_ic_clean = pd.DataFrame({
+                    "Cuenta origen":  df_ic["cuenta_origen"],
+                    "Cuenta destino": df_ic["cuenta_destino"],
+                    "Especie":        df_ic["especie_h"],
+                    "Moneda":         df_ic["moneda"],
+                    "Dif. origen":    [_fmt_moneda(v, m) for v, m in zip(df_ic["dif_origen"],  df_ic["moneda"])],
+                    "Dif. destino":   [_fmt_moneda(v, m) for v, m in zip(df_ic["dif_destino"], df_ic["moneda"])],
+                    "Neto":           [_fmt_moneda(v, m) for v, m in zip(df_ic["suma_neta"],   df_ic["moneda"])],
+                })
+                st.dataframe(df_ic_clean, use_container_width=True, hide_index=True)
 
     # =========================================================================
     # TAB 5 — Exportar
