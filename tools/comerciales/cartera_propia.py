@@ -1,126 +1,215 @@
 from __future__ import annotations
 
-from io import BytesIO
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+import io
 import re
+import unicodedata
+import warnings
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import openpyxl
 import pandas as pd
 import streamlit as st
 
+warnings.filterwarnings("ignore")
 
-# =========================================================
-# CONSTANTES DE ESTILO
-# =========================================================
-PRIMARY = "#111827"
+
+# =============================================================================
+# UI / ESTILO NEIX
+# =============================================================================
+
+NEIX_RED = "#ff3b30"
+TEXT = "#111827"
 MUTED = "#6b7280"
-BORDER = "rgba(17,24,39,0.08)"
-SUCCESS = "#16a34a"
-DANGER = "#dc2626"
-WARNING = "#d97706"
-INFO = "#2563eb"
-BG_SOFT = "#f9fafb"
+BORDER = "rgba(17,24,39,0.10)"
+CARD_BG = "rgba(255,255,255,0.96)"
+BG_SOFT = "#f6f7f9"
+OK_BG = "rgba(34,197,94,0.10)"
+OK_TXT = "#15803d"
+WARN_BG = "rgba(245,158,11,0.12)"
+WARN_TXT = "#b45309"
+BAD_BG = "rgba(255,59,48,0.10)"
+BAD_TXT = "#b91c1c"
 
 
-# =========================================================
-# CONFIG NEGOCIO
-# =========================================================
-NON_RENTABLE_KEYS = {
-    "PESOS",
-    "DOLAR LOCAL",
-    "DÓLAR LOCAL",
-    "USD LOCAL",
-    "DOLAR EXTERIOR",
-    "DÓLAR EXTERIOR",
-    "USD EXTERIOR",
-    "CUENTA CORRIENTE",
-    "CTA. CORRIENTE",
-    "CTA CORRIENTE",
-}
-
-PORTFOLIO_REQUIRED_FINAL = [
-    "Especie", "Categoria", "Tipo", "Moneda",
-    "Cantidad", "Precio", "Importe", "Costo", "Resultado",
-    "activo_match", "Cartera Neix", "Archivo", "Fecha"
-]
-
-RENTAL_BASE_COLUMNS = [
-    "id", "F.Inicio", "F.Vto", "Cliente", "Neix", "Cartera Neix", "VN",
-    "Activo", "Especie", "Dias", "Precio", "Tasa Cliente", "Pagar Cliente",
-    "Tasa Manager", "Pagar Manager", "Moneda", "Obs", "Estado"
-]
-
-
-# =========================================================
-# UI
-# =========================================================
-def _inject_css() -> None:
+def inject_css() -> None:
     st.markdown(
         f"""
         <style>
           .block-container {{
-            max-width: 1400px;
-            padding-top: 1.2rem;
+            max-width: 1480px;
+            padding-top: 1.1rem;
             padding-bottom: 2rem;
           }}
 
-          .cp-kpi {{
+          html, body, [class*="css"] {{
+            color: {TEXT};
+          }}
+
+          .main {{
             background: {BG_SOFT};
+          }}
+
+          .neix-shell {{
+            background: linear-gradient(180deg, #ffffff 0%, #fbfbfc 100%);
             border: 1px solid {BORDER};
-            border-radius: 14px;
-            padding: 1rem 1.1rem;
-            min-height: 118px;
+            border-radius: 24px;
+            padding: 1.25rem 1.25rem 1.05rem 1.25rem;
+            box-shadow: 0 12px 32px rgba(17,24,39,0.05);
+            margin-bottom: 1rem;
           }}
 
-          .cp-kpi-label {{
+          .neix-title {{
+            font-size: 1.7rem;
+            font-weight: 750;
+            letter-spacing: -0.03em;
+            margin-bottom: 0.15rem;
+          }}
+
+          .neix-sub {{
             color: {MUTED};
-            font-size: 0.82rem;
-            margin-bottom: 0.3rem;
-            letter-spacing: 0.02em;
+            font-size: 0.96rem;
+            margin: 0;
           }}
 
-          .cp-kpi-value {{
-            color: {PRIMARY};
-            font-size: 1.35rem;
+          .neix-section {{
+            font-size: 1.02rem;
             font-weight: 700;
+            margin: 0.15rem 0 0.75rem 0;
+          }}
+
+          .neix-card {{
+            background: {CARD_BG};
+            border: 1px solid {BORDER};
+            border-radius: 18px;
+            padding: 0.95rem 1rem 0.9rem 1rem;
+            box-shadow: 0 8px 24px rgba(17,24,39,0.04);
+            height: 100%;
+          }}
+
+          .neix-kpi-label {{
+            font-size: 0.78rem;
+            color: {MUTED};
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-bottom: 0.35rem;
+          }}
+
+          .neix-kpi-value {{
+            font-size: 1.6rem;
+            font-weight: 760;
+            color: {TEXT};
             line-height: 1.1;
           }}
 
-          .cp-kpi-delta {{
+          .neix-kpi-sub {{
             margin-top: 0.35rem;
             font-size: 0.82rem;
-            font-weight: 600;
-            line-height: 1.3;
-          }}
-
-          .cp-section {{
-            font-size: 0.92rem;
-            font-weight: 700;
             color: {MUTED};
-            letter-spacing: 0.06em;
-            text-transform: uppercase;
-            margin: 1.45rem 0 0.65rem;
           }}
 
-          div[data-testid="stDataFrame"] {{
-            border-radius: 12px;
-            overflow: hidden;
+          .mini-card {{
+            background: white;
             border: 1px solid {BORDER};
+            border-radius: 16px;
+            padding: 0.85rem 0.9rem;
+            box-shadow: 0 6px 18px rgba(17,24,39,0.03);
+            margin-bottom: 0.65rem;
           }}
 
-          .stDownloadButton button, .stButton button {{
-            border-radius: 10px;
-            font-weight: 600;
+          .mini-title {{
+            font-size: 0.82rem;
+            color: {MUTED};
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.25rem;
           }}
 
-          .cp-note {{
+          .mini-value {{
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: {TEXT};
+          }}
+
+          .status-pill {{
+            display: inline-block;
+            padding: 0.18rem 0.55rem;
+            border-radius: 999px;
+            font-size: 0.77rem;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+          }}
+
+          .status-ok {{
+            background: {OK_BG};
+            color: {OK_TXT};
+          }}
+
+          .status-warn {{
+            background: {WARN_BG};
+            color: {WARN_TXT};
+          }}
+
+          .status-bad {{
+            background: {BAD_BG};
+            color: {BAD_TXT};
+          }}
+
+          .audit-box {{
             background: #fff;
             border: 1px solid {BORDER};
-            border-radius: 12px;
-            padding: 0.9rem 1rem;
+            border-radius: 18px;
+            padding: 0.95rem 1rem;
+            margin-bottom: 0.75rem;
+          }}
+
+          .audit-title {{
+            font-size: 0.96rem;
+            font-weight: 700;
+            margin-bottom: 0.25rem;
+          }}
+
+          .audit-sub {{
             color: {MUTED};
-            font-size: 0.92rem;
+            font-size: 0.88rem;
+            margin: 0;
+          }}
+
+          div[data-testid="stDownloadButton"] > button,
+          div[data-testid="stButton"] > button {{
+            width: 100%;
+            border-radius: 12px;
+            border: 1px solid transparent;
+          }}
+
+          div[data-testid="stDownloadButton"] > button {{
+            background: {NEIX_RED} !important;
+            color: white !important;
+          }}
+
+          div[data-testid="stButton"] > button {{
+            background: white;
+            color: {TEXT};
+            border: 1px solid {BORDER};
+          }}
+
+          .stTabs [data-baseweb="tab-list"] {{
+            gap: 0.35rem;
+          }}
+
+          .stTabs [data-baseweb="tab"] {{
+            height: 40px;
+            border-radius: 10px;
+            padding-left: 0.9rem;
+            padding-right: 0.9rem;
+          }}
+
+          .small-note {{
+            color: {MUTED};
+            font-size: 0.86rem;
           }}
         </style>
         """,
@@ -128,1698 +217,1362 @@ def _inject_css() -> None:
     )
 
 
-# =========================================================
-# HELPERS GENERALES
-# =========================================================
-def _fmt_money(v: float, decimals: int = 2) -> str:
-    if pd.isna(v):
-        return "—"
-    return f"$ {v:,.{decimals}f}"
-
-
-def _fmt_num(v: float, decimals: int = 0) -> str:
-    if pd.isna(v):
-        return "—"
-    return f"{v:,.{decimals}f}"
-
-
-def _fmt_pct(v: float) -> str:
-    if pd.isna(v):
-        return "—"
-    return f"{v:+,.2f}%"
-
-
-def _pct_change(fin: float, ini: float) -> float:
-    if pd.isna(ini) or ini == 0:
-        return np.nan
-    return (fin / ini - 1) * 100
-
-
-def _norm(x) -> str:
-    if x is None:
-        return ""
-    try:
-        if pd.isna(x):
-            return ""
-    except Exception:
-        pass
-    return str(x).replace("\xa0", " ").strip()
-
-
-def _norm_upper(x) -> str:
-    return _norm(x).upper().strip()
-
-
-def _strip_extra_spaces(s: str) -> str:
-    return re.sub(r"\s+", " ", _norm(s)).strip()
-
-
-def _normalize_text_key(x) -> str:
-    s = _norm_upper(x)
-    s = re.sub(r"\s+", " ", s)
-    s = s.replace("_", " ")
-    s = s.replace("-", " ")
-    s = re.sub(r"[^\w\s./]", "", s)
-    return s.strip()
-
-
-def _normalize_col_name(c: str) -> str:
-    s = _normalize_text_key(c)
-    mapping = {
-        "F INICIO": "F.Inicio",
-        "F.INICIO": "F.Inicio",
-        "F VTO": "F.Vto",
-        "F.VTO": "F.Vto",
-        "CARTERA NEIX": "Cartera Neix",
-        "ACTIVO": "Activo",
-        "ESPECIE": "Especie",
-        "VN": "VN",
-        "MONEDA": "Moneda",
-        "ESTADO": "Estado",
-        "ID": "id",
-        "CLIENTE": "Cliente",
-        "NEIX": "Neix",
-        "DIAS": "Dias",
-        "PRECIO": "Precio",
-        "TASA CLIENTE": "Tasa Cliente",
-        "PAGAR CLIENTE": "Pagar Cliente",
-        "TASA MANAGER": "Tasa Manager",
-        "PAGAR MANAGER": "Pagar Manager",
-        "OBS": "Obs",
-    }
-    return mapping.get(s, _strip_extra_spaces(c))
-
-
-def _to_ts(value) -> Optional[pd.Timestamp]:
-    if value is None:
-        return None
-    if isinstance(value, (pd.Timestamp, datetime)):
-        try:
-            return pd.Timestamp(value).normalize()
-        except Exception:
-            return None
-    try:
-        if pd.isna(value):
-            return None
-    except Exception:
-        pass
-
-    txt = str(value).strip()
-    if not txt:
-        return None
-
-    candidates = [
-        pd.to_datetime(txt, dayfirst=True, errors="coerce"),
-        pd.to_datetime(txt, dayfirst=False, errors="coerce"),
-    ]
-    for ts in candidates:
-        if pd.notna(ts):
-            return pd.Timestamp(ts).normalize()
-    return None
-
-
-def _safe_num(d: Dict, key: str) -> float:
-    return pd.to_numeric(d.get(key), errors="coerce")
-
-
-def _weighted_avg(values: pd.Series, weights: pd.Series) -> float:
-    mask = (~values.isna()) & (~weights.isna()) & (weights != 0)
-    if not mask.any():
-        return np.nan
-    return np.average(values[mask], weights=weights[mask])
-
-
-def _coerce_numeric_scalar(x):
-    s = _norm(x)
-    if s == "":
-        return np.nan
-
-    s_low = s.lower()
-    if s_low in {"nan", "none", "-", "—"}:
-        return np.nan
-
-    s = s.replace("%", "")
-    s = s.replace("$", "")
-    s = s.replace("u$s", "").replace("U$S", "")
-    s = s.replace("usd", "").replace("USD", "")
-    s = s.replace("ars", "").replace("ARS", "")
-    s = s.replace("(", "-").replace(")", "")
-    s = s.replace(" ", "")
-
-    if "," in s and "." in s:
-        if s.rfind(",") > s.rfind("."):
-            s = s.replace(".", "").replace(",", ".")
-        else:
-            s = s.replace(",", "")
-    elif "," in s:
-        s = s.replace(".", "")
-        s = s.replace(",", ".")
-    else:
-        if s.count(".") > 1:
-            s = s.replace(".", "")
-
-    return pd.to_numeric(s, errors="coerce")
-
-
-def _coerce_numeric_series(series: pd.Series) -> pd.Series:
-    return series.apply(_coerce_numeric_scalar)
-
-
-def _looks_like_html(text: str) -> bool:
-    low = text.lower()
-    return (
-        "<html" in low
-        or "<table" in low
-        or "<tr" in low
-        or "<td" in low
-        or "<pre" in low
-        or "<body" in low
-    )
-
-
-def _first_token(text: str) -> str:
-    s = _normalize_text_key(text)
-    if not s:
-        return ""
-    parts = re.split(r"\s+", s)
-    token = parts[0].strip()
-    token = re.sub(r"[^\w./-]", "", token)
-    return token
-
-
-def _normalize_activo_match_from_portfolio(especie: str) -> str:
-    token = _first_token(especie)
-    return token.upper()
-
-
-def _normalize_activo_match_from_rental(activo: str) -> str:
-    token = _normalize_text_key(activo)
-    token = re.sub(r"\s+", " ", token).strip()
-    return token.upper()
-
-
-def _normalize_cartera_neix(x: str) -> str:
-    return _normalize_text_key(x)
-
-
-def _is_non_rentable_position(row: pd.Series) -> bool:
-    especie = _normalize_text_key(row.get("Especie", ""))
-    activo = _normalize_text_key(row.get("activo_match", ""))
-    tipo = _normalize_text_key(row.get("Tipo", ""))
-    moneda = _normalize_text_key(row.get("Moneda", ""))
-    categoria = _normalize_text_key(row.get("Categoria", ""))
-
-    all_text = " | ".join([especie, activo, tipo, moneda, categoria])
-
-    if tipo in {"CTA. CORRIENTE", "CUENTA CORRIENTE"}:
-        return True
-
-    for key in NON_RENTABLE_KEYS:
-        if key in all_text:
-            return True
-
-    return False
-
-
-# =========================================================
-# DETECCIONES DE NEGOCIO
-# =========================================================
-def _detect_moneda(categoria: str) -> str:
-    c = _norm(categoria).upper()
-    if "U$S EXTERIOR" in c or "USD EXTERIOR" in c or "EXTERIOR" in c:
-        return "USD Exterior"
-    if "DOLAR LOCAL" in c or "DÓLAR LOCAL" in c or "USD LOCAL" in c:
-        return "USD Local"
-    return "ARS"
-
-
-def _detect_tipo(categoria: str) -> str:
-    c = _norm(categoria).upper()
-    mapping = {
-        "CUENTA CORRIENTE": "Cta. Corriente",
-        "FONDOS COMUNES": "FCI",
-        "LETRAS": "Letras",
-        "TITULOS PUBLICOS": "T. Públicos",
-        "TÍTULOS PUBLICOS": "T. Públicos",
-        "OBLIGACIONES NEGOCIABLES": "ON",
-        "ACCIONES": "Acciones",
-    }
-    for key, val in mapping.items():
-        if key in c:
-            return val
-    return "Otros"
-
-
-# =========================================================
-# LECTURA DE ARCHIVOS
-# =========================================================
-def _read_as_excel(file, name: str) -> pd.DataFrame:
-    lower_name = name.lower()
-
-    if lower_name.endswith(".xlsx") or lower_name.endswith(".xlsm"):
-        engines = ["openpyxl", "calamine", "xlrd"]
-    elif lower_name.endswith(".xls"):
-        engines = ["xlrd", "calamine", "openpyxl"]
-    else:
-        engines = ["openpyxl", "xlrd", "calamine"]
-
-    last_error = None
-    for engine in engines:
-        try:
-            file.seek(0)
-            df = pd.read_excel(file, header=None, engine=engine)
-            if isinstance(df, pd.DataFrame) and not df.empty:
-                return df
-        except Exception as e:
-            last_error = e
-
-    raise last_error if last_error else ValueError("No se pudo leer como Excel.")
-
-
-def _read_excel_best_effort(file) -> pd.DataFrame:
-    name = getattr(file, "name", "archivo")
-    lower_name = name.lower()
-
-    if lower_name.endswith(".xlsx") or lower_name.endswith(".xlsm"):
-        engines = ["openpyxl", "calamine", "xlrd"]
-    elif lower_name.endswith(".xls"):
-        engines = ["xlrd", "calamine", "openpyxl"]
-    else:
-        engines = ["openpyxl", "xlrd", "calamine"]
-
-    last_error = None
-    for engine in engines:
-        try:
-            file.seek(0)
-            return pd.read_excel(file, engine=engine)
-        except Exception as e:
-            last_error = e
-
-    raise last_error if last_error else ValueError(f"No se pudo leer {name}.")
-
-
-def _clean_html_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-
-    if isinstance(out.columns, pd.MultiIndex):
-        out.columns = [
-            " ".join([_norm(x) for x in tup if _norm(x) != ""]).strip()
-            for tup in out.columns
-        ]
-    else:
-        out.columns = [str(c) for c in out.columns]
-
-    for col in out.columns:
-        out[col] = out[col].apply(_norm)
-
-    return out
-
-
-def _html_to_text_lines(text: str) -> List[str]:
-    txt = text
-    txt = txt.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
-    txt = txt.replace("&nbsp;", " ")
-    txt = re.sub(r"<script.*?</script>", "", txt, flags=re.I | re.S)
-    txt = re.sub(r"<style.*?</style>", "", txt, flags=re.I | re.S)
-    txt = re.sub(r"</tr\s*>", "\n", txt, flags=re.I)
-    txt = re.sub(r"</p\s*>", "\n", txt, flags=re.I)
-    txt = re.sub(r"</div\s*>", "\n", txt, flags=re.I)
-    txt = re.sub(r"<[^>]+>", " ", txt)
-    txt = re.sub(r"[ \t]+", " ", txt)
-    txt = re.sub(r"\n{2,}", "\n", txt)
-    lines = [line.strip() for line in txt.splitlines() if line.strip()]
-    return lines
-
-
-def _text_lines_to_dataframe(lines: List[str]) -> pd.DataFrame:
-    rows = []
-
-    for line in lines:
-        parts = re.split(r"\s{2,}", line.strip())
-        if len(parts) > 1:
-            rows.append(parts)
-
-    if not rows:
-        for line in lines:
-            parts = [p.strip() for p in line.split("\t") if p.strip() != ""]
-            if len(parts) > 1:
-                rows.append(parts)
-
-    if not rows:
-        rows = [[line] for line in lines]
-
-    max_cols = max(len(r) for r in rows)
-    rows = [r + [""] * (max_cols - len(r)) for r in rows]
-    return pd.DataFrame(rows)
-
-
-def _read_as_html(file) -> pd.DataFrame:
-    file.seek(0)
-    content = file.read()
-
-    if isinstance(content, bytes):
-        text = content.decode("utf-8", errors="ignore")
-    else:
-        text = str(content)
-
-    if not _looks_like_html(text):
-        raise ValueError("El archivo no contiene estructura HTML reconocible.")
-
-    try:
-        tables = pd.read_html(text)
-        if tables:
-            tables = sorted(tables, key=lambda x: x.shape[0] * x.shape[1], reverse=True)
-            return _clean_html_dataframe(tables[0])
-    except Exception:
-        pass
-
-    lines = _html_to_text_lines(text)
-    if not lines:
-        raise ValueError("No tables found")
-
-    return _text_lines_to_dataframe(lines)
-
-
-def load_portfolio(file) -> Tuple[Dict[str, object], pd.DataFrame]:
-    name = getattr(file, "name", "archivo")
-    last_error = None
-
-    try:
-        df_raw = _read_as_excel(file, name)
-        header = _parse_header(df_raw)
-        detail = _parse_detail(df_raw)
-        if header.get("fecha") is not None or not detail.empty:
-            return header, detail
-    except Exception as e:
-        last_error = e
-
-    try:
-        file.seek(0)
-        raw = file.read()
-        raw_text = raw.decode("utf-8", errors="ignore") if isinstance(raw, bytes) else str(raw)
-
-        if _looks_like_html(raw_text):
-            file.seek(0)
-            df_raw = _read_as_html(file)
-            header = _parse_header(df_raw)
-            detail = _parse_detail(df_raw)
-            if header.get("fecha") is not None or not detail.empty:
-                return header, detail
-    except Exception as e:
-        last_error = e
-
-    raise ValueError(f"Error procesando {name}: {last_error}")
-
-
-# =========================================================
-# PARSEO HEADER
-# =========================================================
-def _parse_header(df: pd.DataFrame) -> Dict[str, object]:
-    out: Dict[str, object] = {
-        "usuario": "",
-        "comitente": "",
-        "fecha": None,
-        "total_posicion": np.nan,
-        "portafolio_disponible": np.nan,
-        "cc_ars": np.nan,
-        "cc_usd_ext": np.nan,
-        "cc_usd_local": np.nan,
-    }
-
-    try:
-        if df.shape[0] > 3 and df.shape[1] > 0:
-            out["usuario"] = _norm(df.iloc[3, 0])
-        if df.shape[0] > 3 and df.shape[1] > 1:
-            out["comitente"] = _norm(df.iloc[3, 1])
-        if df.shape[0] > 3 and df.shape[1] > 2:
-            out["fecha"] = _to_ts(df.iloc[3, 2])
-    except Exception:
-        pass
-
-    label_aliases = {
-        "total posición": "total_posicion",
-        "total posicion": "total_posicion",
-        "portafolio disponible": "portafolio_disponible",
-        "cuenta corriente $": "cc_ars",
-        "cuenta corriente ars": "cc_ars",
-        "cuenta corriente u$s exterior": "cc_usd_ext",
-        "cuenta corriente usd exterior": "cc_usd_ext",
-        "cuenta corriente exterior": "cc_usd_ext",
-        "cuenta corriente dolar local": "cc_usd_local",
-        "cuenta corriente dólar local": "cc_usd_local",
-        "cuenta corriente usd local": "cc_usd_local",
-    }
-
-    max_rows = min(len(df), 80)
-    max_cols = min(df.shape[1], 20)
-
-    for i in range(max_rows):
-        for j in range(max_cols):
-            val = _norm(df.iloc[i, j])
-            val_low = val.lower()
-
-            if out["fecha"] is None:
-                ts = _to_ts(val)
-                if ts is not None:
-                    out["fecha"] = ts
-
-            if out["usuario"] == "" and any(x in val_low for x in ["usuario", "cliente", "titular"]):
-                for k in range(j + 1, min(j + 4, df.shape[1])):
-                    candidate = _norm(df.iloc[i, k])
-                    if candidate != "":
-                        out["usuario"] = candidate
-                        break
-
-            if out["comitente"] == "" and "comitente" in val_low:
-                for k in range(j + 1, min(j + 4, df.shape[1])):
-                    candidate = _norm(df.iloc[i, k])
-                    if candidate != "":
-                        out["comitente"] = candidate
-                        break
-
-            for alias, target in label_aliases.items():
-                if alias in val_low:
-                    found = False
-
-                    for k in range(j + 1, min(j + 8, df.shape[1])):
-                        num = _coerce_numeric_scalar(df.iloc[i, k])
-                        if pd.notna(num):
-                            out[target] = num
-                            found = True
-                            break
-
-                    if not found:
-                        for r in range(i + 1, min(i + 4, len(df))):
-                            num = _coerce_numeric_scalar(df.iloc[r, j])
-                            if pd.notna(num):
-                                out[target] = num
-                                break
-
-    return out
-
-
-# =========================================================
-# PARSEO DETALLE
-# =========================================================
-def _empty_detail_df() -> pd.DataFrame:
-    return pd.DataFrame(columns=[
-        "Especie", "Estado", "Cantidad", "Precio", "Importe",
-        "PctTotal", "Costo", "PctVar", "Resultado",
-        "Categoria", "Moneda", "Tipo"
-    ])
-
-
-def _score_detail_candidate(tmp: pd.DataFrame) -> int:
-    if tmp.shape[1] != 9:
-        return -1
-
-    cols = [
-        "Especie", "Estado", "Cantidad", "Precio", "Importe",
-        "PctTotal", "Costo", "PctVar", "Resultado"
-    ]
-    cand = tmp.copy()
-    cand.columns = cols
-
-    especie_nonempty = cand["Especie"].astype(str).str.strip().ne("").sum()
-    cantidad_num = _coerce_numeric_series(cand["Cantidad"]).notna().sum()
-    importe_num = _coerce_numeric_series(cand["Importe"]).notna().sum()
-    precio_num = _coerce_numeric_series(cand["Precio"]).notna().sum()
-
-    score = int(especie_nonempty + cantidad_num * 2 + importe_num * 2 + precio_num)
-    return score
-
-
-def _find_detail_block(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    cols = [
-        "Especie", "Estado", "Cantidad", "Precio", "Importe",
-        "PctTotal", "Costo", "PctVar", "Resultado"
-    ]
-
-    try:
-        tmp = df.iloc[16:, 1:10].copy()
-        if tmp.shape[1] == 9:
-            tmp.columns = cols
-            return tmp.reset_index(drop=True)
-    except Exception:
-        pass
-
-    best_score = -1
-    best_df = None
-
-    ncols = df.shape[1]
-    for start_col in range(0, max(1, ncols - 8)):
-        tmp = df.iloc[:, start_col:start_col + 9].copy()
-        if tmp.shape[1] != 9:
-            continue
-
-        score = _score_detail_candidate(tmp)
-        if score > best_score:
-            best_score = score
-            best_df = tmp.copy()
-
-    if best_df is not None and best_score >= 12:
-        best_df.columns = cols
-        return best_df.reset_index(drop=True)
-
-    return None
-
-
-def _parse_detail(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return _empty_detail_df()
-
-    raw = _find_detail_block(df)
-    if raw is None:
-        return _empty_detail_df()
-
-    raw["Especie"] = raw["Especie"].apply(_norm)
-    raw["Estado"] = raw["Estado"].apply(_norm)
-
-    for col in ["Cantidad", "Precio", "Importe", "PctTotal", "Costo", "PctVar", "Resultado"]:
-        raw[col] = _coerce_numeric_series(raw[col])
-
-    def _is_subtotal(row) -> bool:
-        return pd.isna(row["Cantidad"]) and pd.isna(row["Precio"]) and row["Estado"] != ""
-
-    rows: List[dict] = []
-    current_cat = ""
-
-    for _, row in raw.iterrows():
-        especie = row["Especie"]
-
-        if especie == "" and pd.isna(row["Cantidad"]) and pd.isna(row["Importe"]):
-            continue
-
-        if especie.startswith("* "):
-            continue
-
-        if _is_subtotal(row):
-            current_cat = row["Estado"]
-            continue
-
-        if especie == "" and row["Estado"] != "":
-            current_cat = row["Estado"]
-            continue
-
-        rec = row.to_dict()
-        rec["Categoria"] = current_cat
-        rows.append(rec)
-
-    out = pd.DataFrame(rows)
-    if out.empty:
-        return _empty_detail_df()
-
-    out["Categoria"] = out["Categoria"].apply(_norm)
-    out["Moneda"] = out["Categoria"].apply(_detect_moneda)
-    out["Tipo"] = out["Categoria"].apply(_detect_tipo)
-
-    numeric_ok = out[["Cantidad", "Precio", "Importe", "Resultado"]].notna().any(axis=1)
-    out = out[numeric_ok].copy()
-
-    return out
-
-
-# =========================================================
-# CONSOLIDACIÓN CARTERA
-# =========================================================
-def _agg_by_especie(detail: pd.DataFrame) -> pd.DataFrame:
-    if detail.empty:
-        return pd.DataFrame(columns=[
-            "Especie", "Categoria", "Tipo", "Moneda",
-            "Cantidad", "Precio", "Importe", "Costo", "Resultado"
-        ])
-
-    keys = ["Especie", "Categoria", "Tipo", "Moneda"]
-
-    grouped = (
-        detail.groupby(keys, as_index=False)
-        .agg(
-            Cantidad=("Cantidad", "sum"),
-            Importe=("Importe", "sum"),
-            Resultado=("Resultado", "sum"),
-        )
-    )
-
-    precio_df = (
-        detail.groupby(keys)
-        .apply(lambda g: _weighted_avg(g["Precio"], g["Cantidad"]), include_groups=False)
-        .reset_index(name="Precio")
-    )
-
-    costo_df = (
-        detail.groupby(keys)
-        .apply(lambda g: _weighted_avg(g["Costo"], g["Cantidad"]), include_groups=False)
-        .reset_index(name="Costo")
-    )
-
-    grouped = grouped.merge(precio_df, on=keys, how="left")
-    grouped = grouped.merge(costo_df, on=keys, how="left")
-
-    return grouped.sort_values("Importe", ascending=False).reset_index(drop=True)
-
-
-def consolidate_same_date(files: List) -> Dict[pd.Timestamp, Dict[str, object]]:
-    grouped: Dict[pd.Timestamp, Dict[str, object]] = {}
-
-    for file in files:
-        header, detail = load_portfolio(file)
-        fecha = header.get("fecha")
-
-        if fecha is None:
-            raise ValueError(
-                f"No se pudo identificar la fecha en {getattr(file, 'name', 'archivo')}"
-            )
-
-        comitente = _norm(header.get("comitente"))
-        usuario = _norm(header.get("usuario"))
-        file_name = getattr(file, "name", "archivo")
-
-        detail_ext = detail.copy()
-        detail_ext["Cartera Neix"] = comitente
-        detail_ext["Usuario"] = usuario
-        detail_ext["Archivo"] = file_name
-        detail_ext["Fecha"] = fecha
-        detail_ext["activo_match"] = detail_ext["Especie"].apply(_normalize_activo_match_from_portfolio)
-
-        if fecha not in grouped:
-            grouped[fecha] = {
-                "fecha": fecha,
-                "headers_raw": [],
-                "details_raw": [],
-                "file_names": [],
-                "comitentes": [],
-                "usuarios": [],
-            }
-
-        grouped[fecha]["headers_raw"].append(header)
-        grouped[fecha]["details_raw"].append(detail_ext.copy())
-        grouped[fecha]["file_names"].append(file_name)
-        grouped[fecha]["comitentes"].append(comitente)
-        grouped[fecha]["usuarios"].append(usuario)
-
-    consolidated: Dict[pd.Timestamp, Dict[str, object]] = {}
-
-    for fecha, pack in grouped.items():
-        headers_raw = pack["headers_raw"]
-        details_raw = pack["details_raw"]
-
-        header_cons = {
-            "fecha": fecha,
-            "usuario": "Consolidado",
-            "comitente": "Consolidado",
-            "cantidad_archivos": len(pack["file_names"]),
-            "cantidad_comitentes": len({c for c in pack["comitentes"] if c}),
-            "archivos": " | ".join(pack["file_names"]),
-            "comitentes_lista": " | ".join(sorted({c for c in pack["comitentes"] if c})),
-            "total_posicion": np.nansum([_safe_num(h, "total_posicion") for h in headers_raw]),
-            "portafolio_disponible": np.nansum([_safe_num(h, "portafolio_disponible") for h in headers_raw]),
-            "cc_ars": np.nansum([_safe_num(h, "cc_ars") for h in headers_raw]),
-            "cc_usd_ext": np.nansum([_safe_num(h, "cc_usd_ext") for h in headers_raw]),
-            "cc_usd_local": np.nansum([_safe_num(h, "cc_usd_local") for h in headers_raw]),
-        }
-
-        detail_all = pd.concat(details_raw, ignore_index=True) if details_raw else pd.DataFrame(columns=PORTFOLIO_REQUIRED_FINAL)
-        detail_cons = _agg_by_especie(detail_all)
-
-        consolidated[fecha] = {
-            "header": header_cons,
-            "detail": detail_cons,
-            "detail_raw_concat": detail_all,
-            "file_names": pack["file_names"],
-            "comitentes": sorted({c for c in pack["comitentes"] if c}),
-        }
-
-    return dict(sorted(consolidated.items(), key=lambda x: x[0]))
-
-
-# =========================================================
-# ALQUILERES
-# =========================================================
-def _ensure_required_rental_cols(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out.columns = [_normalize_col_name(c) for c in out.columns]
-
-    for col in RENTAL_BASE_COLUMNS:
-        if col not in out.columns:
-            out[col] = np.nan
-
-    return out[RENTAL_BASE_COLUMNS].copy()
-
-
-def load_rentals(file, source_name: str) -> pd.DataFrame:
-    df = _read_excel_best_effort(file)
-    df = _ensure_required_rental_cols(df)
-
-    for c in df.columns:
-        if c not in {"VN", "Precio", "Tasa Cliente", "Pagar Cliente", "Tasa Manager", "Pagar Manager"}:
-            df[c] = df[c].apply(_norm)
-
-    df["VN"] = _coerce_numeric_series(df["VN"])
-    df["Precio"] = _coerce_numeric_series(df["Precio"])
-    df["F.Inicio"] = df["F.Inicio"].apply(_to_ts)
-    df["F.Vto"] = df["F.Vto"].apply(_to_ts)
-
-    df["Cartera Neix"] = df["Cartera Neix"].apply(_normalize_cartera_neix)
-    df["Activo"] = df["Activo"].apply(_normalize_text_key)
-    df["Especie"] = df["Especie"].apply(_strip_extra_spaces)
-    df["Moneda"] = df["Moneda"].apply(_strip_extra_spaces)
-    df["Estado"] = df["Estado"].apply(_strip_extra_spaces)
-
-    df["activo_match"] = df["Activo"].apply(_normalize_activo_match_from_rental)
-    df["source_file"] = getattr(file, "name", source_name)
-    df["source_type"] = source_name
-
-    df["id_norm"] = df["id"].apply(lambda x: _normalize_text_key(x))
-    df["dedup_key"] = np.where(
-        df["id_norm"] != "",
-        df["id_norm"],
-        (
-            df["Cartera Neix"].fillna("").astype(str) + "||" +
-            df["activo_match"].fillna("").astype(str) + "||" +
-            df["VN"].fillna(0).astype(str) + "||" +
-            df["F.Inicio"].astype(str) + "||" +
-            df["F.Vto"].astype(str)
-        )
-    )
-
-    return df
-
-
-def filter_active_rentals(df_active: pd.DataFrame, fecha_final: pd.Timestamp) -> pd.DataFrame:
-    if df_active.empty:
-        return df_active.copy()
-    return df_active[df_active["F.Inicio"].notna() & (df_active["F.Inicio"] <= fecha_final)].copy()
-
-
-def filter_historical_live_rentals(df_hist: pd.DataFrame, fecha_final: pd.Timestamp) -> pd.DataFrame:
-    if df_hist.empty:
-        return df_hist.copy()
-    return df_hist[
-        df_hist["F.Inicio"].notna()
-        & (df_hist["F.Inicio"] <= fecha_final)
-        & df_hist["F.Vto"].notna()
-        & (df_hist["F.Vto"] > fecha_final)
-    ].copy()
-
-
-def consolidate_live_rentals(
-    df_active_live: pd.DataFrame,
-    df_hist_live: pd.DataFrame,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    a = df_active_live.copy()
-    h = df_hist_live.copy()
-
-    if a.empty and h.empty:
-        return (
-            pd.DataFrame(columns=RENTAL_BASE_COLUMNS + ["activo_match", "source_type", "dedup_key"]),
-            pd.DataFrame(columns=["dedup_key", "source_types", "count"])
-        )
-
-    both = pd.concat([a, h], ignore_index=True)
-
-    dup_counts = (
-        both.groupby("dedup_key", dropna=False)
-        .agg(
-            count=("dedup_key", "size"),
-            source_types=("source_type", lambda s: " | ".join(sorted(set(s.astype(str)))))
-        )
-        .reset_index()
-    )
-    possible_double = dup_counts[dup_counts["count"] > 1].copy()
-
-    both = both.sort_values(by=["source_type"], ascending=True).copy()
-    both = both.drop_duplicates(subset=["dedup_key"], keep="first").reset_index(drop=True)
-
-    return both, possible_double
-
-
-def summarize_rentals_for_match(df_rentals_live: pd.DataFrame) -> pd.DataFrame:
-    if df_rentals_live.empty:
-        return pd.DataFrame(columns=[
-            "activo_match", "Cartera Neix",
-            "nominal_alquilado_activo", "nominal_alquilado_historico_vigente",
-            "nominal_alquilado_total", "cantidad_registros_alquiler"
-        ])
-
-    tmp = df_rentals_live.copy()
-    tmp["nominal_alquilado_activo"] = np.where(tmp["source_type"] == "activos", tmp["VN"], 0.0)
-    tmp["nominal_alquilado_historico_vigente"] = np.where(tmp["source_type"] == "historicos", tmp["VN"], 0.0)
-
-    out = (
-        tmp.groupby(["activo_match", "Cartera Neix"], as_index=False)
-        .agg(
-            nominal_alquilado_activo=("nominal_alquilado_activo", "sum"),
-            nominal_alquilado_historico_vigente=("nominal_alquilado_historico_vigente", "sum"),
-            nominal_alquilado_total=("VN", "sum"),
-            cantidad_registros_alquiler=("VN", "size"),
-        )
-    )
-
-    return out
-
-
-# =========================================================
-# COMPARACIONES BASE
-# =========================================================
-def compare_headers(h_ini: Dict, h_fin: Dict, total_final_ajustado: float) -> pd.DataFrame:
-    rows = [
-        ("Total Posición", h_ini.get("total_posicion"), h_fin.get("total_posicion"), total_final_ajustado),
-        ("Portafolio Disponible", h_ini.get("portafolio_disponible"), h_fin.get("portafolio_disponible"), np.nan),
-        ("Cuenta Corriente ARS", h_ini.get("cc_ars"), h_fin.get("cc_ars"), np.nan),
-        ("CC USD Exterior", h_ini.get("cc_usd_ext"), h_fin.get("cc_usd_ext"), np.nan),
-        ("CC USD Local", h_ini.get("cc_usd_local"), h_fin.get("cc_usd_local"), np.nan),
-    ]
-    df = pd.DataFrame(rows, columns=["Indicador", "Inicio", "Fin Bruto", "Fin Ajustado"])
-    df["Variación Bruta $"] = df["Fin Bruto"] - df["Inicio"]
-    df["Variación Bruta %"] = df.apply(lambda r: _pct_change(r["Fin Bruto"], r["Inicio"]), axis=1)
-    df["Variación Ajustada $"] = df["Fin Ajustado"] - df["Inicio"]
-    df["Variación Ajustada %"] = df.apply(
-        lambda r: _pct_change(r["Fin Ajustado"], r["Inicio"]) if pd.notna(r["Fin Ajustado"]) else np.nan,
-        axis=1
-    )
-    return df
-
-
-def compare_species(d_ini: pd.DataFrame, d_fin: pd.DataFrame) -> pd.DataFrame:
-    keys = ["Especie", "Categoria", "Tipo", "Moneda"]
-
-    a = d_ini.rename(columns={
-        "Cantidad": "Cant_Ini",
-        "Precio": "Precio_Ini",
-        "Importe": "Imp_Ini",
-        "Resultado": "Res_Ini",
-        "Costo": "Costo_Ini",
-    }).copy()
-
-    b = d_fin.rename(columns={
-        "Cantidad": "Cant_Fin",
-        "Precio": "Precio_Fin",
-        "Importe": "Imp_Fin",
-        "Resultado": "Res_Fin",
-        "Costo": "Costo_Fin",
-    }).copy()
-
-    comp = pd.merge(a, b, on=keys, how="outer").fillna(0)
-
-    comp["Var_Cant"] = comp["Cant_Fin"] - comp["Cant_Ini"]
-    comp["Var_Importe"] = comp["Imp_Fin"] - comp["Imp_Ini"]
-    comp["Var_Pct"] = comp.apply(lambda r: _pct_change(r["Imp_Fin"], r["Imp_Ini"]), axis=1)
-    comp["Var_Resultado"] = comp["Res_Fin"] - comp["Res_Ini"]
-    comp["activo_match"] = comp["Especie"].apply(_normalize_activo_match_from_portfolio)
-
-    comp["Movimiento"] = np.select(
-        [
-            (comp["Cant_Ini"] > 0) & (comp["Cant_Fin"] > 0) & (comp["Var_Cant"] == 0),
-            (comp["Imp_Ini"] == 0) & (comp["Imp_Fin"] != 0),
-            (comp["Cant_Ini"] > 0) & (comp["Var_Cant"] > 0),
-            (comp["Var_Cant"] < 0) & (comp["Cant_Fin"] == 0),
-            (comp["Var_Cant"] < 0) & (comp["Cant_Fin"] > 0),
-        ],
-        [
-            "Mantenida",
-            "Posición nueva",
-            "Aumento de posición",
-            "Cierre de posición",
-            "Disminución",
-        ],
-        default="Mantenida",
-    )
-
-    return comp.sort_values("Var_Importe", ascending=False).reset_index(drop=True)
-
-
-# =========================================================
-# AJUSTE POR ALQUILERES
-# =========================================================
-def _build_final_portfolio_for_match(detail_raw_final: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    if detail_raw_final.empty:
-        empty = pd.DataFrame(columns=[
-            "Especie", "activo_match", "Tipo", "Moneda", "Cartera Neix",
-            "nominal_final_bruto", "precio_final", "importe_final_bruto", "es_no_alquilable"
-        ])
-        return empty, empty
-
-    df = detail_raw_final.copy()
-
-    df["Cartera Neix"] = df["Cartera Neix"].apply(_normalize_cartera_neix)
-    df["activo_match"] = df["Especie"].apply(_normalize_activo_match_from_portfolio)
-    df["es_no_alquilable"] = df.apply(_is_non_rentable_position, axis=1)
-
-    grouped = (
-        df.groupby(
-            ["Especie", "activo_match", "Tipo", "Moneda", "Cartera Neix", "es_no_alquilable"],
-            as_index=False
-        )
-        .agg(
-            nominal_final_bruto=("Cantidad", "sum"),
-            importe_final_bruto=("Importe", "sum"),
-        )
-    )
-
-    precio_df = (
-        df.groupby(["Especie", "activo_match", "Tipo", "Moneda", "Cartera Neix", "es_no_alquilable"])
-        .apply(lambda g: _weighted_avg(g["Precio"], g["Cantidad"]), include_groups=False)
-        .reset_index(name="precio_final")
-    )
-
-    grouped = grouped.merge(
-        precio_df,
-        on=["Especie", "activo_match", "Tipo", "Moneda", "Cartera Neix", "es_no_alquilable"],
-        how="left",
-    )
-
-    comparable = grouped[~grouped["es_no_alquilable"]].copy()
-    return grouped, comparable
-
-
-def build_adjustment_tables(
-    detail_raw_final: pd.DataFrame,
-    rentals_summary: pd.DataFrame,
-    rentals_live: pd.DataFrame,
-    possible_double: pd.DataFrame,
-) -> Dict[str, pd.DataFrame]:
-    portfolio_all, portfolio_matchable = _build_final_portfolio_for_match(detail_raw_final)
-
-    match_df = portfolio_matchable.merge(
-        rentals_summary,
-        on=["activo_match", "Cartera Neix"],
-        how="left",
-    )
-
-    for col in [
-        "nominal_alquilado_activo",
-        "nominal_alquilado_historico_vigente",
-        "nominal_alquilado_total",
-        "cantidad_registros_alquiler",
-    ]:
-        if col in match_df.columns:
-            match_df[col] = match_df[col].fillna(0.0)
-
-    match_df["nominal_final_real"] = (match_df["nominal_final_bruto"] - match_df["nominal_alquilado_total"]).clip(lower=0)
-    match_df["nominal_sobre_stock"] = match_df["nominal_alquilado_total"] - match_df["nominal_final_bruto"]
-    match_df["importe_final_real"] = match_df["nominal_final_real"] * match_df["precio_final"]
-
-    match_df["match_status"] = np.select(
-        [
-            match_df["nominal_alquilado_total"] > 0,
-            match_df["nominal_alquilado_total"] == 0,
-        ],
-        [
-            "match_ok",
-            "cartera_sin_match",
-        ],
-        default="cartera_sin_match",
-    )
-
-    rentals_no_match = rentals_summary.merge(
-        portfolio_matchable[["activo_match", "Cartera Neix"]].drop_duplicates(),
-        on=["activo_match", "Cartera Neix"],
-        how="left",
-        indicator=True,
-    )
-    rentals_no_match = rentals_no_match[rentals_no_match["_merge"] == "left_only"].drop(columns=["_merge"]).copy()
-
-    cartera_sin_match = match_df[match_df["match_status"] == "cartera_sin_match"].copy()
-    match_ok = match_df[match_df["match_status"] == "match_ok"].copy()
-
-    alerts_rows = []
-
-    over_stock = match_df[match_df["nominal_alquilado_total"] > match_df["nominal_final_bruto"]].copy()
-    for _, r in over_stock.iterrows():
-        alerts_rows.append({
-            "tipo_alerta": "alquiler_supera_stock",
-            "activo_match": r["activo_match"],
-            "Especie": r["Especie"],
-            "Cartera Neix": r["Cartera Neix"],
-            "detalle": f"Alquiler {r['nominal_alquilado_total']:,.0f} > stock final {r['nominal_final_bruto']:,.0f}",
-        })
-
-    if not possible_double.empty:
-        for _, r in possible_double.iterrows():
-            alerts_rows.append({
-                "tipo_alerta": "posible_doble_conteo",
-                "activo_match": "",
-                "Especie": "",
-                "Cartera Neix": "",
-                "detalle": f"dedup_key={r['dedup_key']} | count={r['count']} | source={r['source_types']}",
-            })
-
-    bad_active = rentals_live[rentals_live["activo_match"].eq("")].copy()
-    if not bad_active.empty:
-        for _, r in bad_active.iterrows():
-            alerts_rows.append({
-                "tipo_alerta": "activo_no_normalizable",
-                "activo_match": "",
-                "Especie": _norm(r.get("Especie")),
-                "Cartera Neix": _norm(r.get("Cartera Neix")),
-                "detalle": f"No se pudo normalizar Activo: {_norm(r.get('Activo'))}",
-            })
-
-    alerts = pd.DataFrame(alerts_rows)
-    if alerts.empty:
-        alerts = pd.DataFrame(columns=["tipo_alerta", "activo_match", "Especie", "Cartera Neix", "detalle"])
-
-    ajuste = match_df.copy()
-    ajuste = ajuste[[
-        "Especie", "activo_match", "Cartera Neix",
-        "nominal_final_bruto",
-        "nominal_alquilado_activo",
-        "nominal_alquilado_historico_vigente",
-        "nominal_alquilado_total",
-        "nominal_final_real",
-        "precio_final",
-        "importe_final_bruto",
-        "importe_final_real",
-        "Tipo", "Moneda"
-    ]].sort_values(["Cartera Neix", "activo_match", "Especie"]).reset_index(drop=True)
-
-    return {
-        "portfolio_all": portfolio_all,
-        "portfolio_matchable": portfolio_matchable,
-        "ajuste": ajuste,
-        "match_ok": match_ok.reset_index(drop=True),
-        "cartera_sin_match": cartera_sin_match.reset_index(drop=True),
-        "alquileres_sin_match": rentals_no_match.reset_index(drop=True),
-        "alertas": alerts.reset_index(drop=True),
-    }
-
-
-def build_nominal_detail(df_species: pd.DataFrame, ajuste_df: pd.DataFrame) -> pd.DataFrame:
-    if df_species.empty:
-        return pd.DataFrame(columns=[
-            "Especie", "activo_match", "Tipo", "Moneda",
-            "nominal_inicial", "nominal_final_bruto", "nominal_alquilado",
-            "nominal_final_real", "variacion_nominal", "movimiento"
-        ])
-
-    alquiler_by_activo = (
-        ajuste_df.groupby(["activo_match"], as_index=False)
-        .agg(
-            nominal_alquilado=("nominal_alquilado_total", "sum"),
-            nominal_final_real=("nominal_final_real", "sum"),
-            nominal_final_bruto=("nominal_final_bruto", "sum"),
-        )
-        if not ajuste_df.empty else
-        pd.DataFrame(columns=["activo_match", "nominal_alquilado", "nominal_final_real", "nominal_final_bruto"])
-    )
-
-    out = df_species.copy()
-    out["activo_match"] = out["Especie"].apply(_normalize_activo_match_from_portfolio)
-    out = out.merge(alquiler_by_activo, on="activo_match", how="left")
-
-    out["nominal_alquilado"] = out["nominal_alquilado"].fillna(0.0)
-    out["nominal_final_real"] = np.where(
-        out["nominal_final_real"].notna(),
-        out["nominal_final_real"],
-        out["Cant_Fin"].fillna(0.0),
-    )
-    out["nominal_final_bruto"] = np.where(
-        out["nominal_final_bruto"].notna(),
-        out["nominal_final_bruto"],
-        out["Cant_Fin"].fillna(0.0),
-    )
-
-    out["nominal_inicial"] = out["Cant_Ini"].fillna(0.0)
-    out["variacion_nominal"] = out["nominal_final_real"] - out["nominal_inicial"]
-
-    out = out[[
-        "Especie", "activo_match", "Tipo", "Moneda",
-        "nominal_inicial", "nominal_final_bruto", "nominal_alquilado",
-        "nominal_final_real", "variacion_nominal", "Movimiento"
-    ]].rename(columns={"Movimiento": "movimiento"})
-
-    return out.sort_values("variacion_nominal", ascending=False).reset_index(drop=True)
-
-
-def build_valued_detail(df_species: pd.DataFrame, ajuste_df: pd.DataFrame) -> pd.DataFrame:
-    if df_species.empty:
-        return pd.DataFrame(columns=[
-            "Especie", "activo_match", "Tipo", "Moneda",
-            "importe_inicial", "importe_final_bruto", "importe_final_real",
-            "variacion_bruta", "variacion_real", "movimiento"
-        ])
-
-    ajuste_by_activo = (
-        ajuste_df.groupby(["activo_match"], as_index=False)
-        .agg(
-            importe_final_bruto=("importe_final_bruto", "sum"),
-            importe_final_real=("importe_final_real", "sum"),
-        )
-        if not ajuste_df.empty else
-        pd.DataFrame(columns=["activo_match", "importe_final_bruto", "importe_final_real"])
-    )
-
-    out = df_species.copy()
-    out["activo_match"] = out["Especie"].apply(_normalize_activo_match_from_portfolio)
-    out = out.merge(ajuste_by_activo, on="activo_match", how="left")
-
-    out["importe_final_bruto"] = np.where(
-        out["importe_final_bruto"].notna(),
-        out["importe_final_bruto"],
-        out["Imp_Fin"].fillna(0.0),
-    )
-    out["importe_final_real"] = np.where(
-        out["importe_final_real"].notna(),
-        out["importe_final_real"],
-        out["Imp_Fin"].fillna(0.0),
-    )
-
-    out["importe_inicial"] = out["Imp_Ini"].fillna(0.0)
-    out["variacion_bruta"] = out["importe_final_bruto"] - out["importe_inicial"]
-    out["variacion_real"] = out["importe_final_real"] - out["importe_inicial"]
-
-    out = out[[
-        "Especie", "activo_match", "Tipo", "Moneda",
-        "importe_inicial", "importe_final_bruto", "importe_final_real",
-        "variacion_bruta", "variacion_real", "Movimiento"
-    ]].rename(columns={"Movimiento": "movimiento"})
-
-    return out.sort_values("variacion_real", ascending=False).reset_index(drop=True)
-
-
-# =========================================================
-# EXPORT
-# =========================================================
-def build_export(
-    h_ini: Dict,
-    h_fin: Dict,
-    d_ini: pd.DataFrame,
-    d_fin: pd.DataFrame,
-    df_general: pd.DataFrame,
-    df_val: pd.DataFrame,
-    df_nom: pd.DataFrame,
-    df_ajuste: pd.DataFrame,
-    audit_tables: Dict[str, pd.DataFrame],
-    rentals_live: pd.DataFrame,
-    rentals_summary: pd.DataFrame,
-    all_groups: Dict[pd.Timestamp, Dict[str, object]],
-) -> bytes:
-    bio = BytesIO()
-
-    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-        pd.DataFrame([h_ini]).to_excel(writer, sheet_name="Header_Inicio", index=False)
-        pd.DataFrame([h_fin]).to_excel(writer, sheet_name="Header_Fin", index=False)
-        d_ini.to_excel(writer, sheet_name="Detalle_Inicio", index=False)
-        d_fin.to_excel(writer, sheet_name="Detalle_Fin", index=False)
-
-        df_general.to_excel(writer, sheet_name="Comparacion_General", index=False)
-        df_val.to_excel(writer, sheet_name="Detalle_Valuado", index=False)
-        df_nom.to_excel(writer, sheet_name="Detalle_Nominales", index=False)
-        df_ajuste.to_excel(writer, sheet_name="Ajuste_Alquileres", index=False)
-
-        audit_tables["match_ok"].to_excel(writer, sheet_name="match_ok", index=False)
-        audit_tables["cartera_sin_match"].to_excel(writer, sheet_name="cartera_sin_match", index=False)
-        audit_tables["alquileres_sin_match"].to_excel(writer, sheet_name="alquileres_sin_match", index=False)
-        audit_tables["alertas"].to_excel(writer, sheet_name="alertas", index=False)
-
-        rentals_live.to_excel(writer, sheet_name="Alquileres_Vigentes", index=False)
-        rentals_summary.to_excel(writer, sheet_name="Alquileres_Resumen", index=False)
-
-        resumen_fechas = []
-        for fecha, pack in all_groups.items():
-            resumen_fechas.append({
-                "Fecha": fecha,
-                "Cantidad archivos": pack["header"].get("cantidad_archivos"),
-                "Cantidad comitentes": pack["header"].get("cantidad_comitentes"),
-                "Archivos": " | ".join(pack["file_names"]),
-                "Comitentes": pack["header"].get("comitentes_lista"),
-                "Total Posición": pack["header"].get("total_posicion"),
-                "Portafolio Disponible": pack["header"].get("portafolio_disponible"),
-            })
-
-        pd.DataFrame(resumen_fechas).to_excel(writer, sheet_name="Fechas_Consolidadas", index=False)
-
-    bio.seek(0)
-    return bio.read()
-
-
-# =========================================================
-# RENDER AUXILIARES
-# =========================================================
-def _kpi_html(label: str, value: str, delta: str, delta_color: str) -> str:
+def card_html(label: str, value: str, sub: str = "") -> str:
     return f"""
-    <div class="cp-kpi">
-        <div class="cp-kpi-label">{label}</div>
-        <div class="cp-kpi-value">{value}</div>
-        <div class="cp-kpi-delta" style="color:{delta_color};">{delta}</div>
+    <div class="neix-card">
+      <div class="neix-kpi-label">{label}</div>
+      <div class="neix-kpi-value">{value}</div>
+      <div class="neix-kpi-sub">{sub}</div>
     </div>
     """
 
 
-def _styled(df: pd.DataFrame, fmts: Dict[str, str]):
+def semaforo_html(label: str, status: str, sub: str) -> str:
+    css_class = {
+        "OK": "status-ok",
+        "WARN": "status-warn",
+        "BAD": "status-bad",
+    }.get(status, "status-warn")
+
+    return f"""
+    <div class="mini-card">
+      <div class="mini-title">{label}</div>
+      <div class="mini-value"><span class="status-pill {css_class}">{status}</span></div>
+      <div class="neix-kpi-sub">{sub}</div>
+    </div>
+    """
+
+
+# =============================================================================
+# CONFIGURACIÓN
+# =============================================================================
+
+CUENTAS_DEFAULT = [904, 932, 990, 992, 996, 997, 999, 1000]
+
+
+@dataclass
+class PeriodoConciliacion:
+    fecha_ini: str
+    fecha_fin: str
+    cuentas: List[int]
+
+    pares_comp: Dict[int, int] = field(default_factory=lambda: {
+        904: 992,
+        992: 904,
+        997: 999,
+        999: 997,
+    })
+
+    cuenta_ib: int = 992
+
+    ratios_adr: Dict[str, float] = field(default_factory=lambda: {
+        "AAPL": 20, "AMZN": 150, "ADBE": 44, "AMD": 10, "AAL": 3,
+        "ABEV": 0.333, "ARKK": 15, "BABA": 8, "BIDU": 4, "COIN": 5,
+        "CSCO": 6, "DIS": 5, "GOOG": 12, "INTC": 10, "JNJ": 2,
+        "KO": 5, "META": 6, "MSFT": 10, "NFLX": 5, "NKE": 5,
+        "NVDA": 24, "PFE": 10, "PYPL": 5, "QCOM": 5, "SBUX": 5,
+        "SQ": 5, "TSLA": 15, "V": 2, "WMT": 5, "XOM": 5,
+        "84801": 1, "912797SK4": 1,
+    })
+
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+def normalize_text(s: str) -> str:
+    s = str(s or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return s
+
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out.columns = [
+        re.sub(r"[^a-zA-Z0-9]+", "_", normalize_text(c)).strip("_")
+        for c in out.columns
+    ]
+    return out
+
+
+def to_numeric_safe(series: pd.Series) -> pd.Series:
+    s = series.astype(str).str.strip()
+    s = s.str.replace(r"[Uu][$]", "", regex=True)
+    s = s.str.replace("$", "", regex=False)
+    s = s.str.replace(r"\((.*?)\)", r"-\1", regex=True)
+
+    def parse_value(x: str) -> float:
+        x = str(x).strip()
+        x = re.sub(r"[^0-9,.\-]", "", x)
+        if x == "" or x == "-":
+            return 0.0
+
+        if "," in x and "." in x:
+            if x.rfind(",") > x.rfind("."):
+                x = x.replace(".", "").replace(",", ".")
+            else:
+                x = x.replace(",", "")
+        else:
+            if x.count(",") == 1 and x.count(".") == 0:
+                x = x.replace(",", ".")
+            elif x.count(".") > 1 and x.count(",") == 0:
+                x = x.replace(".", "")
+            elif x.count(",") > 1 and x.count(".") == 0:
+                x = x.replace(",", "")
+
+        try:
+            return float(x)
+        except Exception:
+            return 0.0
+
+    return s.apply(parse_value)
+
+
+def to_datetime_safe(series: pd.Series) -> pd.Series:
+    return pd.to_datetime(series, errors="coerce", dayfirst=True)
+
+
+def format_int(x) -> str:
+    try:
+        return f"{int(round(float(x))):,}".replace(",", ".")
+    except Exception:
+        return "-"
+
+
+def format_num(x, decimals: int = 2) -> str:
+    try:
+        return f"{float(x):,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return "-"
+
+
+def format_pct(x) -> str:
+    try:
+        return f"{float(x):.1f}%"
+    except Exception:
+        return "-"
+
+
+def read_any_file(uploaded_file) -> pd.DataFrame:
+    name = uploaded_file.name.lower()
+
+    if name.endswith(".csv"):
+        try:
+            return pd.read_csv(uploaded_file)
+        except Exception:
+            uploaded_file.seek(0)
+            try:
+                return pd.read_csv(uploaded_file, sep=";")
+            except Exception:
+                uploaded_file.seek(0)
+                return pd.read_csv(uploaded_file, sep="|")
+
+    if name.endswith((".xls", ".xlsx", ".xlsm")):
+        return pd.read_excel(uploaded_file)
+
+    raise ValueError(f"Formato no soportado: {uploaded_file.name}")
+
+
+def guess_file_role(filename: str) -> Tuple[Optional[int], Optional[str]]:
+    """
+    Devuelve:
+    - cuenta detectada
+    - rol detectado: posiciones / activity / portafolio_ini / portafolio_fin / desconocido
+    """
+    name = normalize_text(filename)
+    cuenta = None
+
+    for c in CUENTAS_DEFAULT:
+        if re.search(rf"(^|[^0-9]){c}([^0-9]|$)", name):
+            cuenta = c
+            break
+
+    role = None
+
+    if "activity" in name or "movimiento" in name or "movimientos" in name:
+        role = "activity"
+    elif ("portafolio" in name or "portfolio" in name) and ("inicial" in name or "inicio" in name or "ini" in name):
+        role = "portafolio_ini"
+    elif ("portafolio" in name or "portfolio" in name) and ("final" in name or "cierre" in name or "fin" in name):
+        role = "portafolio_fin"
+    elif "posiciones" in name or "consolidado" in name or "conciliacion" in name or "base" in name:
+        role = "posiciones"
+    elif "inicial" in name and "activity" not in name:
+        role = "portafolio_ini"
+    elif "final" in name and "activity" not in name:
+        role = "portafolio_fin"
+
+    return cuenta, role
+
+
+# =============================================================================
+# PREPARACIÓN DE DATASETS
+# =============================================================================
+
+def preparar_posiciones(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+    alerts: List[str] = []
+    df = normalize_columns(df)
+
+    mapping = {
+        "especie": ["especie", "ticker", "activo", "simbolo", "security"],
+        "ini_cant": ["ini_cant", "cantidad_inicial", "ini", "inicial", "saldo_inicial"],
+        "act_cant": ["act_cant", "cantidad_activity", "activity", "movimiento_cantidad", "activity_cant"],
+        "fin_cant": ["fin_cant", "cantidad_final", "fin", "final", "saldo_final"],
+        "ini_imp": ["ini_imp", "importe_inicial", "monto_inicial"],
+        "act_imp": ["act_imp", "importe_activity", "monto_activity"],
+        "fin_imp": ["fin_imp", "importe_final", "monto_final"],
+        "comp": ["comp", "compensacion", "compensaciones"],
+        "ini_ib": ["ini_ib"],
+        "fin_ib": ["fin_ib"],
+        "ini_local": ["ini_local"],
+        "fin_local": ["fin_local"],
+    }
+
+    out = pd.DataFrame()
+    for target, options in mapping.items():
+        found = next((c for c in options if c in df.columns), None)
+        if found:
+            out[target] = df[found]
+
+    if "especie" not in out.columns:
+        raise ValueError("El archivo de posiciones debe contener especie/ticker/activo.")
+
+    numeric_cols = [
+        "ini_cant", "act_cant", "fin_cant",
+        "ini_imp", "act_imp", "fin_imp",
+        "comp", "ini_ib", "fin_ib", "ini_local", "fin_local"
+    ]
+    for c in numeric_cols:
+        if c not in out.columns:
+            out[c] = 0
+            alerts.append(f"Se asumió columna faltante en posiciones: {c}=0")
+        out[c] = to_numeric_safe(out[c])
+
+    out["especie"] = out["especie"].astype(str).str.strip()
+    out = out[out["especie"].astype(str).str.strip() != ""].copy()
+
+    if out["especie"].duplicated().any():
+        alerts.append("Se detectaron especies duplicadas en posiciones; se consolidaron por suma.")
+        agg_map = {c: "sum" for c in numeric_cols}
+        out = out.groupby("especie", dropna=False, as_index=False).agg(agg_map)
+
+    return out.reset_index(drop=True), alerts
+
+
+def preparar_activity(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+    alerts: List[str] = []
+    df = normalize_columns(df)
+
+    mapping = {
+        "ticker": ["ticker", "especie", "activo", "simbolo", "security"],
+        "cantidad": ["cantidad", "cant", "quantity", "qty"],
+        "tipo": ["tipo", "concepto", "movimiento", "side"],
+        "nro_comprobante": ["nro_comprobante", "comprobante", "numero_comprobante", "id"],
+        "fecha_emision": ["fecha_emision", "fecha", "trade_date", "fecha_operacion"],
+        "descripcion": ["descripcion", "detalle"],
+    }
+
+    out = pd.DataFrame()
+    for target, options in mapping.items():
+        found = next((c for c in options if c in df.columns), None)
+        if found:
+            out[target] = df[found]
+
+    for req in ["ticker", "cantidad"]:
+        if req not in out.columns:
+            raise ValueError(f"Falta columna obligatoria en Activity: {req}")
+
+    if "tipo" not in out.columns:
+        out["tipo"] = ""
+        alerts.append("Activity sin columna tipo; se asumió vacío.")
+
+    if "nro_comprobante" not in out.columns:
+        out["nro_comprobante"] = ""
+        alerts.append("Activity sin número de comprobante; deduplicación más limitada.")
+
+    if "fecha_emision" not in out.columns:
+        out["fecha_emision"] = pd.NaT
+        alerts.append("Activity sin fecha; no se podrá analizar pre-concertadas por fecha.")
+    else:
+        out["fecha_emision"] = to_datetime_safe(out["fecha_emision"])
+
+    if "descripcion" not in out.columns:
+        out["descripcion"] = ""
+
+    out["ticker"] = out["ticker"].astype(str).str.strip()
+    out["tipo"] = out["tipo"].astype(str).str.strip()
+    out["cantidad"] = to_numeric_safe(out["cantidad"])
+    out = out[out["ticker"].astype(str).str.strip() != ""].copy()
+
+    return out.reset_index(drop=True), alerts
+
+
+def preparar_portafolio(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+    alerts: List[str] = []
+    df = normalize_columns(df)
+
+    mapping = {
+        "descripcion": ["descripcion", "especie", "detalle", "ticker", "security"],
+        "cantidad": ["cantidad", "cant", "quantity", "qty"],
+    }
+
+    out = pd.DataFrame()
+    for target, options in mapping.items():
+        found = next((c for c in options if c in df.columns), None)
+        if found:
+            out[target] = df[found]
+
+    if "descripcion" not in out.columns:
+        out["descripcion"] = ""
+        alerts.append("Portafolio sin descripción; algunas reglas especiales no aplicarán.")
+
+    if "cantidad" not in out.columns:
+        out["cantidad"] = 0
+        alerts.append("Portafolio sin cantidad; se asumió 0.")
+
+    out["descripcion"] = out["descripcion"].astype(str).str.strip()
+    out["cantidad"] = to_numeric_safe(out["cantidad"])
+    out = out[out["descripcion"].astype(str).str.strip() != ""].copy()
+
+    return out.reset_index(drop=True), alerts
+
+
+# =============================================================================
+# REGLAS
+# =============================================================================
+
+class ReglasReconciliacion:
+
+    @staticmethod
+    def regla_preconcertadas(df_activity: pd.DataFrame, fecha_ini: str, tiene_ini: bool) -> pd.DataFrame:
+        if df_activity.empty or "fecha_emision" not in df_activity.columns or not tiene_ini:
+            return pd.DataFrame()
+        return df_activity[df_activity["fecha_emision"] == pd.to_datetime(fecha_ini)].copy()
+
+    @staticmethod
+    def regla_duplicados(df_activity: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
+        cols_dedup = ["nro_comprobante", "tipo", "ticker", "cantidad"]
+        cols_existentes = [c for c in cols_dedup if c in df_activity.columns]
+        if not cols_existentes:
+            return df_activity.copy(), 0
+        before = len(df_activity)
+        after_df = df_activity.drop_duplicates(subset=cols_existentes, keep="first").copy()
+        removed = before - len(after_df)
+        return after_df, removed
+
+    @staticmethod
+    def regla_vto_prestamo(df_activity: pd.DataFrame) -> Tuple[pd.DataFrame, float, int]:
+        if "tipo" not in df_activity.columns:
+            return df_activity.copy(), 0.0, 0
+
+        mask = df_activity["tipo"].astype(str).str.upper() == "VTO PRESTAMO"
+        excluidos = df_activity.loc[mask].copy()
+        total = excluidos["cantidad"].sum() if "cantidad" in excluidos.columns else 0.0
+        return df_activity.loc[~mask].copy(), total, len(excluidos)
+
+    @staticmethod
+    def regla_decr_desfase(df_activity: pd.DataFrame, ini: float, fin: float, ticker: str) -> Dict:
+        if "tipo" not in df_activity.columns or "cantidad" not in df_activity.columns:
+            return {
+                "ticker": ticker,
+                "decr_activity": 0,
+                "decr_posicion": 0,
+                "exceso": 0,
+                "dif_calculada": ini - fin,
+                "match": False,
+                "ajuste_fin": 0,
+            }
+
+        decr_mask = df_activity["tipo"].astype(str).str.upper() == "DECR"
+        decr_cant = df_activity.loc[decr_mask, "cantidad"].sum()
+        trading_cant = df_activity.loc[~decr_mask, "cantidad"].sum()
+
+        pos_change = fin - ini
+        decr_en_posicion = pos_change - trading_cant
+        exceso = abs(decr_cant) - abs(decr_en_posicion)
+        dif = ini + df_activity["cantidad"].sum() - fin
+
+        return {
+            "ticker": ticker,
+            "decr_activity": decr_cant,
+            "decr_posicion": decr_en_posicion,
+            "exceso": exceso,
+            "dif_calculada": dif,
+            "match": abs(abs(exceso) - abs(dif)) < 1,
+            "ajuste_fin": -exceso,
+        }
+
+    @staticmethod
+    def regla_al30_local_exterior(df_portafolio: pd.DataFrame, ticker: str = "AL30") -> Dict:
+        if df_portafolio is None or df_portafolio.empty:
+            return {
+                "tiene_local": False,
+                "tiene_exterior": False,
+                "cant_local": 0.0,
+                "cant_exterior": 0.0,
+                "cant_total": 0.0,
+            }
+
+        if "descripcion" not in df_portafolio.columns or "cantidad" not in df_portafolio.columns:
+            return {
+                "tiene_local": False,
+                "tiene_exterior": False,
+                "cant_local": 0.0,
+                "cant_exterior": 0.0,
+                "cant_total": 0.0,
+            }
+
+        al30_rows = df_portafolio[
+            df_portafolio["descripcion"].astype(str).str.contains(ticker, case=False, na=False)
+        ].copy()
+
+        local = al30_rows[~al30_rows["descripcion"].astype(str).str.contains("EUR", case=False, na=False)]
+        exterior = al30_rows[al30_rows["descripcion"].astype(str).str.contains("EUR", case=False, na=False)]
+
+        cant_local = float(local["cantidad"].sum()) if not local.empty else 0.0
+        cant_exterior = float(exterior["cantidad"].sum()) if not exterior.empty else 0.0
+
+        return {
+            "tiene_local": not local.empty,
+            "tiene_exterior": not exterior.empty,
+            "cant_local": cant_local,
+            "cant_exterior": cant_exterior,
+            "cant_total": cant_local + cant_exterior,
+        }
+
+    @staticmethod
+    def regla_cc_pesos(especie: str) -> bool:
+        esp = str(especie).strip().upper()
+        return esp in {"CC PESOS", "CC DOLAR LOCAL", "CC U$S EXTERIOR", "CC USD EXTERIOR"}
+
+    @staticmethod
+    def regla_comp_solo_si_dif(dif_cant: float, comp: float) -> float:
+        return 0 if abs(dif_cant) < 1 else comp
+
+
+class ConversionADR:
+    @staticmethod
+    def obtener_ratio(especie: str, ratios_conocidos: Dict[str, float]) -> float:
+        return ratios_conocidos.get(str(especie).strip().upper(), 1)
+
+    @staticmethod
+    def calcular_total_992(local_value: float, ib_value: float, ratio: float) -> float:
+        return local_value + (ib_value * ratio)
+
+
+# =============================================================================
+# MOTOR PRINCIPAL
+# =============================================================================
+
+class ConciliadorMensual:
+    def __init__(self, periodo: PeriodoConciliacion):
+        self.periodo = periodo
+        self.reglas = ReglasReconciliacion()
+
+    def conciliar_especie(
+        self,
+        cuenta: int,
+        especie: str,
+        ini_cant: float,
+        act_cant: float,
+        fin_cant: float,
+        ini_imp: float = 0,
+        act_imp: float = 0,
+        fin_imp: float = 0,
+        comp: float = 0,
+        ratio: float = 1,
+        df_activity_especie: Optional[pd.DataFrame] = None,
+        df_portafolio_ini: Optional[pd.DataFrame] = None,
+        df_portafolio_fin: Optional[pd.DataFrame] = None,
+    ) -> Dict:
+        ajustes: List[str] = []
+        auditoria_flags: List[str] = []
+        especie_upper = str(especie).strip().upper()
+
+        ini_original = float(ini_cant)
+        act_original = float(act_cant)
+        fin_original = float(fin_cant)
+        comp_original = float(comp)
+
+        ini_ajust = float(ini_cant)
+        act_ajust = float(act_cant)
+        fin_ajust = float(fin_cant)
+        comp_ajust = float(comp)
+
+        # CC
+        if self.reglas.regla_cc_pesos(especie_upper):
+            dif_importe = ini_imp + act_imp - fin_imp
+            return {
+                "cuenta": cuenta,
+                "especie": especie,
+                "ini": ini_original,
+                "act": act_original,
+                "fin": fin_original,
+                "comp": comp_original,
+                "ratio": ratio,
+                "ini_imp": ini_imp,
+                "act_imp": act_imp,
+                "fin_imp": fin_imp,
+                "ini_ajust": ini_original,
+                "act_ajust": act_original,
+                "fin_ajust": fin_original,
+                "comp_ajust": 0.0,
+                "dif_cant_original": ini_original + act_original - fin_original,
+                "dif_final_original": ini_original + act_original - fin_original + comp_original,
+                "dif_cant": 0.0,
+                "dif_final": 0.0,
+                "dif_importe": dif_importe,
+                "status": "CERRADA (importe)",
+                "ajustes": "CC conciliada por importe",
+                "flags": "CC_IMPORTE",
+                "reglas_aplicadas": 1,
+            }
+
+        # AL30 local + exterior
+        if especie_upper == "AL30" and df_portafolio_ini is not None and df_portafolio_fin is not None:
+            al30_ini = self.reglas.regla_al30_local_exterior(df_portafolio_ini)
+            al30_fin = self.reglas.regla_al30_local_exterior(df_portafolio_fin)
+
+            if al30_ini["tiene_local"] and al30_ini["tiene_exterior"]:
+                ini_ajust = al30_ini["cant_total"]
+                fin_ajust = al30_fin["cant_total"]
+                ajustes.append("AL30 local + exterior sumado")
+                auditoria_flags.append("AL30_DOBLE_LINEA")
+
+        # Activity por especie
+        if df_activity_especie is not None and not df_activity_especie.empty:
+            # preconcertadas
+            pre = self.reglas.regla_preconcertadas(
+                df_activity_especie,
+                self.periodo.fecha_ini,
+                tiene_ini=abs(ini_original) > 0
+            )
+            if not pre.empty:
+                pre_total = pre["cantidad"].sum()
+                act_ajust -= pre_total
+                ajustes.append(f"Pre-concertadas excluidas ({format_num(pre_total)})")
+                auditoria_flags.append("PRECONCERTADA")
+
+            # DECR
+            if {"tipo", "cantidad"}.issubset(df_activity_especie.columns):
+                decr_ops = df_activity_especie[df_activity_especie["tipo"].astype(str).str.upper() == "DECR"]
+                if not decr_ops.empty:
+                    analisis_decr = self.reglas.regla_decr_desfase(df_activity_especie, ini_ajust, fin_ajust, especie)
+                    if analisis_decr["match"] and abs(analisis_decr["exceso"]) > 0:
+                        fin_ajust += analisis_decr["ajuste_fin"]
+                        ajustes.append(f"DECR ajustado en Fin ({format_num(analisis_decr['ajuste_fin'])})")
+                        auditoria_flags.append("DECR_DESFASE")
+
+        dif_cant_original = ini_original + act_original - fin_original
+        dif_sin_comp = ini_ajust + act_ajust - fin_ajust
+        comp_ajust = self.reglas.regla_comp_solo_si_dif(dif_sin_comp, comp_original)
+
+        if comp_original != 0 and comp_ajust == 0:
+            ajustes.append("Compensación anulada por DifCant=0")
+            auditoria_flags.append("COMP_IGNORADA")
+
+        dif_final_original = dif_cant_original + comp_original
+        dif_cant = ini_ajust + act_ajust - fin_ajust
+        dif_final = dif_cant + comp_ajust
+
+        status = "CERRADA" if abs(dif_final) < 1 else "PENDIENTE"
+
+        if status == "PENDIENTE":
+            auditoria_flags.append("PENDIENTE")
+
+        if abs(dif_final) >= 1 and abs(dif_final) < 100:
+            auditoria_flags.append("DESVIO_BAJO")
+        elif abs(dif_final) >= 100 and abs(dif_final) < 10000:
+            auditoria_flags.append("DESVIO_MEDIO")
+        elif abs(dif_final) >= 10000:
+            auditoria_flags.append("DESVIO_ALTO")
+
+        return {
+            "cuenta": cuenta,
+            "especie": especie,
+            "ini": ini_original,
+            "act": act_original,
+            "fin": fin_original,
+            "comp": comp_original,
+            "ratio": ratio,
+            "ini_imp": ini_imp,
+            "act_imp": act_imp,
+            "fin_imp": fin_imp,
+            "ini_ajust": ini_ajust,
+            "act_ajust": act_ajust,
+            "fin_ajust": fin_ajust,
+            "comp_ajust": comp_ajust,
+            "dif_cant_original": dif_cant_original,
+            "dif_final_original": dif_final_original,
+            "dif_cant": dif_cant,
+            "dif_final": dif_final,
+            "dif_importe": ini_imp + act_imp - fin_imp,
+            "status": status,
+            "ajustes": " | ".join(ajustes) if ajustes else "",
+            "flags": " | ".join(auditoria_flags) if auditoria_flags else "",
+            "reglas_aplicadas": len(ajustes),
+        }
+
+    def conciliar_cuenta(
+        self,
+        cuenta: int,
+        df_posiciones: pd.DataFrame,
+        df_activity: pd.DataFrame,
+        df_portafolio_ini: Optional[pd.DataFrame] = None,
+        df_portafolio_fin: Optional[pd.DataFrame] = None,
+    ) -> Tuple[pd.DataFrame, Dict, pd.DataFrame]:
+        conversor = ConversionADR()
+        auditoria_eventos: List[Dict] = []
+
+        activity_original_rows = len(df_activity)
+        df_activity_dedup, dup_removed = self.reglas.regla_duplicados(df_activity)
+        df_activity_clean, vto_total, vto_count = self.reglas.regla_vto_prestamo(df_activity_dedup)
+
+        if dup_removed > 0:
+            auditoria_eventos.append({
+                "cuenta": cuenta,
+                "tipo_evento": "ACTIVITY_DUPLICADOS",
+                "detalle": f"Se eliminaron {dup_removed} filas duplicadas de Activity",
+                "impacto": "WARN",
+            })
+
+        if vto_count > 0:
+            auditoria_eventos.append({
+                "cuenta": cuenta,
+                "tipo_evento": "VTO_PRESTAMO",
+                "detalle": f"Se excluyeron {vto_count} operaciones VTO PRESTAMO por {format_num(vto_total)}",
+                "impacto": "WARN",
+            })
+
+        resultados: List[Dict] = []
+
+        for _, row in df_posiciones.iterrows():
+            especie = row["especie"]
+
+            act_especie = (
+                df_activity_clean[df_activity_clean["ticker"].astype(str).str.upper() == str(especie).upper()].copy()
+                if "ticker" in df_activity_clean.columns
+                else pd.DataFrame()
+            )
+
+            ini_cant = float(row.get("ini_cant", 0) or 0)
+            fin_cant = float(row.get("fin_cant", 0) or 0)
+
+            ratio = 1.0
+            if cuenta == self.periodo.cuenta_ib:
+                ini_ib = float(row.get("ini_ib", 0) or 0)
+                fin_ib = float(row.get("fin_ib", 0) or 0)
+                ini_local = float(row.get("ini_local", ini_cant) or 0)
+                fin_local = float(row.get("fin_local", fin_cant) or 0)
+                ratio = float(conversor.obtener_ratio(especie, self.periodo.ratios_adr))
+                ini_cant = float(conversor.calcular_total_992(ini_local, ini_ib, ratio))
+                fin_cant = float(conversor.calcular_total_992(fin_local, fin_ib, ratio))
+
+            result = self.conciliar_especie(
+                cuenta=cuenta,
+                especie=especie,
+                ini_cant=ini_cant,
+                act_cant=float(row.get("act_cant", 0) or 0),
+                fin_cant=fin_cant,
+                ini_imp=float(row.get("ini_imp", 0) or 0),
+                act_imp=float(row.get("act_imp", 0) or 0),
+                fin_imp=float(row.get("fin_imp", 0) or 0),
+                comp=float(row.get("comp", 0) or 0),
+                ratio=ratio,
+                df_activity_especie=act_especie if not act_especie.empty else None,
+                df_portafolio_ini=df_portafolio_ini,
+                df_portafolio_fin=df_portafolio_fin,
+            )
+            resultados.append(result)
+
+        df_result = pd.DataFrame(resultados)
+
+        # Activity sin match
+        especies_pos = set(df_posiciones["especie"].astype(str).str.upper().tolist())
+        activity_sin_match = df_activity_clean[
+            ~df_activity_clean["ticker"].astype(str).str.upper().isin(especies_pos)
+        ].copy()
+
+        if not activity_sin_match.empty:
+            grouped = (
+                activity_sin_match.groupby("ticker", dropna=False)["cantidad"]
+                .sum()
+                .reset_index()
+                .rename(columns={"ticker": "especie", "cantidad": "cantidad_activity"})
+            )
+            for _, r in grouped.iterrows():
+                auditoria_eventos.append({
+                    "cuenta": cuenta,
+                    "tipo_evento": "ACTIVITY_SIN_MATCH",
+                    "detalle": f"Activity sin especie en posiciones: {r['especie']} ({format_num(r['cantidad_activity'])})",
+                    "impacto": "BAD",
+                })
+
+        # Especies de posiciones sin movimientos
+        sin_mov = df_result[
+            (df_result["act"].abs() < 1) &
+            (df_result["status"] == "PENDIENTE")
+        ].copy()
+        for _, r in sin_mov.iterrows():
+            auditoria_eventos.append({
+                "cuenta": cuenta,
+                "tipo_evento": "PENDIENTE_SIN_ACTIVITY",
+                "detalle": f"{r['especie']} pendiente sin activity explícita. Dif={format_num(r['dif_final'])}",
+                "impacto": "BAD",
+            })
+
+        resumen = {
+            "cuenta": cuenta,
+            "activity_rows_original": activity_original_rows,
+            "activity_rows_clean": len(df_activity_clean),
+            "duplicados_eliminados": dup_removed,
+            "vto_prestamo_excluidos": vto_count,
+            "total_especies": len(df_result),
+            "cerradas": int(df_result["status"].astype(str).str.contains("CERRADA").sum()),
+            "pendientes": int((df_result["status"] == "PENDIENTE").sum()),
+            "pct_cierre": (
+                float(df_result["status"].astype(str).str.contains("CERRADA").mean() * 100)
+                if len(df_result) > 0 else 0
+            ),
+            "dif_total_abs": float(df_result["dif_final"].abs().sum()),
+            "dif_total_neto": float(df_result["dif_final"].sum()),
+        }
+
+        df_auditoria = pd.DataFrame(auditoria_eventos)
+        return df_result, resumen, df_auditoria
+
+    def generar_reporte(self, resultados: List[pd.DataFrame]) -> pd.DataFrame:
+        if not resultados:
+            return pd.DataFrame()
+        return pd.concat(resultados, ignore_index=True)
+
+
+# =============================================================================
+# EXPORT EXCEL
+# =============================================================================
+
+def auto_adjust_columns(ws) -> None:
+    for col_cells in ws.columns:
+        max_len = 0
+        col_letter = col_cells[0].column_letter
+        for cell in col_cells:
+            try:
+                value_len = len(str(cell.value)) if cell.value is not None else 0
+                max_len = max(max_len, value_len)
+            except Exception:
+                pass
+        ws.column_dimensions[col_letter].width = min(max(max_len + 2, 12), 40)
+
+
+def style_header(ws) -> None:
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    fill = PatternFill("solid", fgColor="FF3B30")
+    font = Font(color="FFFFFF", bold=True)
+    border = Border(
+        bottom=Side(style="thin", color="DDDDDD"),
+        top=Side(style="thin", color="DDDDDD"),
+        left=Side(style="thin", color="DDDDDD"),
+        right=Side(style="thin", color="DDDDDD"),
+    )
+
+    for cell in ws[1]:
+        cell.fill = fill
+        cell.font = font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = border
+
+
+def build_excel_bytes(
+    df_all: pd.DataFrame,
+    df_resumen_cuentas: pd.DataFrame,
+    df_pendientes: pd.DataFrame,
+    df_top_pendientes: pd.DataFrame,
+    df_auditoria: pd.DataFrame,
+    df_reglas: pd.DataFrame,
+) -> bytes:
+    output = io.BytesIO()
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        # Orden recomendado
+        df_resumen_cuentas.to_excel(writer, sheet_name="Resumen", index=False)
+        df_top_pendientes.to_excel(writer, sheet_name="Top Pendientes", index=False)
+        df_pendientes.to_excel(writer, sheet_name="Pendientes", index=False)
+        df_all.to_excel(writer, sheet_name="Detalle Consolidado", index=False)
+        df_auditoria.to_excel(writer, sheet_name="Auditoria", index=False)
+        df_reglas.to_excel(writer, sheet_name="Reglas Aplicadas", index=False)
+
+        wb = writer.book
+        for ws_name in wb.sheetnames:
+            ws = wb[ws_name]
+            style_header(ws)
+            auto_adjust_columns(ws)
+            ws.freeze_panes = "A2"
+
+    output.seek(0)
+    return output.getvalue()
+
+
+# =============================================================================
+# TABLAS DERIVADAS
+# =============================================================================
+
+def build_resumen_cuentas(df_all: pd.DataFrame) -> pd.DataFrame:
+    if df_all.empty:
+        return pd.DataFrame()
+
+    resumen = (
+        df_all.groupby("cuenta", dropna=False)
+        .agg(
+            especies=("especie", "count"),
+            cerradas=("status", lambda s: (s.astype(str).str.contains("CERRADA")).sum()),
+            pendientes=("status", lambda s: (s == "PENDIENTE").sum()),
+            reglas_aplicadas=("reglas_aplicadas", "sum"),
+            dif_total_abs=("dif_final", lambda s: s.abs().sum()),
+            dif_total_neto=("dif_final", "sum"),
+        )
+        .reset_index()
+    )
+
+    resumen["pct_cierre"] = np.where(
+        resumen["especies"] > 0,
+        resumen["cerradas"] / resumen["especies"] * 100,
+        0,
+    )
+
+    def classify(row) -> str:
+        if row["pendientes"] == 0:
+            return "OK"
+        if row["pct_cierre"] >= 85:
+            return "WARN"
+        return "BAD"
+
+    resumen["semaforo"] = resumen.apply(classify, axis=1)
+    resumen = resumen.sort_values(["semaforo", "cuenta"], ascending=[True, True]).reset_index(drop=True)
+    return resumen
+
+
+def build_top_pendientes(df_all: pd.DataFrame, top_n: int = 15) -> pd.DataFrame:
+    if df_all.empty:
+        return pd.DataFrame()
+
+    top = df_all[df_all["status"] == "PENDIENTE"].copy()
+    if top.empty:
+        return top
+
+    top["abs_dif"] = top["dif_final"].abs()
+    top = top.sort_values(["abs_dif", "cuenta", "especie"], ascending=[False, True, True]).head(top_n)
+    cols = [
+        "cuenta", "especie", "ini", "act", "fin", "comp",
+        "ini_ajust", "act_ajust", "fin_ajust", "comp_ajust",
+        "dif_final", "ajustes", "flags"
+    ]
+    return top[cols].reset_index(drop=True)
+
+
+def build_reglas_aplicadas(df_all: pd.DataFrame) -> pd.DataFrame:
+    if df_all.empty:
+        return pd.DataFrame(columns=["regla", "cantidad"])
+
+    counter: Dict[str, int] = {}
+
+    for val in df_all["flags"].fillna("").astype(str):
+        parts = [p.strip() for p in val.split("|") if p.strip()]
+        for p in parts:
+            counter[p] = counter.get(p, 0) + 1
+
+    df = pd.DataFrame(
+        [{"regla": k, "cantidad": v} for k, v in counter.items()]
+    )
     if df.empty:
-        return df.style.hide(axis="index")
-    return df.reset_index(drop=True).style.format(fmts, na_rep="—").hide(axis="index")
+        return pd.DataFrame(columns=["regla", "cantidad"])
+    return df.sort_values("cantidad", ascending=False).reset_index(drop=True)
 
 
-# =========================================================
-# RENDER PRINCIPAL
-# =========================================================
-def render() -> None:
-    _inject_css()
+# =============================================================================
+# RENDER
+# =============================================================================
 
-    st.title("Cartera Propia Real Ajustada por Alquileres")
+def render_header() -> None:
     st.markdown(
-        f"""
-        <p style="color:{MUTED};font-size:0.95rem;margin-top:-0.25rem;margin-bottom:1.1rem;">
-        El módulo consolida múltiples archivos de cartera propia por fecha, compara una fecha inicial vs. final,
-        descuenta del stock final los nominales alquilados vigentes y construye una visión económica ajustada,
-        con trazabilidad completa del cruce, faltantes y alertas.
-        </p>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown('<div class="cp-section">Archivos de entrada</div>', unsafe_allow_html=True)
-
-    files = st.file_uploader(
-        "1) Subí los Excel de cartera propia",
-        type=["xlsx", "xls", "xlsm"],
-        accept_multiple_files=True,
-        key="cp_multi_adj",
-    )
-
-    c1, c2 = st.columns(2)
-    with c1:
-        file_active = st.file_uploader(
-            "2) Subí alquileres activos / corrientes",
-            type=["xlsx", "xls", "xlsm"],
-            accept_multiple_files=False,
-            key="rent_active",
-        )
-    with c2:
-        file_hist = st.file_uploader(
-            "3) Subí alquileres vencidos / históricos",
-            type=["xlsx", "xls", "xlsm"],
-            accept_multiple_files=False,
-            key="rent_hist",
-        )
-
-    st.markdown(
-        f"""
-        <div class="cp-note">
-        En esta primera versión el ajuste por alquileres se aplica únicamente sobre la <b>fecha final</b>.
-        La fecha inicial permanece <b>bruta</b>. El cruce se realiza por <b>activo_match + Cartera Neix</b>.
-        Las posiciones de caja / cuenta corriente se mantienen en la comparación general, pero se excluyen del universo comparable para el ajuste.
+        """
+        <div class="neix-shell">
+          <div class="neix-title">Conciliación mensual de cartera propia — Premium</div>
+          <p class="neix-sub">
+            Módulo ejecutivo para conciliación operativa de cartera: control end-to-end, auditoría, top pendientes y export consolidado.
+          </p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    run = st.button("Analizar cartera ajustada", use_container_width=True)
 
-    if not run:
-        return
+def render_main_kpis(df_all: pd.DataFrame) -> None:
+    total = len(df_all)
+    cerradas = int(df_all["status"].astype(str).str.contains("CERRADA").sum()) if total else 0
+    pendientes = int((df_all["status"] == "PENDIENTE").sum()) if total else 0
+    pct = (cerradas / total * 100) if total else 0
+    dif_abs = float(df_all["dif_final"].abs().sum()) if total else 0
+    reglas = int(df_all["reglas_aplicadas"].sum()) if total else 0
 
-    if not files:
-        st.warning("Subí al menos dos archivos de cartera para continuar.")
-        return
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1:
+        st.markdown(card_html("Especies analizadas", format_int(total)), unsafe_allow_html=True)
+    with c2:
+        st.markdown(card_html("Cerradas", format_int(cerradas), format_pct(pct)), unsafe_allow_html=True)
+    with c3:
+        st.markdown(card_html("Pendientes", format_int(pendientes)), unsafe_allow_html=True)
+    with c4:
+        st.markdown(card_html("Dif. absoluta acumulada", format_num(dif_abs, 0)), unsafe_allow_html=True)
+    with c5:
+        st.markdown(card_html("Reglas aplicadas", format_int(reglas)), unsafe_allow_html=True)
 
-    if file_active is None or file_hist is None:
-        st.warning("Necesitás subir tanto el archivo de alquileres activos como el histórico.")
-        return
 
-    try:
-        groups = consolidate_same_date(files)
-    except ValueError as e:
-        st.error(str(e))
-        return
-    except Exception as e:
-        st.error(f"Error general al procesar los archivos de cartera: {e}")
-        return
+def render_semaforo(df_resumen: pd.DataFrame) -> None:
+    st.markdown('<div class="neix-section">Semáforo por cuenta</div>', unsafe_allow_html=True)
+    cols = st.columns(min(4, max(len(df_resumen), 1)))
 
-    unique_dates = list(groups.keys())
-    if len(unique_dates) < 2:
-        st.warning("Necesitás archivos de al menos dos fechas distintas para comparar.")
-        return
-
-    st.markdown('<div class="cp-section">Fechas detectadas</div>', unsafe_allow_html=True)
-
-    df_detectadas = pd.DataFrame([
-        {
-            "Fecha": fecha.strftime("%d/%m/%Y"),
-            "Cantidad de archivos": groups[fecha]["header"]["cantidad_archivos"],
-            "Cantidad de comitentes": groups[fecha]["header"]["cantidad_comitentes"],
-            "Total Posición": groups[fecha]["header"]["total_posicion"],
-            "Portafolio Disponible": groups[fecha]["header"]["portafolio_disponible"],
-            "Comitentes": groups[fecha]["header"]["comitentes_lista"],
-        }
-        for fecha in unique_dates
-    ])
-
-    st.dataframe(
-        _styled(df_detectadas, {
-            "Total Posición": "$ {:,.2f}",
-            "Portafolio Disponible": "$ {:,.2f}",
-        }),
-        use_container_width=True,
-        height=min(280, 70 + 35 * len(df_detectadas)),
-    )
-
-    c1, c2 = st.columns(2)
-    fecha_ini = c1.selectbox(
-        "Fecha inicial",
-        options=unique_dates,
-        format_func=lambda x: x.strftime("%d/%m/%Y"),
-        index=0,
-    )
-    fecha_fin = c2.selectbox(
-        "Fecha final",
-        options=unique_dates,
-        format_func=lambda x: x.strftime("%d/%m/%Y"),
-        index=len(unique_dates) - 1,
-    )
-
-    if fecha_ini >= fecha_fin:
-        st.error("La fecha inicial debe ser anterior a la fecha final.")
-        return
-
-    h_ini = groups[fecha_ini]["header"]
-    d_ini = groups[fecha_ini]["detail"]
-    d_ini_raw = groups[fecha_ini]["detail_raw_concat"]
-
-    h_fin = groups[fecha_fin]["header"]
-    d_fin = groups[fecha_fin]["detail"]
-    d_fin_raw = groups[fecha_fin]["detail_raw_concat"]
-
-    st.info(
-        f"**Inicial:** {fecha_ini.strftime('%d/%m/%Y')} · "
-        f"{h_ini['cantidad_archivos']} archivo(s) · {h_ini['cantidad_comitentes']} comitente(s)\n\n"
-        f"**Final:** {fecha_fin.strftime('%d/%m/%Y')} · "
-        f"{h_fin['cantidad_archivos']} archivo(s) · {h_fin['cantidad_comitentes']} comitente(s)"
-    )
-
-    # -------------------------
-    # ALQUILERES
-    # -------------------------
-    try:
-        df_active = load_rentals(file_active, "activos")
-        df_hist = load_rentals(file_hist, "historicos")
-    except Exception as e:
-        st.error(f"Error leyendo alquileres: {e}")
-        return
-
-    df_active_live = filter_active_rentals(df_active, fecha_fin)
-    df_hist_live = filter_historical_live_rentals(df_hist, fecha_fin)
-    rentals_live, possible_double = consolidate_live_rentals(df_active_live, df_hist_live)
-    rentals_summary = summarize_rentals_for_match(rentals_live)
-
-    # -------------------------
-    # TABLAS BASE
-    # -------------------------
-    total_ini = pd.to_numeric(h_ini.get("total_posicion"), errors="coerce")
-    total_fin = pd.to_numeric(h_fin.get("total_posicion"), errors="coerce")
-
-    df_species = compare_species(d_ini, d_fin)
-    audit_tables = build_adjustment_tables(
-        detail_raw_final=d_fin_raw,
-        rentals_summary=rentals_summary,
-        rentals_live=rentals_live,
-        possible_double=possible_double,
-    )
-
-    df_ajuste = audit_tables["ajuste"]
-    df_nom = build_nominal_detail(df_species, df_ajuste)
-    df_val = build_valued_detail(df_species, df_ajuste)
-
-    total_final_ajustado = pd.to_numeric(df_ajuste["importe_final_real"], errors="coerce").fillna(0).sum()
-    df_general = compare_headers(h_ini, h_fin, total_final_ajustado)
-
-    # -------------------------
-    # KPIS
-    # -------------------------
-    total_final_bruto = pd.to_numeric(df_ajuste["importe_final_bruto"], errors="coerce").fillna(0).sum()
-    nominal_final_bruto_total = pd.to_numeric(df_ajuste["nominal_final_bruto"], errors="coerce").fillna(0).sum()
-    nominal_alquilado_total = pd.to_numeric(df_ajuste["nominal_alquilado_total"], errors="coerce").fillna(0).sum()
-    nominal_final_real_total = pd.to_numeric(df_ajuste["nominal_final_real"], errors="coerce").fillna(0).sum()
-    diff_bruto_vs_ajustado = total_final_bruto - total_final_ajustado
-
-    qty_match = len(audit_tables["match_ok"])
-    qty_cartera_sin_match = len(audit_tables["cartera_sin_match"])
-    qty_alquileres_sin_match = len(audit_tables["alquileres_sin_match"])
-    qty_alertas = len(audit_tables["alertas"])
-
-    total_var_ajustada = total_final_ajustado - total_ini
-    total_pct_ajustada = _pct_change(total_final_ajustado, total_ini)
-
-    st.markdown('<div class="cp-section">Resumen ejecutivo</div>', unsafe_allow_html=True)
-
-    def _delta_color(v):
-        return SUCCESS if pd.notna(v) and v >= 0 else DANGER
-
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        st.markdown(_kpi_html(
-            "Posición final bruta",
-            _fmt_money(total_final_bruto),
-            f"vs inicial: {_fmt_money(total_fin - total_ini)} · {_fmt_pct(_pct_change(total_fin, total_ini))}",
-            _delta_color(total_fin - total_ini),
-        ), unsafe_allow_html=True)
-
-    with k2:
-        st.markdown(_kpi_html(
-            "Posición final ajustada",
-            _fmt_money(total_final_ajustado),
-            f"vs inicial: {_fmt_money(total_var_ajustada)} · {_fmt_pct(total_pct_ajustada)}",
-            _delta_color(total_var_ajustada),
-        ), unsafe_allow_html=True)
-
-    with k3:
-        st.markdown(_kpi_html(
-            "Nominal alquilado total",
-            _fmt_num(nominal_alquilado_total, 0),
-            f"Nominal bruto: {_fmt_num(nominal_final_bruto_total, 0)} · real: {_fmt_num(nominal_final_real_total, 0)}",
-            WARNING,
-        ), unsafe_allow_html=True)
-
-    with k4:
-        st.markdown(_kpi_html(
-            "Diferencia bruto vs ajustado",
-            _fmt_money(diff_bruto_vs_ajustado),
-            f"Match {qty_match} · cartera sin match {qty_cartera_sin_match} · alquileres sin match {qty_alquileres_sin_match} · alertas {qty_alertas}",
-            DANGER if diff_bruto_vs_ajustado > 0 else MUTED,
-        ), unsafe_allow_html=True)
-
-    # -------------------------
-    # COMPARACION GENERAL
-    # -------------------------
-    st.markdown('<div class="cp-section">1. Comparación general</div>', unsafe_allow_html=True)
-    st.dataframe(
-        _styled(df_general, {
-            "Inicio": "$ {:,.2f}",
-            "Fin Bruto": "$ {:,.2f}",
-            "Fin Ajustado": "$ {:,.2f}",
-            "Variación Bruta $": "$ {:+,.2f}",
-            "Variación Bruta %": "{:+,.2f}%",
-            "Variación Ajustada $": "$ {:+,.2f}",
-            "Variación Ajustada %": "{:+,.2f}%",
-        }),
-        use_container_width=True,
-        height=260,
-    )
-
-    # -------------------------
-    # DETALLE VALUADO
-    # -------------------------
-    st.markdown('<div class="cp-section">2. Detalle por especie valuado</div>', unsafe_allow_html=True)
-    st.dataframe(
-        _styled(df_val, {
-            "importe_inicial": "$ {:,.2f}",
-            "importe_final_bruto": "$ {:,.2f}",
-            "importe_final_real": "$ {:,.2f}",
-            "variacion_bruta": "$ {:+,.2f}",
-            "variacion_real": "$ {:+,.2f}",
-        }),
-        use_container_width=True,
-        height=500,
-    )
-
-    # -------------------------
-    # DETALLE NOMINALES
-    # -------------------------
-    st.markdown('<div class="cp-section">3. Detalle por nominales</div>', unsafe_allow_html=True)
-    st.dataframe(
-        _styled(df_nom, {
-            "nominal_inicial": "{:,.0f}",
-            "nominal_final_bruto": "{:,.0f}",
-            "nominal_alquilado": "{:,.0f}",
-            "nominal_final_real": "{:,.0f}",
-            "variacion_nominal": "{:+,.0f}",
-        }),
-        use_container_width=True,
-        height=500,
-    )
-
-    # -------------------------
-    # AJUSTE POR ALQUILERES
-    # -------------------------
-    st.markdown('<div class="cp-section">4. Ajuste por alquileres</div>', unsafe_allow_html=True)
-    st.dataframe(
-        _styled(df_ajuste, {
-            "nominal_final_bruto": "{:,.0f}",
-            "nominal_alquilado_activo": "{:,.0f}",
-            "nominal_alquilado_historico_vigente": "{:,.0f}",
-            "nominal_alquilado_total": "{:,.0f}",
-            "nominal_final_real": "{:,.0f}",
-            "precio_final": "{:,.4f}",
-            "importe_final_bruto": "$ {:,.2f}",
-            "importe_final_real": "$ {:,.2f}",
-        }),
-        use_container_width=True,
-        height=520,
-    )
-
-    # -------------------------
-    # AUDITORIA
-    # -------------------------
-    st.markdown('<div class="cp-section">5. Auditoría de cruce</div>', unsafe_allow_html=True)
-
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "match_ok",
-        "cartera_sin_match",
-        "alquileres_sin_match",
-        "alertas",
-    ])
-
-    with tab1:
-        if audit_tables["match_ok"].empty:
-            st.info("No hay matches registrados.")
-        else:
-            st.dataframe(
-                _styled(
-                    audit_tables["match_ok"][[
-                        "Especie", "activo_match", "Cartera Neix",
-                        "nominal_final_bruto", "nominal_alquilado_total",
-                        "nominal_final_real", "precio_final", "importe_final_real"
-                    ]],
-                    {
-                        "nominal_final_bruto": "{:,.0f}",
-                        "nominal_alquilado_total": "{:,.0f}",
-                        "nominal_final_real": "{:,.0f}",
-                        "precio_final": "{:,.4f}",
-                        "importe_final_real": "$ {:,.2f}",
-                    }
-                ),
-                use_container_width=True,
-                height=360,
+    for i, (_, row) in enumerate(df_resumen.iterrows()):
+        with cols[i % len(cols)]:
+            sub = (
+                f"{int(row['cerradas'])}/{int(row['especies'])} cerradas · "
+                f"{int(row['pendientes'])} pendientes · "
+                f"Dif abs {format_num(row['dif_total_abs'], 0)}"
+            )
+            st.markdown(
+                semaforo_html(f"Cta {int(row['cuenta'])}", row["semaforo"], sub),
+                unsafe_allow_html=True,
             )
 
-    with tab2:
-        if audit_tables["cartera_sin_match"].empty:
-            st.info("No hay especies de cartera sin match.")
-        else:
-            st.dataframe(
-                _styled(
-                    audit_tables["cartera_sin_match"][[
-                        "Especie", "activo_match", "Cartera Neix",
-                        "nominal_final_bruto", "precio_final", "importe_final_bruto"
-                    ]],
-                    {
-                        "nominal_final_bruto": "{:,.0f}",
-                        "precio_final": "{:,.4f}",
-                        "importe_final_bruto": "$ {:,.2f}",
-                    }
-                ),
-                use_container_width=True,
-                height=360,
-            )
 
-    with tab3:
-        if audit_tables["alquileres_sin_match"].empty:
-            st.info("No hay alquileres sin match.")
-        else:
-            st.dataframe(
-                _styled(
-                    audit_tables["alquileres_sin_match"],
-                    {
-                        "nominal_alquilado_activo": "{:,.0f}",
-                        "nominal_alquilado_historico_vigente": "{:,.0f}",
-                        "nominal_alquilado_total": "{:,.0f}",
-                        "cantidad_registros_alquiler": "{:,.0f}",
-                    }
-                ),
-                use_container_width=True,
-                height=360,
-            )
+def render_management_summary(df_resumen: pd.DataFrame, df_top: pd.DataFrame) -> None:
+    st.markdown('<div class="neix-section">Resumen ejecutivo</div>', unsafe_allow_html=True)
 
-    with tab4:
-        if audit_tables["alertas"].empty:
-            st.success("No se detectaron alertas relevantes.")
-        else:
-            st.dataframe(
-                _styled(audit_tables["alertas"], {}),
-                use_container_width=True,
-                height=360,
-            )
+    total_cuentas = len(df_resumen)
+    ok = int((df_resumen["semaforo"] == "OK").sum()) if total_cuentas else 0
+    warn = int((df_resumen["semaforo"] == "WARN").sum()) if total_cuentas else 0
+    bad = int((df_resumen["semaforo"] == "BAD").sum()) if total_cuentas else 0
 
-    # -------------------------
-    # EXTRA: MOVIMIENTOS
-    # -------------------------
-    st.markdown('<div class="cp-section">Movimiento por especie</div>', unsafe_allow_html=True)
-
-    tab_mant, tab_nueva, tab_aumento, tab_dism, tab_cierre = st.tabs(
-        ["Mantenida", "Posición nueva", "Aumento de posición", "Disminución", "Cierre de posición"]
+    texto = (
+        f"Se procesaron {total_cuentas} cuentas. "
+        f"{ok} quedaron en estado OK, {warn} en observación y {bad} con desvíos relevantes. "
     )
 
-    cols_mov = [
-        "Especie", "Tipo", "Moneda",
-        "Imp_Ini", "Imp_Fin", "Var_Importe", "Var_Pct", "Var_Resultado",
-    ]
-    fmt_mov = {
-        "Imp_Ini": "$ {:,.2f}",
-        "Imp_Fin": "$ {:,.2f}",
-        "Var_Importe": "$ {:+,.2f}",
-        "Var_Pct": "{:+,.2f}%",
-        "Var_Resultado": "$ {:+,.2f}",
-    }
+    if not df_top.empty:
+        top_row = df_top.iloc[0]
+        texto += (
+            f"El principal pendiente corresponde a la cuenta {int(top_row['cuenta'])}, "
+            f"especie {top_row['especie']}, con una diferencia de {format_num(top_row['dif_final'], 0)}."
+        )
+    else:
+        texto += "No se detectaron pendientes relevantes."
 
-    def _render_mov_tab(mov: str, ascending: bool = False) -> None:
-        sub = (
-            df_species[df_species["Movimiento"] == mov][cols_mov]
-            .sort_values("Var_Importe", ascending=ascending)
-            if not df_species.empty else pd.DataFrame(columns=cols_mov)
+    st.markdown(
+        f"""
+        <div class="audit-box">
+          <div class="audit-title">Lectura management</div>
+          <p class="audit-sub">{texto}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_top_pendientes(df_top: pd.DataFrame) -> None:
+    st.markdown('<div class="neix-section">Top pendientes</div>', unsafe_allow_html=True)
+
+    if df_top.empty:
+        st.success("No hay pendientes para mostrar.")
+        return
+
+    st.dataframe(
+        df_top.style.format({
+            "ini": "{:,.2f}",
+            "act": "{:,.2f}",
+            "fin": "{:,.2f}",
+            "comp": "{:,.2f}",
+            "ini_ajust": "{:,.2f}",
+            "act_ajust": "{:,.2f}",
+            "fin_ajust": "{:,.2f}",
+            "comp_ajust": "{:,.2f}",
+            "dif_final": "{:,.2f}",
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def render_auditoria(df_auditoria: pd.DataFrame) -> None:
+    st.markdown('<div class="neix-section">Auditoría</div>', unsafe_allow_html=True)
+
+    if df_auditoria.empty:
+        st.info("No se registraron eventos de auditoría.")
+        return
+
+    c1, c2 = st.columns([1, 2])
+
+    with c1:
+        resumen = (
+            df_auditoria.groupby(["impacto", "tipo_evento"], dropna=False)
+            .size()
+            .reset_index(name="cantidad")
+            .sort_values(["impacto", "cantidad"], ascending=[True, False])
+        )
+        st.dataframe(resumen, use_container_width=True, hide_index=True)
+
+    with c2:
+        st.dataframe(df_auditoria, use_container_width=True, hide_index=True)
+
+
+def render_carga_status(cuenta: int, payload: Dict) -> None:
+    ok_pos = payload.get("posiciones") is not None
+    ok_act = payload.get("activity") is not None
+    ok_ini = payload.get("portafolio_ini") is not None
+    ok_fin = payload.get("portafolio_fin") is not None
+
+    def pill(ok: bool, txt_ok: str, txt_bad: str) -> str:
+        cls = "status-ok" if ok else "status-bad"
+        txt = txt_ok if ok else txt_bad
+        return f"<span class='status-pill {cls}'>{txt}</span>"
+
+    st.markdown(
+        f"""
+        <div style="margin-top:0.55rem;">
+          {pill(ok_pos, "Posiciones OK", "Falta posiciones")}
+          &nbsp;
+          {pill(ok_act, "Activity OK", "Falta activity")}
+          &nbsp;
+          {pill(ok_ini, "Portafolio ini OK", "Ini opcional")}
+          &nbsp;
+          {pill(ok_fin, "Portafolio fin OK", "Fin opcional")}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# =============================================================================
+# APP
+# =============================================================================
+
+def main() -> None:
+    st.set_page_config(
+        page_title="NEIX • Conciliación Premium",
+        page_icon="📘",
+        layout="wide",
+    )
+    inject_css()
+    render_header()
+
+    with st.sidebar:
+        st.markdown("### Parámetros")
+        fecha_ini = st.date_input("Fecha inicio", value=date.today().replace(day=1))
+        fecha_fin = st.date_input("Fecha fin", value=date.today())
+        cuentas_sel = st.multiselect(
+            "Cuentas a procesar",
+            options=CUENTAS_DEFAULT,
+            default=CUENTAS_DEFAULT,
         )
 
-        if sub.empty:
-            st.info(f"No hay posiciones en '{mov}'.")
-        else:
-            st.dataframe(_styled(sub, fmt_mov), use_container_width=True, height=340)
+        st.markdown("---")
+        auto_naming = st.toggle("Lectura automática por naming", value=True)
+        st.caption(
+            "Si está activa, intentará asignar archivos por cuenta y tipo usando el nombre del archivo."
+        )
 
-    with tab_mant:
-        _render_mov_tab("Mantenida")
-    with tab_nueva:
-        _render_mov_tab("Posición nueva")
-    with tab_aumento:
-        _render_mov_tab("Aumento de posición")
-    with tab_dism:
-        _render_mov_tab("Disminución", ascending=True)
-    with tab_cierre:
-        _render_mov_tab("Cierre de posición", ascending=True)
+        st.markdown("---")
+        st.markdown("### Archivos masivos")
+        bulk_files = st.file_uploader(
+            "Subir múltiples archivos",
+            type=["xlsx", "xls", "xlsm", "csv"],
+            accept_multiple_files=True,
+        )
 
-    # -------------------------
-    # EXPORT
-    # -------------------------
-    st.markdown('<div class="cp-section">Exportar</div>', unsafe_allow_html=True)
+        st.markdown("---")
+        st.markdown("### Nota")
+        st.caption(
+            "Obligatorios por cuenta: Posiciones + Activity. "
+            "Portafolio inicial/final son opcionales pero mejoran reglas especiales."
+        )
 
-    export_bytes = build_export(
-        h_ini=h_ini,
-        h_fin=h_fin,
-        d_ini=d_ini_raw,
-        d_fin=d_fin_raw,
-        df_general=df_general,
-        df_val=df_val,
-        df_nom=df_nom,
-        df_ajuste=df_ajuste,
-        audit_tables=audit_tables,
-        rentals_live=rentals_live,
-        rentals_summary=rentals_summary,
-        all_groups=groups,
+    periodo = PeriodoConciliacion(
+        fecha_ini=str(fecha_ini),
+        fecha_fin=str(fecha_fin),
+        cuentas=cuentas_sel,
     )
+    conciliador = ConciliadorMensual(periodo)
+
+    st.markdown('<div class="neix-section">Carga por cuenta</div>', unsafe_allow_html=True)
+
+    cuentas_data: Dict[int, Dict[str, Optional[pd.DataFrame]]] = {
+        c: {
+            "posiciones": None,
+            "activity": None,
+            "portafolio_ini": None,
+            "portafolio_fin": None,
+            "errores": [],
+            "alertas": [],
+            "fuentes": [],
+        }
+        for c in cuentas_sel
+    }
+
+    # ---------------------------------
+    # AUTO ASIGNACIÓN MASIVA POR NAMING
+    # ---------------------------------
+    if bulk_files and auto_naming:
+        for f in bulk_files:
+            cuenta, role = guess_file_role(f.name)
+            if cuenta not in cuentas_data or role is None:
+                continue
+
+            try:
+                df_raw = read_any_file(f)
+                if role == "posiciones":
+                    df_ready, alerts = preparar_posiciones(df_raw)
+                elif role == "activity":
+                    df_ready, alerts = preparar_activity(df_raw)
+                elif role == "portafolio_ini":
+                    df_ready, alerts = preparar_portafolio(df_raw)
+                elif role == "portafolio_fin":
+                    df_ready, alerts = preparar_portafolio(df_raw)
+                else:
+                    continue
+
+                cuentas_data[cuenta][role] = df_ready
+                cuentas_data[cuenta]["alertas"].extend(alerts)
+                cuentas_data[cuenta]["fuentes"].append(f"{role}: {f.name}")
+
+            except Exception as e:
+                cuentas_data[cuenta]["errores"].append(f"{role}: {f.name} → {e}")
+
+    tabs = st.tabs([f"Cta {c}" for c in cuentas_sel]) if cuentas_sel else []
+
+    for cuenta, tab in zip(cuentas_sel, tabs):
+        with tab:
+            c1, c2 = st.columns(2)
+
+            with c1:
+                pos_file = st.file_uploader(
+                    f"Posiciones consolidadas - Cta {cuenta}",
+                    type=["xlsx", "xls", "xlsm", "csv"],
+                    key=f"pos_{cuenta}",
+                )
+                act_file = st.file_uploader(
+                    f"Activity - Cta {cuenta}",
+                    type=["xlsx", "xls", "xlsm", "csv"],
+                    key=f"act_{cuenta}",
+                )
+
+            with c2:
+                ini_file = st.file_uploader(
+                    f"Portafolio inicial - Cta {cuenta} (opcional)",
+                    type=["xlsx", "xls", "xlsm", "csv"],
+                    key=f"ini_{cuenta}",
+                )
+                fin_file = st.file_uploader(
+                    f"Portafolio final - Cta {cuenta} (opcional)",
+                    type=["xlsx", "xls", "xlsm", "csv"],
+                    key=f"fin_{cuenta}",
+                )
+
+            # Carga manual pisa auto naming si el usuario la usa
+            manual_map = [
+                ("posiciones", pos_file, preparar_posiciones),
+                ("activity", act_file, preparar_activity),
+                ("portafolio_ini", ini_file, preparar_portafolio),
+                ("portafolio_fin", fin_file, preparar_portafolio),
+            ]
+
+            for role, file_obj, prep_fn in manual_map:
+                if file_obj is not None:
+                    try:
+                        df_ready, alerts = prep_fn(read_any_file(file_obj))
+                        cuentas_data[cuenta][role] = df_ready
+                        cuentas_data[cuenta]["alertas"].extend(alerts)
+                        cuentas_data[cuenta]["fuentes"].append(f"{role}: {file_obj.name}")
+                    except Exception as e:
+                        cuentas_data[cuenta]["errores"].append(f"{role}: {e}")
+
+            render_carga_status(cuenta, cuentas_data[cuenta])
+
+            if cuentas_data[cuenta]["fuentes"]:
+                with st.expander("Fuentes asignadas"):
+                    for src in cuentas_data[cuenta]["fuentes"]:
+                        st.write(f"- {src}")
+
+            if cuentas_data[cuenta]["alertas"]:
+                with st.expander("Alertas de carga"):
+                    for a in cuentas_data[cuenta]["alertas"]:
+                        st.write(f"- {a}")
+
+            if cuentas_data[cuenta]["errores"]:
+                for err in cuentas_data[cuenta]["errores"]:
+                    st.error(err)
+
+            with st.expander("Preview"):
+                if cuentas_data[cuenta]["posiciones"] is not None:
+                    st.markdown("**Posiciones**")
+                    st.dataframe(cuentas_data[cuenta]["posiciones"].head(8), use_container_width=True, hide_index=True)
+                if cuentas_data[cuenta]["activity"] is not None:
+                    st.markdown("**Activity**")
+                    st.dataframe(cuentas_data[cuenta]["activity"].head(8), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    ejecutar = st.button("Ejecutar conciliación premium")
+
+    if not ejecutar:
+        return
+
+    resultados: List[pd.DataFrame] = []
+    resumenes: List[Dict] = []
+    auditorias: List[pd.DataFrame] = []
+    errores_globales: List[str] = []
+
+    for cuenta in cuentas_sel:
+        payload = cuentas_data.get(cuenta, {})
+        df_pos = payload.get("posiciones")
+        df_act = payload.get("activity")
+        df_ini = payload.get("portafolio_ini")
+        df_fin = payload.get("portafolio_fin")
+
+        if df_pos is None or df_act is None:
+            errores_globales.append(f"Cta {cuenta}: faltan archivos obligatorios (Posiciones y/o Activity).")
+            continue
+
+        try:
+            df_result, resumen_cta, df_aud = conciliador.conciliar_cuenta(
+                cuenta=cuenta,
+                df_posiciones=df_pos,
+                df_activity=df_act,
+                df_portafolio_ini=df_ini,
+                df_portafolio_fin=df_fin,
+            )
+            resultados.append(df_result)
+            resumenes.append(resumen_cta)
+            if not df_aud.empty:
+                auditorias.append(df_aud)
+        except Exception as e:
+            errores_globales.append(f"Cta {cuenta}: error al conciliar → {e}")
+
+    if errores_globales:
+        for err in errores_globales:
+            st.error(err)
+
+    df_all = conciliador.generar_reporte(resultados)
+    if df_all.empty:
+        st.warning("No se generaron resultados.")
+        return
+
+    df_resumen_cuentas = build_resumen_cuentas(df_all)
+    df_top_pendientes = build_top_pendientes(df_all, top_n=20)
+    df_pendientes = df_all[df_all["status"] == "PENDIENTE"].copy().reset_index(drop=True)
+    df_auditoria = pd.concat(auditorias, ignore_index=True) if auditorias else pd.DataFrame(columns=["cuenta", "tipo_evento", "detalle", "impacto"])
+    df_reglas = build_reglas_aplicadas(df_all)
+
+    st.markdown("---")
+    render_main_kpis(df_all)
+    render_management_summary(df_resumen_cuentas, df_top_pendientes)
+    render_semaforo(df_resumen_cuentas)
+
+    tabs_out = st.tabs([
+        "Resumen por cuenta",
+        "Top pendientes",
+        "Pendientes",
+        "Detalle consolidado",
+        "Auditoría",
+        "Reglas",
+    ])
+
+    with tabs_out[0]:
+        st.markdown('<div class="neix-section">Resumen por cuenta</div>', unsafe_allow_html=True)
+        st.dataframe(
+            df_resumen_cuentas.style.format({
+                "especies": "{:,.0f}",
+                "cerradas": "{:,.0f}",
+                "pendientes": "{:,.0f}",
+                "reglas_aplicadas": "{:,.0f}",
+                "dif_total_abs": "{:,.2f}",
+                "dif_total_neto": "{:,.2f}",
+                "pct_cierre": "{:,.1f}%",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with tabs_out[1]:
+        render_top_pendientes(df_top_pendientes)
+
+    with tabs_out[2]:
+        st.markdown('<div class="neix-section">Pendientes</div>', unsafe_allow_html=True)
+        if df_pendientes.empty:
+            st.success("No hay pendientes.")
+        else:
+            st.dataframe(
+                df_pendientes.style.format({
+                    "ini": "{:,.2f}",
+                    "act": "{:,.2f}",
+                    "fin": "{:,.2f}",
+                    "comp": "{:,.2f}",
+                    "ini_ajust": "{:,.2f}",
+                    "act_ajust": "{:,.2f}",
+                    "fin_ajust": "{:,.2f}",
+                    "comp_ajust": "{:,.2f}",
+                    "dif_final": "{:,.2f}",
+                    "dif_cant": "{:,.2f}",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with tabs_out[3]:
+        st.markdown('<div class="neix-section">Detalle consolidado</div>', unsafe_allow_html=True)
+        st.dataframe(
+            df_all.style.format({
+                "ini": "{:,.2f}",
+                "act": "{:,.2f}",
+                "fin": "{:,.2f}",
+                "comp": "{:,.2f}",
+                "ini_ajust": "{:,.2f}",
+                "act_ajust": "{:,.2f}",
+                "fin_ajust": "{:,.2f}",
+                "comp_ajust": "{:,.2f}",
+                "dif_final_original": "{:,.2f}",
+                "dif_final": "{:,.2f}",
+                "dif_importe": "{:,.2f}",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with tabs_out[4]:
+        render_auditoria(df_auditoria)
+
+    with tabs_out[5]:
+        st.markdown('<div class="neix-section">Reglas aplicadas</div>', unsafe_allow_html=True)
+        if df_reglas.empty:
+            st.info("No se registraron reglas.")
+        else:
+            st.dataframe(df_reglas, use_container_width=True, hide_index=True)
+
+    excel_bytes = build_excel_bytes(
+        df_all=df_all,
+        df_resumen_cuentas=df_resumen_cuentas,
+        df_pendientes=df_pendientes,
+        df_top_pendientes=df_top_pendientes,
+        df_auditoria=df_auditoria,
+        df_reglas=df_reglas,
+    )
+    nombre = f"conciliacion_cartera_premium_{str(fecha_fin).replace('-', '')}.xlsx"
 
     st.download_button(
-        label="Descargar Excel de cartera ajustada + auditoría",
-        data=export_bytes,
-        file_name="cartera_propia_real_ajustada_por_alquileres.xlsx",
+        "Descargar Excel premium",
+        data=excel_bytes,
+        file_name=nombre,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
     )
+
+
+if __name__ == "__main__":
+    main()
