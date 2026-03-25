@@ -1574,5 +1574,9 @@ def main() -> None:
     )
 
 
+
+def render():
+    main()
+
 if __name__ == "__main__":
     main()
