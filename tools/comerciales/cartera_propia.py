@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import pandas as pd
 import streamlit as st
 
@@ -13,7 +12,6 @@ from tools.comerciales.cartera_propia_core import (
     build_resumen_cuentas,
     build_top_pendientes,
     format_num,
-    guess_file_role,
     preparar_activity,
     preparar_portafolio,
     preparar_posiciones,
@@ -234,34 +232,6 @@ def init_cuentas_data(cuentas_sel):
     }
 
 
-def _call_guess_file_role(file_name: str, cuentas_sel, auto_naming: bool):
-    """
-    Intenta soportar distintas firmas posibles de guess_file_role
-    sin romper si en el core cambió.
-    """
-    try:
-        sig = inspect.signature(guess_file_role)
-        params = list(sig.parameters.keys())
-
-        if len(params) == 1:
-            return guess_file_role(file_name)
-        if len(params) == 2:
-            return guess_file_role(file_name, cuentas_sel)
-        if len(params) >= 3:
-            return guess_file_role(file_name, cuentas_sel, auto_naming)
-
-        return guess_file_role(file_name)
-    except Exception:
-        # fallback defensivo
-        try:
-            return guess_file_role(file_name, cuentas_sel, auto_naming)
-        except TypeError:
-            try:
-                return guess_file_role(file_name, cuentas_sel)
-            except TypeError:
-                return guess_file_role(file_name)
-
-
 def process_single_file(file_obj, role: str):
     df_raw = read_any_file(file_obj)
 
@@ -273,52 +243,6 @@ def process_single_file(file_obj, role: str):
         return preparar_portafolio(df_raw)
 
     raise ValueError(f"Rol de archivo no reconocido: {role}")
-
-
-def process_bulk_files(bulk_files, cuentas_sel, cuentas_data, auto_naming: bool) -> None:
-    if not bulk_files:
-        return
-
-    for f in bulk_files:
-        try:
-            guess = _call_guess_file_role(f.name, cuentas_sel, auto_naming)
-
-            if not guess:
-                # No se pudo inferir
-                continue
-
-            if isinstance(guess, dict):
-                cuenta = guess.get("cuenta")
-                role = guess.get("role")
-            else:
-                # asumimos tuple/list -> (cuenta, role)
-                cuenta, role = guess
-
-            if cuenta not in cuentas_data:
-                continue
-            if role not in {"posiciones", "activity", "portafolio_ini", "portafolio_fin"}:
-                continue
-
-            df_ready, alerts = process_single_file(f, role)
-            cuentas_data[cuenta][role] = df_ready
-            cuentas_data[cuenta]["alertas"].extend(alerts)
-            cuentas_data[cuenta]["fuentes"].append(f"{role}: {f.name}")
-
-        except Exception as e:
-            # Intento de registrar el error en la cuenta si se pudo inferir
-            try:
-                guess = _call_guess_file_role(f.name, cuentas_sel, auto_naming)
-                if isinstance(guess, dict):
-                    cuenta = guess.get("cuenta")
-                else:
-                    cuenta = guess[0]
-
-                if cuenta in cuentas_data:
-                    cuentas_data[cuenta]["errores"].append(f"{f.name}: {e}")
-            except Exception:
-                pass
-
-            st.warning(f"No se pudo procesar {f.name}: {e}")
 
 
 # =============================================================================
@@ -338,25 +262,19 @@ def render_toolbar():
     with c2:
         fecha_fin = st.date_input("Fecha fin")
     with c3:
-        cuentas_sel = st.multiselect("Cuentas", options=CUENTAS_DEFAULT, default=CUENTAS_DEFAULT)
-
-    c4, c5 = st.columns([3, 1])
-    with c4:
-        bulk_files = st.file_uploader(
-            "Carga masiva de archivos",
-            type=["xlsx", "xls", "xlsm", "csv"],
-            accept_multiple_files=True,
+        cuentas_sel = st.multiselect(
+            "Cuentas",
+            options=CUENTAS_DEFAULT,
+            default=CUENTAS_DEFAULT,
         )
-    with c5:
-        auto_naming = st.toggle("Auto naming", value=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
-    return fecha_ini, fecha_fin, cuentas_sel, bulk_files, auto_naming
+    return fecha_ini, fecha_fin, cuentas_sel
 
 
 def render_kpis(df_all: pd.DataFrame) -> None:
     total = len(df_all)
-    cerradas = int(df_all["status"].astype(str).str.contains("CERRADA").sum()) if total else 0
+    cerradas = int(df_all["status"].astype(str).str.contains("CERRADA", na=False).sum()) if total else 0
     pendientes = int((df_all["status"] == "PENDIENTE").sum()) if total else 0
     pct = (cerradas / total * 100) if total else 0
     dif_abs = float(df_all["dif_final"].abs().sum()) if total else 0
@@ -366,7 +284,10 @@ def render_kpis(df_all: pd.DataFrame) -> None:
     with c1:
         st.markdown(card("Especies", f"{total:,.0f}".replace(",", ".")), unsafe_allow_html=True)
     with c2:
-        st.markdown(card("Cerradas", f"{cerradas:,.0f}".replace(",", "."), f"{pct:.1f}%"), unsafe_allow_html=True)
+        st.markdown(
+            card("Cerradas", f"{cerradas:,.0f}".replace(",", "."), f"{pct:.1f}%"),
+            unsafe_allow_html=True,
+        )
     with c3:
         st.markdown(card("Pendientes", f"{pendientes:,.0f}".replace(",", ".")), unsafe_allow_html=True)
     with c4:
@@ -377,6 +298,11 @@ def render_kpis(df_all: pd.DataFrame) -> None:
 
 def render_semaforo(df_resumen: pd.DataFrame) -> None:
     st.markdown('<div class="section-title">Semáforo por cuenta</div>', unsafe_allow_html=True)
+
+    if df_resumen.empty:
+        st.info("No hay cuentas para mostrar.")
+        return
+
     cols = st.columns(min(4, max(len(df_resumen), 1)))
 
     for i, (_, row) in enumerate(df_resumen.iterrows()):
@@ -398,7 +324,11 @@ def render_management_summary(df_resumen: pd.DataFrame, df_top: pd.DataFrame) ->
     warn = int((df_resumen["semaforo"] == "WARN").sum()) if total else 0
     bad = int((df_resumen["semaforo"] == "BAD").sum()) if total else 0
 
-    texto = f"Se procesaron {total} cuentas. {ok} quedaron en OK, {warn} en observación y {bad} con desvíos relevantes."
+    texto = (
+        f"Se procesaron {total} cuentas. "
+        f"{ok} quedaron en OK, {warn} en observación y {bad} con desvíos relevantes."
+    )
+
     if not df_top.empty:
         r = df_top.iloc[0]
         texto += (
@@ -424,7 +354,7 @@ def render_management_summary(df_resumen: pd.DataFrame, df_top: pd.DataFrame) ->
 def main() -> None:
     inject_css()
 
-    fecha_ini, fecha_fin, cuentas_sel, bulk_files, auto_naming = render_toolbar()
+    fecha_ini, fecha_fin, cuentas_sel = render_toolbar()
 
     periodo = PeriodoConciliacion(
         fecha_ini=str(fecha_ini),
@@ -434,14 +364,6 @@ def main() -> None:
     conciliador = ConciliadorMensual(periodo)
 
     cuentas_data = init_cuentas_data(cuentas_sel)
-
-    # Procesamiento opcional de carga masiva
-    process_bulk_files(
-        bulk_files=bulk_files,
-        cuentas_sel=cuentas_sel,
-        cuentas_data=cuentas_data,
-        auto_naming=auto_naming,
-    )
 
     st.markdown('<div class="section-title">Carga y control por cuenta</div>', unsafe_allow_html=True)
     tabs_in = st.tabs([f"Cta {c}" for c in cuentas_sel]) if cuentas_sel else []
@@ -491,50 +413,75 @@ def main() -> None:
                     except Exception as e:
                         cuentas_data[cuenta]["errores"].append(f"{role}: {e}")
 
-            p = cuentas_data[cuenta]
+            payload = cuentas_data[cuenta]
+
             status_row = [
                 pill_html(
-                    "Posiciones OK" if p["posiciones"] is not None else "Falta posiciones",
-                    "OK" if p["posiciones"] is not None else "BAD",
+                    "Posiciones OK" if payload["posiciones"] is not None else "Falta posiciones",
+                    "OK" if payload["posiciones"] is not None else "BAD",
                 ),
                 pill_html(
-                    "Activity OK" if p["activity"] is not None else "Falta activity",
-                    "OK" if p["activity"] is not None else "BAD",
+                    "Activity OK" if payload["activity"] is not None else "Falta activity",
+                    "OK" if payload["activity"] is not None else "BAD",
                 ),
                 pill_html(
-                    "Portafolio ini" if p["portafolio_ini"] is not None else "Ini opcional",
-                    "OK" if p["portafolio_ini"] is not None else "WARN",
+                    "Portafolio ini" if payload["portafolio_ini"] is not None else "Ini opcional",
+                    "OK" if payload["portafolio_ini"] is not None else "WARN",
                 ),
                 pill_html(
-                    "Portafolio fin" if p["portafolio_fin"] is not None else "Fin opcional",
-                    "OK" if p["portafolio_fin"] is not None else "WARN",
+                    "Portafolio fin" if payload["portafolio_fin"] is not None else "Fin opcional",
+                    "OK" if payload["portafolio_fin"] is not None else "WARN",
                 ),
             ]
             st.markdown(" ".join(status_row), unsafe_allow_html=True)
 
             with st.expander("Fuentes / alertas / preview"):
-                if p["fuentes"]:
+                if payload["fuentes"]:
                     st.markdown("**Fuentes**")
-                    for x in p["fuentes"]:
+                    for x in payload["fuentes"]:
                         st.write(f"- {x}")
 
-                if p["alertas"]:
+                if payload["alertas"]:
                     st.markdown("**Alertas**")
-                    for x in p["alertas"]:
+                    for x in payload["alertas"]:
                         st.write(f"- {x}")
 
-                if p["errores"]:
+                if payload["errores"]:
                     st.markdown("**Errores**")
-                    for x in p["errores"]:
+                    for x in payload["errores"]:
                         st.write(f"- {x}")
 
-                if p["posiciones"] is not None:
+                if payload["posiciones"] is not None:
                     st.markdown("**Preview posiciones**")
-                    st.dataframe(p["posiciones"].head(8), use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        payload["posiciones"].head(8),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
-                if p["activity"] is not None:
+                if payload["activity"] is not None:
                     st.markdown("**Preview activity**")
-                    st.dataframe(p["activity"].head(8), use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        payload["activity"].head(8),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                if payload["portafolio_ini"] is not None:
+                    st.markdown("**Preview portafolio inicial**")
+                    st.dataframe(
+                        payload["portafolio_ini"].head(8),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                if payload["portafolio_fin"] is not None:
+                    st.markdown("**Preview portafolio final**")
+                    st.dataframe(
+                        payload["portafolio_fin"].head(8),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
     st.markdown("---")
     if not st.button("Ejecutar conciliación"):
@@ -572,6 +519,10 @@ def main() -> None:
 
     for err in errores_globales:
         st.error(err)
+
+    if not resultados:
+        st.warning("No se generaron resultados.")
+        return
 
     df_all = conciliador.generar_reporte(resultados)
     if df_all.empty:
@@ -729,4 +680,8 @@ def main() -> None:
 
 
 def render():
+    main()
+
+
+if __name__ == "__main__":
     main()
