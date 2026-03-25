@@ -218,21 +218,9 @@ def pill_html(text: str, level: str) -> str:
 # RENDER HELPERS
 # =============================================================================
 
-def render_header() -> None:
-    st.markdown(
-        """
-        <div class="hero">
-          <div class="hero-title">Conciliación mensual de cartera propia</div>
-          <p class="hero-sub">
-            Versión V4 premium. Conciliación end-to-end, homologación inteligente, auditoría intercuenta, match tables e imputación sugerida.
-          </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 def render_toolbar():
+    st.markdown('<div class="toolbar">', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Conciliación mensual de cartera propia</div>', unsafe_allow_html=True)    
     st.markdown('<div class="toolbar">', unsafe_allow_html=True)
     st.markdown('<div class="section-title">Parámetros de corrida</div>', unsafe_allow_html=True)
 
