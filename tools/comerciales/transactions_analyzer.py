@@ -1,219 +1,110 @@
 from __future__ import annotations
-
 import re
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-
+from typing import Dict, List, Tuple
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
+import plotly.express as px
 import streamlit as st
 from bs4 import BeautifulSoup
 
-# ─────────────────────────────────────────────────────────────────────────────
-# BRAND
-# ─────────────────────────────────────────────────────────────────────────────
-NEIX_RED    = "#E8192C"
-NEIX_DARK   = "#0A0E1A"
-NEIX_CARD   = "#111827"
-NEIX_MUTED  = "#6B7280"
-NEIX_BORDER = "rgba(255,255,255,0.07)"
-NEIX_BG     = "#0D1117"
-GREEN       = "#10B981"
-BLUE        = "#3B82F6"
-AMBER       = "#F59E0B"
+R   = "#C8102E"
+INK = "#0F172A"
+SUB = "#64748B"
+BDR = "#E2E8F0"
+BG  = "#F8FAFC"
+CRD = "#FFFFFF"
+GRN = "#059669"
+AMB = "#D97706"
+BLU = "#2563EB"
 
-NEIX_LOGO_SVG = """
-<svg viewBox="0 0 120 36" fill="none" xmlns="http://www.w3.org/2000/svg" style="height:26px;display:block;">
-  <rect x="0" y="0" width="120" height="36" rx="6" fill="#E8192C"/>
-  <text x="10" y="26" font-family="Arial Black, Arial" font-weight="900" font-size="22"
-        letter-spacing="-1" fill="white">NEIX</text>
-</svg>
-"""
+LOGO = '<svg viewBox="0 0 72 22" fill="none" xmlns="http://www.w3.org/2000/svg" style="height:20px;display:inline-block;vertical-align:middle;"><rect width="72" height="22" rx="4" fill="#C8102E"/><text x="6" y="16" font-family="Arial Black,Arial" font-weight="900" font-size="14" letter-spacing="-0.5" fill="white">NEIX</text></svg>'
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CSS
-# ─────────────────────────────────────────────────────────────────────────────
-CSS = f"""
+def _write_config():
+    d = Path.home() / ".streamlit"
+    d.mkdir(exist_ok=True)
+    (d / "config.toml").write_text(
+        '[theme]\nbase="light"\nbackgroundColor="#F8FAFC"\n'
+        'secondaryBackgroundColor="#FFFFFF"\ntextColor="#0F172A"\n'
+        'primaryColor="#C8102E"\n[server]\nheadless=true\n'
+        '[browser]\ngatherUsageStats=false\n'
+    )
+
+CSS = """
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&family=DM+Mono:wght@400;500&display=swap');
-
-  html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {{
-    background: {NEIX_BG} !important;
-    font-family: 'DM Sans', sans-serif;
-    color: #E5E7EB;
-  }}
-  [data-testid="stHeader"] {{ background: transparent !important; }}
-  .block-container {{ max-width: 1480px; padding-top: 1.4rem; padding-bottom: 3rem; }}
-  section[data-testid="stSidebar"] > div {{ background: {NEIX_DARK} !important; }}
-
-  /* ─── Hero ─── */
-  .hero {{
-    background: linear-gradient(135deg, #0D1117 0%, #141B2D 55%, #1c0d12 100%);
-    border: 1px solid {NEIX_BORDER};
-    border-radius: 20px;
-    padding: 1.5rem 2rem;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 1.4rem;
-    box-shadow: 0 0 80px rgba(232,25,44,0.07), 0 24px 60px rgba(0,0,0,0.45);
-  }}
-  .hero h1 {{
-    font-size: 1.85rem; font-weight: 800; color: #F9FAFB;
-    letter-spacing: -0.035em; margin: 0.6rem 0 0; line-height: 1.1;
-  }}
-  .hero p {{ color: {NEIX_MUTED}; font-size: 0.86rem; margin: 0.35rem 0 0; }}
-  .hero-pills {{ display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.7rem; }}
-  .hero-pill {{
-    border-radius: 999px; font-size: 0.72rem; font-weight: 700;
-    padding: 0.28rem 0.65rem; letter-spacing: 0.07em; text-transform: uppercase;
-  }}
-  .pill-red {{ background:rgba(232,25,44,0.12); border:1px solid rgba(232,25,44,0.25); color:{NEIX_RED}; }}
-  .pill-green {{ background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.25); color:{GREEN}; }}
-  .pill-blue {{ background:rgba(59,130,246,0.12); border:1px solid rgba(59,130,246,0.25); color:{BLUE}; }}
-  .pill-amber {{ background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.25); color:{AMBER}; }}
-
-  /* ─── Upload zone ─── */
-  .upload-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-bottom:1rem; }}
-  .upload-label {{
-    font-size:0.72rem; font-weight:700; text-transform:uppercase;
-    letter-spacing:0.1em; color:{NEIX_MUTED}; margin-bottom:0.4rem;
-  }}
-  div[data-testid="stFileUploader"] {{
-    background: {NEIX_CARD};
-    border: 1px dashed rgba(232,25,44,0.3) !important;
-    border-radius: 14px; padding: 0.2rem;
-  }}
-
-  /* ─── KPI strip ─── */
-  .kpi-strip {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:0.8rem; margin-bottom:1.2rem; }}
-  .kpi {{
-    background: {NEIX_CARD}; border: 1px solid {NEIX_BORDER};
-    border-radius: 16px; padding: 1rem 1.1rem; position:relative; overflow:hidden;
-  }}
-  .kpi::before {{
-    content:''; position:absolute; top:0; left:0; right:0; height:2px;
-    background: linear-gradient(90deg,transparent,{NEIX_RED},transparent);
-  }}
-  .kpi.green::before {{ background: linear-gradient(90deg,transparent,{GREEN},transparent); }}
-  .kpi.blue::before  {{ background: linear-gradient(90deg,transparent,{BLUE},transparent); }}
-  .kpi.amber::before {{ background: linear-gradient(90deg,transparent,{AMBER},transparent); }}
-  .kpi-label {{ color:{NEIX_MUTED}; font-size:0.69rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; margin-bottom:0.45rem; }}
-  .kpi-val {{ color:#F9FAFB; font-size:1.45rem; font-weight:800; letter-spacing:-0.04em; font-family:'DM Mono',monospace; line-height:1.1; }}
-  .kpi-sub {{ font-size:0.77rem; font-weight:600; margin-top:0.3rem; }}
-  .pos {{ color:{GREEN}; }} .neg {{ color:{NEIX_RED}; }} .neu {{ color:{NEIX_MUTED}; }}
-
-  /* ─── Section title ─── */
-  .stitle {{
-    font-size:0.72rem; font-weight:700; color:{NEIX_MUTED};
-    text-transform:uppercase; letter-spacing:0.11em; margin:0.4rem 0 0.75rem;
-  }}
-
-  /* ─── Cards ─── */
-  .card {{
-    background:{NEIX_CARD}; border:1px solid {NEIX_BORDER};
-    border-radius:16px; padding:1.2rem 1.4rem;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.28);
-  }}
-
-  /* ─── Divider ─── */
-  .divider {{ border:none; border-top:1px solid {NEIX_BORDER}; margin:0.8rem 0; }}
-
-  /* ─── P&L bridge row ─── */
-  .bridge {{
-    display:flex; gap:0; align-items:stretch; border-radius:14px; overflow:hidden;
-    border:1px solid {NEIX_BORDER}; margin-bottom:1.2rem;
-  }}
-  .bridge-cell {{
-    flex:1; padding:1rem 1.2rem; text-align:center; border-right:1px solid {NEIX_BORDER};
-  }}
-  .bridge-cell:last-child {{ border-right:none; }}
-  .bridge-cell .bc-label {{ color:{NEIX_MUTED}; font-size:0.69rem; text-transform:uppercase; letter-spacing:0.09em; font-weight:700; margin-bottom:0.4rem; }}
-  .bridge-cell .bc-val {{ font-size:1.2rem; font-weight:800; font-family:'DM Mono',monospace; letter-spacing:-0.03em; }}
-  .bridge-cell .bc-sub {{ font-size:0.73rem; color:{NEIX_MUTED}; margin-top:0.25rem; }}
-  .bc-green {{ color:{GREEN}; }}
-  .bc-red   {{ color:{NEIX_RED}; }}
-  .bc-amber {{ color:{AMBER}; }}
-  .bc-blue  {{ color:{BLUE}; }}
-
-  /* ─── Tables ─── */
-  .ct {{ width:100%; border-collapse:collapse; font-size:0.86rem; }}
-  .ct th {{
-    color:{NEIX_MUTED}; font-size:0.69rem; text-transform:uppercase;
-    letter-spacing:0.09em; padding:0.5rem 0.7rem; text-align:left;
-    border-bottom:1px solid {NEIX_BORDER};
-  }}
-  .ct th.r {{ text-align:right; }}
-  .ct td {{ padding:0.5rem 0.7rem; border-bottom:1px solid rgba(255,255,255,0.025); color:#E5E7EB; }}
-  .ct td.r {{ text-align:right; font-family:'DM Mono',monospace; font-size:0.83rem; }}
-  .ct tr:last-child td {{ border-bottom:none; }}
-  .ct tr.total td {{ font-weight:700; color:#F9FAFB; border-top:1px solid {NEIX_BORDER}; background:rgba(255,255,255,0.02); }}
-  .badge {{
-    display:inline-block; padding:0.18rem 0.55rem; border-radius:999px;
-    font-size:0.7rem; font-weight:700; letter-spacing:0.04em;
-  }}
-  .b-pos {{ background:rgba(16,185,129,0.12); color:{GREEN}; }}
-  .b-neg {{ background:rgba(232,25,44,0.12);  color:{NEIX_RED}; }}
-  .b-neu {{ background:rgba(107,114,128,0.12); color:{NEIX_MUTED}; }}
-  .b-amber {{ background:rgba(245,158,11,0.12); color:{AMBER}; }}
-
-  /* ─── Info chips ─── */
-  .chips {{ display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.9rem; }}
-  .chip {{ background:rgba(255,255,255,0.04); border:1px solid {NEIX_BORDER}; color:#9CA3AF; font-size:0.76rem; padding:0.25rem 0.6rem; border-radius:8px; }}
-
-  /* ─── Tabs ─── */
-  div[data-testid="stTabs"] button {{
-    background:transparent !important; border:1px solid {NEIX_BORDER} !important;
-    border-radius:999px !important; color:{NEIX_MUTED} !important;
-    font-weight:600 !important; font-size:0.82rem !important;
-    padding:0.36rem 1rem !important; transition:all 0.18s !important;
-  }}
-  div[data-testid="stTabs"] button[aria-selected="true"] {{
-    background:{NEIX_RED} !important; border-color:{NEIX_RED} !important; color:white !important;
-  }}
-
-  /* ─── Dataframe ─── */
-  .stDataFrame {{ border-radius:14px; overflow:hidden; }}
-
-  /* ─── Download btn ─── */
-  div[data-testid="stDownloadButton"] > button {{
-    width:100% !important; border-radius:12px !important;
-    background:{NEIX_RED} !important; color:white !important;
-    border:none !important; font-weight:700 !important; font-family:'DM Sans',sans-serif !important;
-  }}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+html,body,.stApp,[data-testid="stAppViewContainer"],[data-testid="stMain"],.main{background:#F8FAFC!important;color:#0F172A!important;font-family:'Inter',sans-serif!important;}
+[data-testid="stMarkdownContainer"],[data-testid="stMarkdownContainer"]>div,[data-testid="stVerticalBlock"]{background:transparent!important;color:#0F172A!important;}
+[data-testid="stMarkdownContainer"] p,[data-testid="stMarkdownContainer"] span,[data-testid="stMarkdownContainer"] div{color:inherit!important;}
+[data-testid="stHeader"]{background:transparent!important;}
+.block-container{max-width:1440px!important;padding-top:2rem!important;padding-bottom:3rem!important;}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:0 0 1.4rem;border-bottom:1px solid #E2E8F0;margin-bottom:1.8rem;}
+.topbar-left{display:flex;align-items:center;gap:1rem;}
+.topbar-title{font-size:1rem;font-weight:700;color:#0F172A;letter-spacing:-0.01em;}
+.topbar-sub{font-size:0.78rem;color:#64748B;margin-top:0.1rem;}
+.topbar-right{font-size:0.76rem;color:#64748B;text-align:right;line-height:1.7;}
+div[data-testid="stFileUploader"]{background:transparent!important;border:1px dashed #E2E8F0!important;border-radius:8px!important;}
+.upload-label{font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#64748B;margin-bottom:0.5rem;}
+.upload-hint{font-size:0.74rem;color:#64748B;margin-top:0.35rem;}
+.empty-state{text-align:center;padding:4rem 2rem;}
+.empty-icon{font-size:2.2rem;margin-bottom:0.8rem;opacity:0.35;}
+.empty-title{font-size:1rem;font-weight:700;color:#0F172A;margin-bottom:0.35rem;}
+.empty-sub{font-size:0.82rem;color:#64748B;}
+.meta-row{display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1.6rem;align-items:center;}
+.meta-chip{font-size:0.71rem;color:#64748B;font-weight:500;padding:0.2rem 0.6rem;background:#FFFFFF;border:1px solid #E2E8F0;border-radius:5px;}
+.bridge{display:grid;grid-template-columns:repeat(6,1fr);border:1px solid #E2E8F0;border-radius:10px;overflow:hidden;background:#FFFFFF;margin-bottom:1.6rem;}
+.bc{padding:1rem;border-right:1px solid #E2E8F0;position:relative;}
+.bc:last-child{border-right:none;}
+.bc::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;}
+.bc.red::before{background:#C8102E;} .bc.green::before{background:#059669;}
+.bc.blue::before{background:#2563EB;} .bc.ink::before{background:#0F172A;}
+.bc-label{font-size:0.63rem;font-weight:700;text-transform:uppercase;letter-spacing:0.09em;color:#64748B;margin-bottom:0.45rem;}
+.bc-val{font-size:1.05rem;font-weight:800;letter-spacing:-0.03em;font-family:'JetBrains Mono',monospace;line-height:1.1;}
+.bc-sub{font-size:0.68rem;color:#64748B;margin-top:0.25rem;font-weight:500;}
+.c-ink{color:#0F172A;} .c-green{color:#059669;} .c-red{color:#C8102E;} .c-blue{color:#2563EB;}
+.kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:0.85rem;margin-bottom:1.6rem;}
+.kpi{background:#FFFFFF;border:1px solid #E2E8F0;border-radius:9px;padding:0.9rem 1rem;}
+.kpi-label{font-size:0.63rem;font-weight:700;text-transform:uppercase;letter-spacing:0.09em;color:#64748B;margin-bottom:0.4rem;}
+.kpi-val{font-size:1.3rem;font-weight:800;letter-spacing:-0.04em;font-family:'JetBrains Mono',monospace;color:#0F172A;line-height:1.1;}
+.kpi-sub{font-size:0.73rem;font-weight:600;margin-top:0.22rem;}
+.slabel{font-size:0.63rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#64748B;margin:0 0 0.7rem;}
+.exec-card{background:#FFFFFF;border:1px solid #E2E8F0;border-radius:9px;padding:1.3rem 1.5rem;}
+.exec-card p{color:#0F172A;line-height:1.85;margin:0;font-size:0.88rem;}
+.st{width:100%;border-collapse:collapse;font-size:0.84rem;}
+.st th{font-size:0.63rem;font-weight:700;text-transform:uppercase;letter-spacing:0.09em;color:#64748B;padding:0.42rem 0.6rem;text-align:left;border-bottom:1px solid #E2E8F0;}
+.st th.r{text-align:right;}
+.st td{padding:0.45rem 0.6rem;border-bottom:1px solid #F1F5F9;color:#0F172A;}
+.st td.r{text-align:right;font-family:'JetBrains Mono',monospace;font-size:0.78rem;}
+.st tr:last-child td{border-bottom:none;}
+.st tr.tot td{font-weight:700;border-top:1px solid #E2E8F0;background:#F8FAFC;}
+.badge{display:inline-block;padding:0.13rem 0.48rem;border-radius:4px;font-size:0.7rem;font-weight:700;}
+.bg-pos{background:#ECFDF5;color:#059669;} .bg-neg{background:#FEF2F2;color:#C8102E;} .bg-neu{background:#F1F5F9;color:#64748B;}
+div[data-testid="stTabs"] button{background:transparent!important;border:1px solid #E2E8F0!important;border-radius:6px!important;color:#64748B!important;font-weight:600!important;font-size:0.79rem!important;padding:0.3rem 0.85rem!important;}
+div[data-testid="stTabs"] button[aria-selected="true"]{background:#0F172A!important;border-color:#0F172A!important;color:white!important;}
+div[data-testid="stDownloadButton"]>button{width:100%!important;border-radius:7px!important;background:#0F172A!important;color:white!important;border:none!important;font-weight:700!important;font-family:'Inter',sans-serif!important;font-size:0.8rem!important;}
+.stDataFrame{border-radius:9px;overflow:hidden;border:1px solid #E2E8F0!important;}
 </style>
 """
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
-def _to_float(s) -> float:
+def _n(s) -> float:
     if s is None: return 0.0
-    s = str(s).strip()
-    if not s or s in {"-","—"}: return 0.0
-    s = re.sub(r"\.(?=\d{3})", "", s).replace(",", ".")
+    s = re.sub(r"\.(?=\d{3})", "", str(s).strip()).replace(",", ".")
     try: return float(s)
-    except ValueError: return 0.0
+    except: return 0.0
 
-def _ars(v: float, dec=0) -> str:
-    fmt = f"{{:,.{dec}f}}"
-    return "$ " + fmt.format(v).replace(",","X").replace(".",",").replace("X",".")
+def _ars(v: float) -> str:
+    s = "{:,.0f}".format(abs(v)).replace(",", "X").replace(".", ",").replace("X", ".")
+    return "-$ " + s if v < 0 else "$ " + s
 
-def _usd(v: float) -> str: return f"U$S {v:,.2f}"
-def _pct(v: float) -> str: return f"{v:+.1f}%"
-def _pct2(v: float) -> str: return f"{v:+.2f}%"
+def _pct(v: float) -> str: return "{:+.1f}%".format(v)
+def _cls(v: float) -> str: return "c-green" if v > 0 else ("c-red" if v < 0 else "c-ink")
 
-def _sub(v: float) -> str:
-    return "pos" if v > 0 else ("neg" if v < 0 else "neu")
+def _badge(v: float) -> str:
+    cls = "bg-pos" if v > 0 else ("bg-neg" if v < 0 else "bg-neu")
+    return '<span class="badge ' + cls + '">' + _ars(v) + '</span>'
 
-def _badge(v: float, fmt_fn=_ars) -> str:
-    cls = "b-pos" if v > 0 else ("b-neg" if v < 0 else "b-neu")
-    return f'<span class="badge {cls}">{fmt_fn(v)}</span>'
-
-CATEGORIA = {
+CATS = {
     "acciones": {"EDN","GGAL","YPFD","SUPV"},
     "cedears":  {"AXP","GOOGL","MELI","META","NVDA","ADBE","TSLA","GLOB",
                  "BABA","VIST","UNH","SPY","COIN","LAC","NU","SPCE","MSFT"},
@@ -222,724 +113,558 @@ CATEGORIA = {
     "lecaps":   {"S29G5","S16A5","S12S5","S30S5","S15G5","S31O5"},
 }
 
-def _cat(ticker: str) -> str:
-    t = ticker.upper().strip()
-    for cat, tickers in CATEGORIA.items():
-        if t in tickers: return cat
+def _cat(t: str) -> str:
+    for c, ts in CATS.items():
+        if t.upper() in ts: return c
     return "otros"
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PARSERS
-# ─────────────────────────────────────────────────────────────────────────────
-def parse_historico(path: str) -> Tuple[pd.DataFrame, Dict]:
-    with open(path, "r", encoding="utf-8-sig") as f:
-        content = f.read()
-    soup = BeautifulSoup(content, "html.parser")
-
-    meta: Dict = {"usuario":"","comitente":"","fecha_desde":"","fecha_hasta":""}
+# ── Parsers ───────────────────────────────────────────────────────────────────
+def parse_historico(file_bytes: bytes) -> Tuple[pd.DataFrame, Dict]:
+    soup = BeautifulSoup(file_bytes.decode("utf-8-sig"), "html.parser")
+    meta = {"usuario": "", "comitente": "", "fecha_desde": "", "fecha_hasta": ""}
     enc = soup.find("div", id="encabezadoExcel")
     if enc:
         rows = enc.find_all("tr")
         if len(rows) >= 2:
-            ths = [th.get_text(strip=True) for th in rows[0].find_all("th")]
-            tds = [td.get_text(strip=True) for td in rows[1].find_all("td")]
+            ths = [t.get_text(strip=True) for t in rows[0].find_all("th")]
+            tds = [t.get_text(strip=True) for t in rows[1].find_all("td")]
             m = dict(zip(ths, tds))
-            meta.update({
-                "usuario":     m.get("Usuario","").strip(),
-                "comitente":   m.get("Comitente","").strip(),
-                "fecha_desde": m.get("Fecha Desde","").strip(),
-                "fecha_hasta": m.get("Fecha Hasta","").strip(),
-            })
-
-    records: List[Dict] = []
+            meta = {
+                "usuario":     m.get("Usuario", "").strip(),
+                "comitente":   m.get("Comitente", "").strip(),
+                "fecha_desde": m.get("Fecha Desde", "").strip(),
+                "fecha_hasta": m.get("Fecha Hasta", "").strip(),
+            }
+    records = []
     for box in soup.find_all("div", class_="box box-default"):
         h3 = box.find("h3")
-        full_name = h3.get_text(strip=True) if h3 else "?"
-        ticker = full_name.split()[0].upper()
-        nombre = " ".join(full_name.split()[1:])
-
+        full = h3.get_text(strip=True) if h3 else "?"
+        ticker = full.split()[0].upper()
+        nombre = " ".join(full.split()[1:])
         table = box.find("table")
         if not table: continue
-
         total_ars = total_usd = 0.0
-        movimientos = []
+        movs: List[Dict] = []
         for row in table.find_all("tr")[1:]:
-            cells = [td.get_text(strip=True) for td in row.find_all(["th","td"])]
+            cells = [td.get_text(strip=True) for td in row.find_all(["th", "td"])]
             if not cells: continue
             cpbt = cells[0].upper()
             if cpbt == "TOTAL":
-                total_ars = _to_float(cells[6]) if len(cells)>6 else 0.0
-                total_usd = _to_float(cells[8]) if len(cells)>8 else 0.0
+                total_ars = _n(cells[6]) if len(cells) > 6 else 0.0
+                total_usd = _n(cells[8]) if len(cells) > 8 else 0.0
             elif len(cells) >= 9:
-                movimientos.append({
+                movs.append({
                     "Ticker": ticker, "Nombre": nombre, "Cpbt": cpbt,
                     "Numero": cells[1], "Fecha_Concertacion": cells[2],
                     "Fecha_Liquidacion": cells[3],
-                    "Cantidad": _to_float(cells[4]), "Precio": _to_float(cells[5]),
-                    "Neto_ARS": _to_float(cells[6]), "Moneda": cells[7],
-                    "Neto_USD": _to_float(cells[8]),
+                    "Cantidad": _n(cells[4]), "Precio": _n(cells[5]),
+                    "Neto_ARS": _n(cells[6]), "Moneda": cells[7], "Neto_USD": _n(cells[8]),
                 })
-
-        compras_ars  = sum(abs(m["Neto_ARS"]) for m in movimientos if m["Cpbt"]=="COMPRA" and m["Neto_ARS"]<0)
-        ventas_ars   = sum(m["Neto_ARS"] for m in movimientos if m["Cpbt"]=="VENTA" and m["Neto_ARS"]>0)
-        divs_ars     = sum(m["Neto_ARS"] for m in movimientos if m["Cpbt"] in {"DIVIDENDOS","RTA/AMORT","CREDITO RTA"} and m["Neto_ARS"]>0)
-        qty_comprada = sum(m["Cantidad"] for m in movimientos if m["Cpbt"]=="COMPRA" and m["Cantidad"]>0)
-        qty_vendida  = sum(abs(m["Cantidad"]) for m in movimientos if m["Cpbt"]=="VENTA" and m["Cantidad"]<0)
-
+        compras = sum(abs(m["Neto_ARS"]) for m in movs if m["Cpbt"] == "COMPRA" and m["Neto_ARS"] < 0)
+        ventas  = sum(m["Neto_ARS"] for m in movs if m["Cpbt"] == "VENTA" and m["Neto_ARS"] > 0)
+        divs    = sum(m["Neto_ARS"] for m in movs if m["Cpbt"] in {"DIVIDENDOS","RTA/AMORT","CREDITO RTA"} and m["Neto_ARS"] > 0)
+        qc      = sum(m["Cantidad"] for m in movs if m["Cpbt"] == "COMPRA" and m["Cantidad"] > 0)
+        qv      = sum(abs(m["Cantidad"]) for m in movs if m["Cpbt"] == "VENTA" and m["Cantidad"] < 0)
         records.append({
             "Ticker": ticker, "Nombre": nombre, "Categoria": _cat(ticker),
-            "Qty_Comprada": qty_comprada, "Qty_Vendida": qty_vendida,
-            "Saldo_Hist": qty_comprada - qty_vendida,
-            "Compras_ARS": compras_ars, "Ventas_ARS": ventas_ars,
-            "Dividendos_ARS": divs_ars,
-            "Total_ARS": total_ars, "Total_USD": total_usd,
-            "N_Movimientos": len(movimientos),
-            "_movs": movimientos,
+            "Qty_Comprada": qc, "Qty_Vendida": qv, "Saldo": qc - qv,
+            "Compras_ARS": compras, "Ventas_ARS": ventas, "Dividendos_ARS": divs,
+            "Total_ARS": total_ars, "Total_USD": total_usd, "N_Movs": len(movs),
+            "_movs": movs,
         })
-
     return pd.DataFrame(records), meta
 
 
-def parse_resultados(path: str) -> Tuple[pd.DataFrame, Dict]:
-    with open(path, "r", encoding="utf-8-sig") as f:
-        content = f.read()
-    soup = BeautifulSoup(content, "html.parser")
-
-    meta: Dict = {"usuario":"","comitente":"","fecha_desde":"","fecha_hasta":""}
-    enc = soup.find("div", id="encabezadoExcel")
-    if enc:
-        rows = enc.find_all("tr")
-        if len(rows) >= 2:
-            ths = [th.get_text(strip=True) for th in rows[0].find_all("th")]
-            tds = [td.get_text(strip=True) for td in rows[1].find_all("td")]
-            m = dict(zip(ths, tds))
-            meta.update({
-                "usuario":     m.get("Usuario","").strip(),
-                "comitente":   m.get("Comitente","").strip(),
-                "fecha_desde": m.get("Fecha Desde","").strip(),
-                "fecha_hasta": m.get("Fecha Hasta","").strip(),
-            })
-
+def parse_resultados(file_bytes: bytes) -> pd.DataFrame:
+    soup = BeautifulSoup(file_bytes.decode("utf-8-sig"), "html.parser")
     table = soup.find("table", class_="table-consultas")
-    if table is None:
-        return pd.DataFrame(), meta
-
+    if table is None: return pd.DataFrame()
     records = []
     for row in table.find("tbody").find_all("tr"):
-        cells = [td.get_text(strip=True) for td in row.find_all(["td","th"])]
+        cells = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
         if not cells or len(cells) < 7: continue
-        especie_raw = cells[0].strip()
-        if especie_raw.lower() in {"perdida","ganancia","total",""}: continue
-        if not cells[1].strip(): continue  # skip summary rows
-
-        parts = especie_raw.split()
+        raw = cells[0].strip()
+        if not cells[1].strip() or raw.lower() in {"perdida", "ganancia", "total", ""}: continue
+        parts  = raw.split()
         ticker = parts[0].upper()
         nombre = " ".join(parts[1:])
-
+        inv = _n(cells[3]); val = _n(cells[5]); dif = _n(cells[6])
         records.append({
-            "Ticker":    ticker,
-            "Nombre":    nombre,
-            "Categoria": _cat(ticker),
-            "Cantidad":  _to_float(cells[1]),
-            "PPP":       _to_float(cells[2]),
-            "Inversion": _to_float(cells[3]),   # costo actual de la posición abierta
-            "Precio_Actual": _to_float(cells[4]),
-            "Valuacion": _to_float(cells[5]),   # valor a mercado hoy
-            "Diferencia": _to_float(cells[6]),  # ganancia/pérdida no realizada
+            "Ticker": ticker, "Nombre": nombre, "Categoria": _cat(ticker),
+            "Cantidad": _n(cells[1]), "PPP": _n(cells[2]),
+            "Inversion": inv, "Precio_Actual": _n(cells[4]),
+            "Valuacion": val, "Diferencia": dif,
+            "Rend_Pct": (dif / inv * 100 if inv else 0.0),
         })
-
-    df = pd.DataFrame(records)
-    if not df.empty:
-        df["Rend_Pct"] = df.apply(
-            lambda r: (r["Diferencia"] / r["Inversion"] * 100) if r["Inversion"] else 0.0, axis=1
-        )
-    return df, meta
+    return pd.DataFrame(records)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CHART HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
-BASE_LAYOUT = dict(
+# ── Charts ────────────────────────────────────────────────────────────────────
+BASE = dict(
     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(color="#9CA3AF", family="DM Sans"),
-    margin=dict(l=8, r=8, t=44, b=8),
-    title_font=dict(size=13, color="#E5E7EB"),
+    font=dict(color=SUB, family="Inter"),
+    margin=dict(l=0, r=0, t=36, b=0),
+    title_font=dict(size=12, color=INK, family="Inter"),
     legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
 )
 
-def _hbar(df_plot: pd.DataFrame, x_col: str, y_col: str, title: str, height=None):
-    colors = [NEIX_RED if v < 0 else GREEN for v in df_plot[x_col]]
+def _hbar(df, x, y, title, h=None):
+    colors = [R if v < 0 else GRN for v in df[x]]
     fig = go.Figure(go.Bar(
-        x=df_plot[x_col], y=df_plot[y_col], orientation="h",
-        marker_color=colors,
-        text=df_plot[x_col].apply(lambda v: _ars(v)),
-        textposition="outside", textfont=dict(size=9, color="#9CA3AF"),
+        x=df[x], y=df[y], orientation="h", marker_color=colors,
+        text=df[x].apply(_ars), textposition="outside",
+        textfont=dict(size=9, color=SUB),
     ))
-    fig.update_layout(
-        **BASE_LAYOUT, title=title,
-        height=height or max(320, 38*len(df_plot)),
-        xaxis=dict(gridcolor="rgba(255,255,255,0.04)", zeroline=True,
-                   zerolinecolor=NEIX_RED, zerolinewidth=1),
-        yaxis=dict(gridcolor="rgba(255,255,255,0.02)"),
-    )
+    fig.update_layout(**BASE, title=title,
+                      height=h or max(280, 34 * len(df)),
+                      xaxis=dict(gridcolor="#F1F5F9", zeroline=True, zerolinecolor=BDR, zerolinewidth=1),
+                      yaxis=dict(gridcolor="rgba(0,0,0,0)"))
     return fig
 
-def chart_bridge(df_res: pd.DataFrame):
-    """Waterfall: inversión → valuación → diferencia por ticker"""
-    df = df_res.sort_values("Diferencia")
+def _waterfall(df_res):
+    d = df_res.sort_values("Diferencia")
     fig = go.Figure(go.Waterfall(
-        name="P&L abierto", orientation="v",
-        x=df["Ticker"].tolist(),
-        y=df["Diferencia"].tolist(),
-        connector=dict(line=dict(color="rgba(255,255,255,0.08)")),
-        increasing=dict(marker_color=GREEN),
-        decreasing=dict(marker_color=NEIX_RED),
-        totals=dict(marker_color=AMBER),
-        text=[_ars(v) for v in df["Diferencia"]],
-        textposition="outside",
+        orientation="v", x=d["Ticker"].tolist(), y=d["Diferencia"].tolist(),
+        connector=dict(line=dict(color=BDR, width=1)),
+        increasing=dict(marker_color=GRN), decreasing=dict(marker_color=R),
+        text=[_ars(v) for v in d["Diferencia"]], textposition="outside",
     ))
-    fig.update_layout(
-        **BASE_LAYOUT, title="P&L no realizado por especie",
-        height=340,
-        xaxis=dict(gridcolor="rgba(255,255,255,0.03)"),
-        yaxis=dict(gridcolor="rgba(255,255,255,0.04)"),
-        showlegend=False,
-    )
+    fig.update_layout(**BASE, title="P&L no realizado por especie", height=300,
+                      xaxis=dict(gridcolor="#F1F5F9"),
+                      yaxis=dict(gridcolor="#F1F5F9", zeroline=True, zerolinecolor=BDR),
+                      showlegend=False)
     return fig
 
-def chart_inv_vs_val(df_res: pd.DataFrame):
+def _inv_vs_val(df_res):
     fig = go.Figure()
-    fig.add_trace(go.Bar(name="Inversión (costo)", x=df_res["Ticker"], y=df_res["Inversion"],
-                         marker_color="#374151", text=df_res["Inversion"].apply(_ars),
-                         textposition="inside", textfont=dict(size=9)))
+    fig.add_trace(go.Bar(name="Inversión", x=df_res["Ticker"], y=df_res["Inversion"],
+                         marker_color="#CBD5E1", text=df_res["Inversion"].apply(_ars),
+                         textposition="inside", textfont=dict(size=8)))
     fig.add_trace(go.Bar(name="Valuación actual", x=df_res["Ticker"], y=df_res["Valuacion"],
-                         marker_color=BLUE, text=df_res["Valuacion"].apply(_ars),
-                         textposition="inside", textfont=dict(size=9)))
-    fig.update_layout(
-        **BASE_LAYOUT, title="Inversión vs valuación actual",
-        height=340, barmode="group",
-        xaxis=dict(gridcolor="rgba(255,255,255,0.03)"),
-        yaxis=dict(gridcolor="rgba(255,255,255,0.04)"),
-    )
+                         marker_color=BLU, text=df_res["Valuacion"].apply(_ars),
+                         textposition="inside", textfont=dict(size=8)))
+    fig.update_layout(**BASE, title="Inversión vs valuación actual",
+                      height=300, barmode="group",
+                      xaxis=dict(gridcolor="#F1F5F9"),
+                      yaxis=dict(gridcolor="#F1F5F9"))
     return fig
 
-def chart_donut(labels, values, title):
-    palette = [NEIX_RED, AMBER, BLUE, "#8B5CF6", GREEN, "#EC4899", "#06B6D4"]
-    fig = go.Figure(go.Pie(
-        labels=labels, values=values, hole=0.62,
-        marker_colors=palette[:len(labels)],
-        textinfo="label+percent", textfont=dict(size=11, color="#E5E7EB"),
-    ))
-    fig.update_layout(**BASE_LAYOUT, title=title, height=310, showlegend=False)
-    return fig
-
-def chart_treemap_open(df_res: pd.DataFrame):
-    df = df_res[df_res["Valuacion"] > 0].copy()
-    if df.empty: return None
-    fig = px.treemap(
-        df, path=["Categoria","Ticker"], values="Valuacion",
-        color="Diferencia",
-        color_continuous_scale=[NEIX_RED, "#374151", GREEN],
-        color_continuous_midpoint=0,
-        title="Portafolio abierto — tamaño = valuación, color = P&L",
-    )
-    fig.update_layout(**BASE_LAYOUT, height=420)
-    return fig
-
-def chart_scatter(df_res: pd.DataFrame):
-    fig = px.scatter(
-        df_res, x="Inversion", y="Diferencia", size="Valuacion",
-        color="Rend_Pct", color_continuous_scale=[NEIX_RED,"#374151",GREEN],
-        hover_name="Ticker", text="Ticker",
-        title="Riesgo / retorno posiciones abiertas",
-        labels={"Inversion":"Capital invertido ($)","Diferencia":"P&L no realizado ($)"},
-    )
-    fig.update_traces(textposition="top center", textfont=dict(size=10, color="#E5E7EB"))
-    fig.update_layout(
-        **BASE_LAYOUT, height=380,
-        xaxis=dict(gridcolor="rgba(255,255,255,0.04)"),
-        yaxis=dict(gridcolor="rgba(255,255,255,0.04)", zeroline=True,
-                   zerolinecolor=NEIX_RED, zerolinewidth=1),
-    )
-    return fig
-
-def chart_hist_vs_open(df_hist_agg: pd.DataFrame, df_res_agg: pd.DataFrame):
-    """Combined bar: realizado vs no-realizado"""
-    all_tickers = sorted(set(df_hist_agg["Ticker"]) | set(df_res_agg["Ticker"]))
-    h_map = dict(zip(df_hist_agg["Ticker"], df_hist_agg["Total_ARS"]))
-    r_map = dict(zip(df_res_agg["Ticker"], df_res_agg["Diferencia"]))
+def _combined_bar(df_h, df_r):
+    all_t = sorted(set(df_h["Ticker"]) | set(df_r["Ticker"]))
+    hm = dict(zip(df_h["Ticker"], df_h["Total_ARS"]))
+    rm = dict(zip(df_r["Ticker"], df_r["Diferencia"]))
     fig = go.Figure()
-    fig.add_trace(go.Bar(
-        name="Realizado (histórico)", x=all_tickers,
-        y=[h_map.get(t,0) for t in all_tickers], marker_color=GREEN,
-    ))
-    fig.add_trace(go.Bar(
-        name="No realizado (posición abierta)", x=all_tickers,
-        y=[r_map.get(t,0) for t in all_tickers], marker_color=AMBER,
-    ))
-    fig.update_layout(
-        **BASE_LAYOUT, title="P&L realizado vs no realizado por especie",
-        height=380, barmode="relative",
-        xaxis=dict(gridcolor="rgba(255,255,255,0.03)"),
-        yaxis=dict(gridcolor="rgba(255,255,255,0.04)", zeroline=True,
-                   zerolinecolor=NEIX_RED, zerolinewidth=1),
-    )
+    fig.add_trace(go.Bar(name="Realizado", x=all_t,
+                         y=[hm.get(t, 0) for t in all_t], marker_color=GRN))
+    fig.add_trace(go.Bar(name="No realizado (papel)", x=all_t,
+                         y=[rm.get(t, 0) for t in all_t], marker_color=AMB))
+    fig.update_layout(**BASE, title="P&L realizado vs papel por especie",
+                      height=320, barmode="relative",
+                      xaxis=dict(gridcolor="#F1F5F9"),
+                      yaxis=dict(gridcolor="#F1F5F9", zeroline=True, zerolinecolor=BDR, zerolinewidth=1))
+    return fig
+
+def _treemap(df_res):
+    d = df_res[df_res["Valuacion"] > 0].copy()
+    if d.empty: return None
+    fig = px.treemap(d, path=["Categoria", "Ticker"], values="Valuacion",
+                     color="Diferencia",
+                     color_continuous_scale=[R, "#CBD5E1", GRN],
+                     color_continuous_midpoint=0,
+                     title="Posición abierta — tamaño=valuación, color=P&L")
+    fig.update_layout(**BASE, height=340)
     return fig
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# EXPORT
-# ─────────────────────────────────────────────────────────────────────────────
-def build_excel(df_hist: pd.DataFrame, df_res: pd.DataFrame) -> bytes:
+# ── Export ────────────────────────────────────────────────────────────────────
+def _export(df_h: pd.DataFrame, df_r: pd.DataFrame) -> bytes:
     out = BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        cols_h = ["Ticker","Nombre","Categoria","Qty_Comprada","Qty_Vendida","Saldo_Hist",
-                  "Compras_ARS","Ventas_ARS","Dividendos_ARS","Total_ARS","Total_USD"]
-        df_hist[[c for c in cols_h if c in df_hist.columns]].to_excel(
-            writer, sheet_name="Historico", index=False)
-        if not df_res.empty:
-            df_res[["Ticker","Nombre","Categoria","Cantidad","PPP","Inversion",
-                    "Precio_Actual","Valuacion","Diferencia","Rend_Pct"]].to_excel(
-                writer, sheet_name="Posicion Actual", index=False)
-        # combined
-        if not df_res.empty:
-            merged = df_hist[["Ticker","Total_ARS"]].merge(
-                df_res[["Ticker","Diferencia","Valuacion"]], on="Ticker", how="outer"
-            ).fillna(0)
-            merged["Total_Combinado"] = merged["Total_ARS"] + merged["Diferencia"]
-            merged.to_excel(writer, sheet_name="Combinado", index=False)
+    cols_h = ["Ticker","Nombre","Categoria","Qty_Comprada","Qty_Vendida","Saldo",
+              "Compras_ARS","Ventas_ARS","Dividendos_ARS","Total_ARS","Total_USD"]
+    with pd.ExcelWriter(out, engine="openpyxl") as w:
+        df_h[[c for c in cols_h if c in df_h.columns]].to_excel(w, sheet_name="Historico", index=False)
+        if not df_r.empty:
+            df_r[["Ticker","Nombre","Categoria","Cantidad","PPP","Inversion",
+                  "Precio_Actual","Valuacion","Diferencia","Rend_Pct"]].to_excel(
+                w, sheet_name="Posicion Actual", index=False)
+            mg = df_h[["Ticker","Total_ARS"]].merge(
+                df_r[["Ticker","Diferencia","Valuacion"]], on="Ticker", how="outer").fillna(0)
+            mg["PnL_Total"] = mg["Total_ARS"] + mg["Diferencia"]
+            mg.to_excel(w, sheet_name="Combinado", index=False)
     out.seek(0)
     return out.getvalue()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────────────────────────────────────
-def render():
-    st.set_page_config(page_title="NEIX · Portfolio", page_icon="📊", layout="wide")
+# ── App ───────────────────────────────────────────────────────────────────────
+def main():
+    _write_config()
+    st.set_page_config(
+        page_title="NEIX · Portfolio", page_icon="📊",
+        layout="wide", initial_sidebar_state="collapsed",
+    )
     st.markdown(CSS, unsafe_allow_html=True)
 
-    # ── Hero ─────────────────────────────────────────────────────────────────
-    st.markdown(f"""
-    <div class="hero">
-      <div>
-        {NEIX_LOGO_SVG}
-        <h1>Dashboard Integral de Portafolio</h1>
-        <p>P&L realizado · Posición abierta valorizada · Vista consolidada</p>
-        <div class="hero-pills">
-          <span class="hero-pill pill-red">Realizado</span>
-          <span class="hero-pill pill-amber">No realizado</span>
-          <span class="hero-pill pill-blue">Valuación actual</span>
-          <span class="hero-pill pill-green">Multi-activo</span>
-        </div>
-      </div>
-      <div style="text-align:right;color:{NEIX_MUTED};font-size:0.8rem;line-height:1.8;">
-        <div style="color:#E5E7EB;font-size:0.95rem;font-weight:700;">Acciones · CEDEARs · Bonos</div>
-        LECAPs · Fondos · Cauciones<br/>
-        ARS &amp; USD
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Topbar
+    st.markdown(
+        '<div class="topbar">'
+        '<div class="topbar-left">' + LOGO +
+        '<div><div class="topbar-title">Dashboard de Portafolio</div>'
+        '<div class="topbar-sub">P&amp;L realizado &middot; posición abierta &middot; vista consolidada</div>'
+        '</div></div>'
+        '<div class="topbar-right">Acciones &middot; CEDEARs &middot; Bonos &middot; LECAPs &middot; Fondos<br/>ARS &amp; USD</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
-    # ── File uploaders ───────────────────────────────────────────────────────
-    col_u1, col_u2 = st.columns(2, gap="medium")
-    with col_u1:
-        st.markdown('<div class="upload-label">📂 Histórico por especie (operaciones)</div>', unsafe_allow_html=True)
-        up_hist = st.file_uploader("hist", type=["xls","xlsx"], label_visibility="collapsed", key="hist")
-    with col_u2:
-        st.markdown('<div class="upload-label">📈 Resultados por especie (posición abierta)</div>', unsafe_allow_html=True)
-        up_res  = st.file_uploader("res",  type=["xls","xlsx"], label_visibility="collapsed", key="res")
+    # Uploaders
+    col1, col2 = st.columns(2, gap="large")
+    with col1:
+        st.markdown('<div class="upload-label">Histórico por especie</div>', unsafe_allow_html=True)
+        up_hist = st.file_uploader("Histórico", type=["xls","xlsx"],
+                                   label_visibility="collapsed", key="u_hist")
+        st.markdown('<div class="upload-hint">Operaciones realizadas &middot; P&amp;L realizado</div>',
+                    unsafe_allow_html=True)
+    with col2:
+        st.markdown('<div class="upload-label">Resultados por especie <span style="font-weight:400;text-transform:none;letter-spacing:0">(opcional)</span></div>',
+                    unsafe_allow_html=True)
+        up_res = st.file_uploader("Resultados", type=["xls","xlsx"],
+                                  label_visibility="collapsed", key="u_res")
+        st.markdown('<div class="upload-hint">Posición abierta &middot; valuación actual &middot; P&amp;L no realizado</div>',
+                    unsafe_allow_html=True)
 
-    # paths
-    default_hist = "/mnt/user-data/uploads/Historico_por_Especie.xls"
-    default_res  = "/mnt/user-data/uploads/Resultados_por_Especie.xls"
+    if not up_hist:
+        st.markdown(
+            '<div class="empty-state">'
+            '<div class="empty-icon">📂</div>'
+            '<div class="empty-title">Subí el Histórico por Especie para comenzar</div>'
+            '<div class="empty-sub">El archivo de Resultados es opcional — agrega la valuación de posiciones abiertas</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        return
 
-    if up_hist:
-        p = Path("/tmp/hist.xls"); p.write_bytes(up_hist.read()); hist_path = str(p)
-    else:
-        hist_path = default_hist
+    # Parse
+    try:
+        df_h, meta = parse_historico(up_hist.getvalue())
+    except Exception as e:
+        st.error("No se pudo leer el Histórico: " + str(e)); return
 
+    df_r = pd.DataFrame()
     if up_res:
-        p = Path("/tmp/res.xls"); p.write_bytes(up_res.read()); res_path = str(p)
-    else:
-        res_path = default_res
+        try:
+            df_r = parse_resultados(up_res.getvalue())
+        except Exception as e:
+            st.warning("No se pudo leer Resultados: " + str(e))
 
-    # ── Parse ────────────────────────────────────────────────────────────────
-    try:
-        df_hist, meta = parse_historico(hist_path)
-    except Exception as e:
-        st.error(f"Error leyendo histórico: {e}"); return
+    if df_h.empty:
+        st.warning("El archivo no contiene datos reconocibles."); return
 
-    df_res = pd.DataFrame()
-    try:
-        df_res, _ = parse_resultados(res_path)
-    except Exception as e:
-        st.warning(f"No se pudo leer Resultados por Especie: {e}")
+    # Meta strip
+    open_chip = ('<span class="meta-chip">&#128994; ' + str(len(df_r)) + ' posiciones abiertas</span>') if not df_r.empty else ""
+    st.markdown(
+        '<div class="meta-row">'
+        '<span class="meta-chip">&#128100; ' + meta.get("usuario","—") + '</span>'
+        '<span class="meta-chip">Comitente ' + meta.get("comitente","—") + '</span>'
+        '<span class="meta-chip">' + meta.get("fecha_desde","—") + ' &#8594; ' + meta.get("fecha_hasta","hoy") + '</span>'
+        '<span class="meta-chip">' + str(len(df_h)) + ' especies operadas</span>'
+        + open_chip + '</div>',
+        unsafe_allow_html=True,
+    )
 
-    if df_hist.empty:
-        st.warning("Sin datos en el histórico."); return
+    # Numbers
+    pnl_r   = df_h["Total_ARS"].sum()
+    cap     = df_h["Compras_ARS"].sum()
+    divs    = df_h["Dividendos_ARS"].sum()
+    rp      = pnl_r / cap * 100 if cap else 0.0
+    pnl_nr  = df_r["Diferencia"].sum()  if not df_r.empty else 0.0
+    val_hoy = df_r["Valuacion"].sum()   if not df_r.empty else 0.0
+    inv_ab  = df_r["Inversion"].sum()   if not df_r.empty else 0.0
+    rp_ab   = pnl_nr / inv_ab * 100     if inv_ab else 0.0
+    pnl_tot = pnl_r + pnl_nr
+    rp_tot  = pnl_tot / cap * 100       if cap else 0.0
+    n_pos   = int((df_h["Total_ARS"] > 0).sum())
+    n_neg   = int((df_h["Total_ARS"] < 0).sum())
+    mejor   = df_h.loc[df_h["Total_ARS"].idxmax()]
+    peor    = df_h.loc[df_h["Total_ARS"].idxmin()]
 
-    # ── Meta strip ───────────────────────────────────────────────────────────
-    st.markdown(f"""
-    <div class="chips">
-      <span class="chip">👤 {meta.get('usuario','—')}</span>
-      <span class="chip">🏦 Comitente {meta.get('comitente','—')}</span>
-      <span class="chip">📅 Período: {meta.get('fecha_desde','—')} → {meta.get('fecha_hasta','?')}</span>
-      <span class="chip">📊 {len(df_hist)} especies operadas</span>
-      {"<span class='chip'>🟢 " + str(len(df_res)) + " posiciones abiertas</span>" if not df_res.empty else ""}
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Consolidated numbers ─────────────────────────────────────────────────
-    # Realizado (histórico)
-    pnl_realizado     = df_hist["Total_ARS"].sum()
-    capital_invertido = df_hist["Compras_ARS"].sum()
-    dividendos        = df_hist["Dividendos_ARS"].sum()
-    rend_pct_real     = (pnl_realizado / capital_invertido * 100) if capital_invertido else 0.0
-
-    # No realizado (posiciones abiertas)
-    pnl_no_real   = df_res["Diferencia"].sum() if not df_res.empty else 0.0
-    valuacion_hoy = df_res["Valuacion"].sum()   if not df_res.empty else 0.0
-    inversion_abi = df_res["Inversion"].sum()   if not df_res.empty else 0.0
-    rend_pct_abie = (pnl_no_real / inversion_abi * 100) if inversion_abi else 0.0
-
-    # Combined
-    pnl_total      = pnl_realizado + pnl_no_real
-    rend_pct_total = (pnl_total / capital_invertido * 100) if capital_invertido else 0.0
-
-    # ── P&L Bridge ───────────────────────────────────────────────────────────
-    def _bc(label, val, cls, sub=""):
-        return f"""
-        <div class="bridge-cell">
-          <div class="bc-label">{label}</div>
-          <div class="bc-val {cls}">{_ars(val)}</div>
-          {"<div class='bc-sub'>" + sub + "</div>" if sub else ""}
-        </div>"""
-
-    st.markdown(f"""
-    <div class="bridge">
-      {_bc("Capital total invertido", capital_invertido, "bc-blue", f"{len(df_hist)} especies operadas")}
-      {_bc("P&L realizado", pnl_realizado, "bc-green" if pnl_realizado>=0 else "bc-red", _pct(rend_pct_real)+" s/capital")}
-      {_bc("P&L no realizado", pnl_no_real, "bc-green" if pnl_no_real>=0 else "bc-red", _pct(rend_pct_abie)+" s/abierto")}
-      {_bc("Dividendos / carry", dividendos, "bc-green" if dividendos>=0 else "bc-red", "cobrado")}
-      {_bc("Valuación posición abierta", valuacion_hoy, "bc-amber", f"{len(df_res)} posiciones")}
-      {_bc("P&L TOTAL combinado", pnl_total, "bc-green" if pnl_total>=0 else "bc-red", _pct(rend_pct_total)+" s/capital total")}
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── KPI strip ─────────────────────────────────────────────────────────────
-    n_pos_hist = int((df_hist["Total_ARS"] > 0).sum())
-    n_neg_hist = int((df_hist["Total_ARS"] < 0).sum())
-    mejor_hist = df_hist.loc[df_hist["Total_ARS"].idxmax(), "Ticker"]
-    peor_hist  = df_hist.loc[df_hist["Total_ARS"].idxmin(), "Ticker"]
-
-    st.markdown(f"""
-    <div class="kpi-strip">
-      <div class="kpi">
-        <div class="kpi-label">P&amp;L realizado</div>
-        <div class="kpi-val">{_ars(pnl_realizado)}</div>
-        <div class="kpi-sub {_sub(pnl_realizado)}">{_pct(rend_pct_real)} s/capital</div>
-      </div>
-      <div class="kpi {'green' if pnl_no_real>=0 else ''}">
-        <div class="kpi-label">P&amp;L no realizado</div>
-        <div class="kpi-val">{_ars(pnl_no_real)}</div>
-        <div class="kpi-sub {_sub(pnl_no_real)}">{_pct(rend_pct_abie)} s/posición abierta</div>
-      </div>
-      <div class="kpi blue">
-        <div class="kpi-label">Valuación hoy</div>
-        <div class="kpi-val">{_ars(valuacion_hoy)}</div>
-        <div class="kpi-sub neu">{len(df_res)} posiciones abiertas</div>
-      </div>
-      <div class="kpi amber">
-        <div class="kpi-label">P&amp;L total</div>
-        <div class="kpi-val">{_ars(pnl_total)}</div>
-        <div class="kpi-sub {_sub(pnl_total)}">{_pct(rend_pct_total)} combinado</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">Dividendos / carry</div>
-        <div class="kpi-val">{_ars(dividendos)}</div>
-        <div class="kpi-sub pos">cobrado en el período</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">Win / Loss rate</div>
-        <div class="kpi-val">{n_pos_hist}/{len(df_hist)}</div>
-        <div class="kpi-sub neg">{n_neg_hist} en negativo</div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── TABS ─────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "🏠  Vista General",
-        "📋  Histórico completo",
-        "🟢  Posición abierta",
-        "🔀  Realizado vs Papel",
-        "📈  Gráficos",
-        "📁  Movimientos",
-    ])
-
-    # ── TAB 1: General view ───────────────────────────────────────────────────
-    with tab1:
-        c1, c2 = st.columns([1.05, 0.95], gap="large")
-        with c1:
-            st.markdown('<div class="stitle">Lectura ejecutiva del portafolio</div>', unsafe_allow_html=True)
-            mejor_v = df_hist.loc[df_hist["Total_ARS"].idxmax()]
-            peor_v  = df_hist.loc[df_hist["Total_ARS"].idxmin()]
-            pct_win = n_pos_hist / len(df_hist) * 100
-
-            res_texto = ""
-            if not df_res.empty:
-                mejor_ab = df_res.loc[df_res["Diferencia"].idxmax()]
-                peor_ab  = df_res.loc[df_res["Diferencia"].idxmin()]
-                res_texto = f"""
-                <br/>Las posiciones abiertas registran un P&L no realizado de
-                <strong style="color:{'#10B981' if pnl_no_real>=0 else NEIX_RED}">{_ars(pnl_no_real)}</strong>
-                ({_pct(rend_pct_abie)}) sobre una inversión abierta de <strong>{_ars(inversion_abi)}</strong>,
-                con valuación actual de <strong style="color:{BLUE}">{_ars(valuacion_hoy)}</strong>.<br/>
-                Mejor posición abierta: <span style="color:{GREEN}">{mejor_ab['Ticker']}</span>
-                ({_ars(mejor_ab['Diferencia'])}) &nbsp;|&nbsp;
-                Peor: <span style="color:{NEIX_RED}">{peor_ab['Ticker']}</span>
-                ({_ars(peor_ab['Diferencia'])})
-                """
-
-            st.markdown(f"""
-            <div class="card">
-              <p style="color:#E5E7EB;line-height:1.9;margin:0">
-                El portafolio acumula un <strong>P&L realizado de
-                <span style="color:{'#10B981' if pnl_realizado>=0 else NEIX_RED}">
-                {_ars(pnl_realizado)}</span></strong>
-                sobre {len(df_hist)} especies operadas entre
-                <strong>{meta.get('fecha_desde','?')}</strong> y
-                <strong>{meta.get('fecha_hasta','hoy')}</strong>,
-                equivalente a <strong style="color:{'#10B981' if rend_pct_real>=0 else NEIX_RED}">
-                {_pct(rend_pct_real)}</strong> sobre el capital total invertido
-                de <strong>{_ars(capital_invertido)}</strong>.<br/><br/>
-                <strong>{n_pos_hist} de {len(df_hist)}</strong> especies
-                ({pct_win:.0f}%) cerraron operaciones en positivo.
-                Mejor contribución: <span style="color:{GREEN}">{mejor_v['Ticker']}</span>
-                ({_ars(mejor_v['Total_ARS'])}) /
-                Peor: <span style="color:{NEIX_RED}">{peor_v['Ticker']}</span>
-                ({_ars(peor_v['Total_ARS'])}).
-                {res_texto}
-              </p>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Resumen table
-            st.markdown('<div class="stitle" style="margin-top:1.1rem">Cuadro de resultados consolidado</div>', unsafe_allow_html=True)
-            rows_data = [
-                ("Capital total desplegado (ARS)", _ars(capital_invertido), ""),
-                ("Total ventas ARS", _ars(df_hist["Ventas_ARS"].sum()), ""),
-                ("Dividendos / rentas cobradas", _ars(dividendos), "pos"),
-                ("─── P&L realizado ───", _ars(pnl_realizado), "pos" if pnl_realizado>=0 else "neg"),
-                ("Inversión posiciones abiertas", _ars(inversion_abi), ""),
-                ("Valuación a mercado hoy", _ars(valuacion_hoy), "bc-blue"),
-                ("─── P&L no realizado ───", _ars(pnl_no_real), "pos" if pnl_no_real>=0 else "neg"),
-                ("═══ P&L TOTAL COMBINADO ═══", _ars(pnl_total), "pos" if pnl_total>=0 else "neg"),
-                ("Rendimiento combinado s/ capital", _pct(rend_pct_total), "pos" if rend_pct_total>=0 else "neg"),
-            ]
-            def _color(c):
-                if c == "pos": return "#10B981"
-                if c == "neg": return NEIX_RED
-                return "#E5E7EB"
-            rows_html = "".join(
-                f"<tr><td style='color:{NEIX_MUTED}'>{k}</td>"
-                f"<td class='r' style='color:{_color(c)}'>{v}</td></tr>"
-                for k,v,c in rows_data
-            )
-            st.markdown(f'<div class="card" style="margin-top:0.4rem"><table class="ct">{rows_html}</table></div>', unsafe_allow_html=True)
-
-        with c2:
-            if not df_res.empty:
-                st.plotly_chart(chart_bridge(df_res), use_container_width=True)
-            st.plotly_chart(_hbar(df_hist.sort_values("Total_ARS"), "Total_ARS", "Ticker",
-                                  "P&L realizado por especie"), use_container_width=True)
-
-    # ── TAB 2: Histórico ──────────────────────────────────────────────────────
-    with tab2:
-        st.markdown('<div class="stitle">Histórico completo · todas las especies operadas</div>', unsafe_allow_html=True)
-        f1, f2 = st.columns([1.5, 1], gap="medium")
-        with f1:
-            cats = sorted(df_hist["Categoria"].unique())
-            sel  = st.multiselect("Categoría", cats, default=cats, key="hcat")
-        with f2:
-            solo_neg = st.toggle("Solo perdedoras 🔴", key="hneg")
-
-        dh = df_hist[df_hist["Categoria"].isin(sel)]
-        if solo_neg: dh = dh[dh["Total_ARS"] < 0]
-
-        show = dh[["Ticker","Nombre","Categoria","Qty_Comprada","Qty_Vendida","Saldo_Hist",
-                    "Compras_ARS","Ventas_ARS","Dividendos_ARS","Total_ARS","Total_USD"]].copy()
-        st.dataframe(
-            show.style.format({
-                "Qty_Comprada":"{:,.0f}", "Qty_Vendida":"{:,.0f}", "Saldo_Hist":"{:,.0f}",
-                "Compras_ARS":"$ {:,.0f}", "Ventas_ARS":"$ {:,.0f}",
-                "Dividendos_ARS":"$ {:,.0f}", "Total_ARS":"$ {:,.0f}", "Total_USD":"U$S {:,.2f}",
-            }).applymap(
-                lambda v: f"color:{GREEN};font-weight:700" if isinstance(v,(int,float)) and v>0
-                else (f"color:{NEIX_RED};font-weight:700" if isinstance(v,(int,float)) and v<0 else ""),
-                subset=["Total_ARS","Total_USD"]
-            ),
-            use_container_width=True, hide_index=True, height=min(580, 40+38*len(show))
+    # Bridge
+    def _bc(border_cls, val_cls, label, val_str, sub=""):
+        return (
+            '<div class="bc ' + border_cls + '">'
+            '<div class="bc-label">' + label + '</div>'
+            '<div class="bc-val ' + val_cls + '">' + val_str + '</div>'
+            + ('<div class="bc-sub">' + sub + '</div>' if sub else '') +
+            '</div>'
         )
 
-    # ── TAB 3: Posición abierta ───────────────────────────────────────────────
-    with tab3:
-        if df_res.empty:
-            st.info("No se cargó el archivo de Resultados por Especie.")
+    no_r_bc = _bc("red" if pnl_nr < 0 else "green", _cls(pnl_nr), "P&amp;L no realizado",
+                  _ars(pnl_nr), _pct(rp_ab) + " s/abierto") if not df_r.empty else _bc("ink","c-ink","P&amp;L no realizado","—","sin datos")
+    val_bc  = _bc("blue","c-blue","Valuación hoy", _ars(val_hoy), str(len(df_r)) + " posiciones") if not df_r.empty else _bc("ink","c-ink","Valuación hoy","—","sin datos")
+
+    st.markdown(
+        '<div class="bridge">'
+        + _bc("ink","c-ink","Capital invertido", _ars(cap), str(len(df_h)) + " especies")
+        + _bc("red" if pnl_r < 0 else "green", _cls(pnl_r), "P&amp;L realizado", _ars(pnl_r), _pct(rp) + " s/capital")
+        + _bc("green" if divs >= 0 else "red", _cls(divs), "Dividendos / carry", _ars(divs), "cobrado")
+        + no_r_bc + val_bc
+        + _bc("red" if pnl_tot < 0 else "green", _cls(pnl_tot), "P&amp;L TOTAL", _ars(pnl_tot), _pct(rp_tot) + " combinado")
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # KPI row
+    nr_val = _ars(pnl_nr) if not df_r.empty else "—"
+    nr_sub = _pct(rp_ab) if not df_r.empty else "sin datos"
+    nr_col = (R if pnl_nr < 0 else (GRN if pnl_nr > 0 else SUB)) if not df_r.empty else SUB
+    v_val  = _ars(val_hoy) if not df_r.empty else "—"
+
+    st.markdown(
+        '<div class="kpi-row">'
+        '<div class="kpi"><div class="kpi-label">P&amp;L realizado</div>'
+        '<div class="kpi-val" style="color:' + (R if pnl_r < 0 else GRN) + '">' + _ars(pnl_r) + '</div>'
+        '<div class="kpi-sub" style="color:' + (R if rp < 0 else GRN) + '">' + _pct(rp) + ' s/capital</div></div>'
+
+        '<div class="kpi"><div class="kpi-label">P&amp;L no realizado</div>'
+        '<div class="kpi-val" style="color:' + nr_col + '">' + nr_val + '</div>'
+        '<div class="kpi-sub" style="color:' + SUB + '">' + nr_sub + '</div></div>'
+
+        '<div class="kpi"><div class="kpi-label">Valuación actual</div>'
+        '<div class="kpi-val" style="color:' + BLU + '">' + v_val + '</div>'
+        '<div class="kpi-sub" style="color:' + SUB + '">' + str(len(df_r)) + ' posiciones abiertas</div></div>'
+
+        '<div class="kpi"><div class="kpi-label">P&amp;L total combinado</div>'
+        '<div class="kpi-val" style="color:' + (R if pnl_tot < 0 else GRN) + '">' + _ars(pnl_tot) + '</div>'
+        '<div class="kpi-sub" style="color:' + (R if rp_tot < 0 else GRN) + '">' + _pct(rp_tot) + '</div></div>'
+
+        '<div class="kpi"><div class="kpi-label">Win rate</div>'
+        '<div class="kpi-val">' + str(n_pos) + '/' + str(len(df_h)) + '</div>'
+        '<div class="kpi-sub" style="color:' + R + '">' + str(n_neg) + ' en negativo</div></div>'
+
+        '<div class="kpi"><div class="kpi-label">Top / Bottom</div>'
+        '<div class="kpi-val" style="font-size:1rem">' + str(mejor["Ticker"]) + '</div>'
+        '<div class="kpi-sub" style="color:' + R + '">Peor: ' + str(peor["Ticker"]) + '</div></div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Tabs
+    tabs = st.tabs(["Resumen", "Histórico", "Posición abierta", "Real. vs Papel", "Gráficos", "Movimientos"])
+
+    # TAB 0 Resumen
+    with tabs[0]:
+        c1, c2 = st.columns([1.05, 0.95], gap="large")
+        with c1:
+            st.markdown('<div class="slabel">Lectura ejecutiva</div>', unsafe_allow_html=True)
+            pct_win = n_pos / len(df_h) * 100
+            res_txt = ""
+            if not df_r.empty:
+                mb = df_r.loc[df_r["Diferencia"].idxmax()]
+                pb = df_r.loc[df_r["Diferencia"].idxmin()]
+                res_txt = (
+                    " Las posiciones abiertas registran un P&amp;L no realizado de "
+                    "<strong style='color:" + (R if pnl_nr < 0 else GRN) + "'>" + _ars(pnl_nr) + "</strong>"
+                    " (" + _pct(rp_ab) + ") sobre " + _ars(inv_ab) + " invertidos,"
+                    " con valuación actual de <strong style='color:" + BLU + "'>" + _ars(val_hoy) + "</strong>."
+                    " Mejor posición abierta: <strong>" + str(mb["Ticker"]) + "</strong> (" + _ars(float(mb["Diferencia"])) + "),"
+                    " peor: <strong>" + str(pb["Ticker"]) + "</strong> (" + _ars(float(pb["Diferencia"])) + ")."
+                )
+            narrative = (
+                "El portafolio acumula un P&amp;L realizado de "
+                "<strong style='color:" + (R if pnl_r < 0 else GRN) + "'>" + _ars(pnl_r) + "</strong>"
+                " sobre " + str(len(df_h)) + " especies operadas"
+                " (" + meta.get("fecha_desde","?") + " &#8594; " + meta.get("fecha_hasta","hoy") + "),"
+                " equivalente a <strong style='color:" + (R if rp < 0 else GRN) + "'>" + _pct(rp) + "</strong>"
+                " sobre el capital desplegado de <strong>" + _ars(cap) + "</strong>."
+                "<br/><br/>"
+                + str(n_pos) + " de " + str(len(df_h)) + " especies (" + "{:.0f}".format(pct_win) + "%) cerraron en positivo."
+                " Mejor contribución: <strong style='color:" + GRN + "'>" + str(mejor["Ticker"]) + "</strong>"
+                " (" + _ars(float(mejor["Total_ARS"])) + ")."
+                " Peor: <strong style='color:" + R + "'>" + str(peor["Ticker"]) + "</strong>"
+                " (" + _ars(float(peor["Total_ARS"])) + ")."
+                " El carry cobrado sumó <strong>" + _ars(divs) + "</strong>."
+                + res_txt
+            )
+            st.markdown('<div class="exec-card"><p>' + narrative + '</p></div>', unsafe_allow_html=True)
+
+            # Consolidated table
+            st.markdown('<div class="slabel" style="margin-top:1.4rem">Cuadro consolidado</div>', unsafe_allow_html=True)
+            rows_data = [
+                ("Capital invertido (ARS)", _ars(cap), INK),
+                ("Total ventas ARS", _ars(df_h["Ventas_ARS"].sum()), INK),
+                ("Dividendos / rentas cobrados", _ars(divs), GRN),
+                ("P&amp;L realizado", _ars(pnl_r), GRN if pnl_r >= 0 else R),
+            ]
+            if not df_r.empty:
+                rows_data += [
+                    ("Inversión posiciones abiertas", _ars(inv_ab), INK),
+                    ("Valuación a mercado hoy", _ars(val_hoy), BLU),
+                    ("P&amp;L no realizado", _ars(pnl_nr), GRN if pnl_nr >= 0 else R),
+                ]
+            rows_data += [
+                ("P&amp;L TOTAL COMBINADO", _ars(pnl_tot), GRN if pnl_tot >= 0 else R),
+                ("Rendimiento s/capital", _pct(rp_tot), GRN if rp_tot >= 0 else R),
+            ]
+            trs = "".join(
+                '<tr><td style="color:' + SUB + '">' + k + '</td>'
+                '<td class="r" style="color:' + c + '">' + v + '</td></tr>'
+                for k, v, c in rows_data
+            )
+            st.markdown('<table class="st">' + trs + '</table>', unsafe_allow_html=True)
+
+        with c2:
+            if not df_r.empty:
+                st.plotly_chart(_waterfall(df_r), use_container_width=True)
+            st.plotly_chart(_hbar(df_h.sort_values("Total_ARS"), "Total_ARS", "Ticker",
+                                  "P&L realizado por especie"), use_container_width=True)
+
+    # TAB 1 Historico
+    with tabs[1]:
+        fa, fb = st.columns([2, 1], gap="medium")
+        with fa:
+            cats = sorted(df_h["Categoria"].unique())
+            sel = st.multiselect("Categoría", cats, default=cats, key="hc")
+        with fb:
+            solo_neg = st.toggle("Solo perdedoras", key="hn")
+        dh = df_h[df_h["Categoria"].isin(sel)]
+        if solo_neg: dh = dh[dh["Total_ARS"] < 0]
+        show = dh[["Ticker","Nombre","Categoria","Qty_Comprada","Qty_Vendida","Saldo",
+                   "Compras_ARS","Ventas_ARS","Dividendos_ARS","Total_ARS","Total_USD"]].copy()
+        st.dataframe(
+            show.style.format({
+                "Qty_Comprada":"{:,.0f}","Qty_Vendida":"{:,.0f}","Saldo":"{:,.0f}",
+                "Compras_ARS":"$ {:,.0f}","Ventas_ARS":"$ {:,.0f}",
+                "Dividendos_ARS":"$ {:,.0f}","Total_ARS":"$ {:,.0f}","Total_USD":"U$S {:,.2f}",
+            }).map(
+                lambda v: "color:" + GRN + ";font-weight:700" if isinstance(v, (int, float)) and v > 0
+                else ("color:" + R + ";font-weight:700" if isinstance(v, (int, float)) and v < 0 else ""),
+                subset=["Total_ARS","Total_USD"]
+            ),
+            use_container_width=True, hide_index=True, height=min(560, 40+38*len(show))
+        )
+        # Category summary
+        st.markdown('<div class="slabel" style="margin-top:1.2rem">Por categoría</div>', unsafe_allow_html=True)
+        cat_h = df_h.groupby("Categoria").agg(
+            N=("Ticker","count"), Capital=("Compras_ARS","sum"),
+            Ventas=("Ventas_ARS","sum"), Dividendos=("Dividendos_ARS","sum"),
+            Total=("Total_ARS","sum"),
+        ).reset_index().sort_values("Total", ascending=False)
+        hdr = '<tr><th>Categoría</th><th class="r">N</th><th class="r">Capital</th><th class="r">Ventas</th><th class="r">Divid.</th><th class="r">Total ARS</th></tr>'
+        trs = ""
+        for _, row in cat_h.iterrows():
+            trs += ('<tr><td><strong>' + str(row["Categoria"]).upper() + '</strong></td>'
+                    '<td class="r">' + str(int(row["N"])) + '</td>'
+                    '<td class="r">' + _ars(row["Capital"]) + '</td>'
+                    '<td class="r">' + _ars(row["Ventas"]) + '</td>'
+                    '<td class="r" style="color:' + GRN + '">' + _ars(row["Dividendos"]) + '</td>'
+                    '<td class="r">' + _badge(row["Total"]) + '</td></tr>')
+        trs += ('<tr class="tot"><td>TOTAL</td><td class="r">' + str(len(df_h)) + '</td>'
+                '<td class="r">' + _ars(cat_h["Capital"].sum()) + '</td>'
+                '<td class="r">' + _ars(cat_h["Ventas"].sum()) + '</td>'
+                '<td class="r" style="color:' + GRN + '">' + _ars(cat_h["Dividendos"].sum()) + '</td>'
+                '<td class="r">' + _badge(pnl_r) + '</td></tr>')
+        st.markdown('<table class="st">' + hdr + trs + '</table>', unsafe_allow_html=True)
+
+    # TAB 2 Posicion abierta
+    with tabs[2]:
+        if df_r.empty:
+            st.markdown('<div class="empty-state"><div class="empty-icon">📈</div><div class="empty-title">No cargaste el archivo de Resultados</div><div class="empty-sub">Subí el archivo para ver la valuación actual de tus posiciones abiertas</div></div>', unsafe_allow_html=True)
         else:
-            st.markdown('<div class="stitle">Posiciones abiertas — valuadas a precio actual</div>', unsafe_allow_html=True)
             c1, c2 = st.columns([1.1, 0.9], gap="large")
             with c1:
-                show_r = df_res[["Ticker","Nombre","Categoria","Cantidad","PPP",
-                                  "Inversion","Precio_Actual","Valuacion","Diferencia","Rend_Pct"]].copy()
                 st.dataframe(
-                    show_r.style.format({
-                        "Cantidad":"{:,.0f}", "PPP":"$ {:,.3f}",
-                        "Inversion":"$ {:,.0f}", "Precio_Actual":"$ {:,.3f}",
-                        "Valuacion":"$ {:,.0f}", "Diferencia":"$ {:,.0f}",
-                        "Rend_Pct":"{:+.2f}%",
-                    }).applymap(
-                        lambda v: f"color:{GREEN};font-weight:700" if isinstance(v,(int,float)) and v>0
-                        else (f"color:{NEIX_RED};font-weight:700" if isinstance(v,(int,float)) and v<0 else ""),
+                    df_r[["Ticker","Nombre","Categoria","Cantidad","PPP",
+                           "Inversion","Precio_Actual","Valuacion","Diferencia","Rend_Pct"]]
+                    .style.format({
+                        "Cantidad":"{:,.0f}","PPP":"$ {:,.3f}","Inversion":"$ {:,.0f}",
+                        "Precio_Actual":"$ {:,.3f}","Valuacion":"$ {:,.0f}",
+                        "Diferencia":"$ {:,.0f}","Rend_Pct":"{:+.2f}%",
+                    }).map(
+                        lambda v: "color:" + GRN + ";font-weight:700" if isinstance(v, (int, float)) and v > 0
+                        else ("color:" + R + ";font-weight:700" if isinstance(v, (int, float)) and v < 0 else ""),
                         subset=["Diferencia","Rend_Pct"]
                     ),
                     use_container_width=True, hide_index=True
                 )
-
-                # category summary for open positions
-                cat_r = df_res.groupby("Categoria").agg(
-                    N=("Ticker","count"),
-                    Inversion=("Inversion","sum"),
-                    Valuacion=("Valuacion","sum"),
-                    Diferencia=("Diferencia","sum"),
-                ).reset_index()
-                cat_r["Rend_Pct"] = cat_r.apply(
-                    lambda r: r["Diferencia"]/r["Inversion"]*100 if r["Inversion"] else 0, axis=1)
-
-                hdr = "<tr>" + "".join(f"<th {'class=r' if i>1 else ''}>{h}</th>" for i,h in
-                      enumerate(["Categoría","N","Inversión","Valuación","Diferencia","Rend %"])) + "</tr>"
-                rws = ""
-                for _,r in cat_r.iterrows():
-                    rws += f"""<tr>
-                      <td><strong>{r['Categoria'].upper()}</strong></td>
-                      <td class=r>{int(r['N'])}</td>
-                      <td class=r>{_ars(r['Inversion'])}</td>
-                      <td class=r style="color:{BLUE}">{_ars(r['Valuacion'])}</td>
-                      <td class=r>{_badge(r['Diferencia'])}</td>
-                      <td class=r style="color:{'#10B981' if r['Rend_Pct']>=0 else NEIX_RED}">{_pct2(r['Rend_Pct'])}</td>
-                    </tr>"""
-                rws += f"""<tr class=total>
-                  <td>TOTAL</td><td class=r>{len(df_res)}</td>
-                  <td class=r>{_ars(inversion_abi)}</td>
-                  <td class=r style="color:{BLUE}">{_ars(valuacion_hoy)}</td>
-                  <td class=r>{_badge(pnl_no_real)}</td>
-                  <td class=r style="color:{'#10B981' if rend_pct_abie>=0 else NEIX_RED}">{_pct2(rend_pct_abie)}</td>
-                </tr>"""
-                st.markdown(f'<div class="card" style="margin-top:1rem"><table class="ct"><thead>{hdr}</thead><tbody>{rws}</tbody></table></div>',
-                            unsafe_allow_html=True)
-
+                st.markdown(
+                    '<div style="margin-top:1rem"><table class="st">'
+                    '<tr><td style="color:' + SUB + '">Total invertido (posiciones abiertas)</td><td class="r">' + _ars(inv_ab) + '</td></tr>'
+                    '<tr><td style="color:' + SUB + '">Valuación total a mercado</td><td class="r" style="color:' + BLU + '">' + _ars(val_hoy) + '</td></tr>'
+                    '<tr class="tot"><td>P&amp;L no realizado</td><td class="r" style="color:' + (R if pnl_nr < 0 else GRN) + '">' + _ars(pnl_nr) + ' (' + _pct(rp_ab) + ')</td></tr>'
+                    '</table></div>',
+                    unsafe_allow_html=True,
+                )
             with c2:
-                st.plotly_chart(chart_inv_vs_val(df_res), use_container_width=True)
-                st.plotly_chart(chart_donut(df_res["Ticker"].tolist(), df_res["Valuacion"].tolist(),
-                                            "Composición de la posición abierta"), use_container_width=True)
+                st.plotly_chart(_inv_vs_val(df_r), use_container_width=True)
+                t = _treemap(df_r)
+                if t: st.plotly_chart(t, use_container_width=True)
 
-    # ── TAB 4: Realizado vs Papel ─────────────────────────────────────────────
-    with tab4:
-        if df_res.empty:
-            st.info("Cargá el archivo de Resultados para ver esta vista combinada.")
+    # TAB 3 Real vs Papel
+    with tabs[3]:
+        if df_r.empty:
+            st.info("Cargá el archivo de Resultados para ver la vista combinada.")
         else:
-            st.markdown('<div class="stitle">P&L realizado + no realizado · vista combinada</div>', unsafe_allow_html=True)
-
-            # Merge: tickers in both
-            merged = df_hist[["Ticker","Nombre","Categoria","Total_ARS","Total_USD"]].merge(
-                df_res[["Ticker","Diferencia","Valuacion","Rend_Pct","Inversion"]],
-                on="Ticker", how="outer"
+            mg = df_h[["Ticker","Nombre","Total_ARS"]].merge(
+                df_r[["Ticker","Diferencia","Valuacion"]], on="Ticker", how="outer"
             ).fillna(0)
-            merged["PnL_Total"] = merged["Total_ARS"] + merged["Diferencia"]
-            merged["En_Historico"] = merged["Total_ARS"] != 0
-            merged["En_Abierto"]   = merged["Diferencia"] != 0
-
+            mg["PnL_Total"] = mg["Total_ARS"] + mg["Diferencia"]
             st.dataframe(
-                merged[["Ticker","Nombre","Total_ARS","Diferencia","PnL_Total","Valuacion","En_Historico","En_Abierto"]]
-                .rename(columns={"Total_ARS":"P&L Realizado","Diferencia":"P&L Papel",
-                                  "PnL_Total":"P&L Total","Valuacion":"Valuación hoy"})
+                mg.rename(columns={"Total_ARS":"P&L Realizado","Diferencia":"P&L Papel",
+                                   "PnL_Total":"P&L Total","Valuacion":"Valuación"})
                 .style.format({
-                    "P&L Realizado":"$ {:,.0f}", "P&L Papel":"$ {:,.0f}",
-                    "P&L Total":"$ {:,.0f}", "Valuación hoy":"$ {:,.0f}",
-                }).applymap(
-                    lambda v: f"color:{GREEN};font-weight:700" if isinstance(v,(int,float)) and v>0
-                    else (f"color:{NEIX_RED};font-weight:700" if isinstance(v,(int,float)) and v<0 else ""),
+                    "P&L Realizado":"$ {:,.0f}","P&L Papel":"$ {:,.0f}",
+                    "P&L Total":"$ {:,.0f}","Valuación":"$ {:,.0f}",
+                }).map(
+                    lambda v: "color:" + GRN + ";font-weight:700" if isinstance(v, (int, float)) and v > 0
+                    else ("color:" + R + ";font-weight:700" if isinstance(v, (int, float)) and v < 0 else ""),
                     subset=["P&L Realizado","P&L Papel","P&L Total"]
                 ),
                 use_container_width=True, hide_index=True
             )
+            st.plotly_chart(_combined_bar(df_h[["Ticker","Total_ARS"]], df_r[["Ticker","Diferencia"]]),
+                            use_container_width=True)
 
-            st.plotly_chart(
-                chart_hist_vs_open(
-                    df_hist[["Ticker","Total_ARS"]],
-                    df_res[["Ticker","Diferencia"]]
-                ),
-                use_container_width=True
-            )
+    # TAB 4 Graficos
+    with tabs[4]:
+        if not df_r.empty:
+            g1, g2 = st.columns(2, gap="large")
+            with g1: st.plotly_chart(_waterfall(df_r), use_container_width=True)
+            with g2: st.plotly_chart(_inv_vs_val(df_r), use_container_width=True)
+            st.plotly_chart(_combined_bar(df_h[["Ticker","Total_ARS"]], df_r[["Ticker","Diferencia"]]),
+                            use_container_width=True)
+            t = _treemap(df_r)
+            if t: st.plotly_chart(t, use_container_width=True)
+        st.plotly_chart(_hbar(df_h.sort_values("Total_ARS"), "Total_ARS", "Ticker",
+                              "P&L realizado — todas las especies"), use_container_width=True)
+        cat_agg = df_h.groupby("Categoria")["Total_ARS"].sum().reset_index().sort_values("Total_ARS")
+        st.plotly_chart(_hbar(cat_agg, "Total_ARS", "Categoria", "P&L por categoría", h=260),
+                        use_container_width=True)
 
-    # ── TAB 5: Charts ────────────────────────────────────────────────────────
-    with tab5:
-        if not df_res.empty:
-            r1c1, r1c2 = st.columns(2, gap="large")
-            with r1c1:
-                st.plotly_chart(chart_bridge(df_res), use_container_width=True)
-            with r1c2:
-                st.plotly_chart(chart_inv_vs_val(df_res), use_container_width=True)
-            st.plotly_chart(chart_scatter(df_res), use_container_width=True)
-            tree = chart_treemap_open(df_res)
-            if tree: st.plotly_chart(tree, use_container_width=True)
-
-        st.plotly_chart(
-            _hbar(df_hist.sort_values("Total_ARS"), "Total_ARS", "Ticker",
-                  "P&L realizado completo · todas las especies"),
-            use_container_width=True
-        )
-        cat_hist = df_hist.groupby("Categoria")["Total_ARS"].sum().reset_index().sort_values("Total_ARS")
-        st.plotly_chart(
-            _hbar(cat_hist, "Total_ARS", "Categoria", "P&L realizado por categoría", height=280),
-            use_container_width=True
-        )
-
-    # ── TAB 6: Movimientos ───────────────────────────────────────────────────
-    with tab6:
-        st.markdown('<div class="stitle">Movimientos crudos del histórico</div>', unsafe_allow_html=True)
-        all_movs = []
-        for _, row in df_hist.iterrows():
-            for m in row.get("_movs", []):
-                all_movs.append(m)
+    # TAB 5 Movimientos
+    with tabs[5]:
+        all_movs = [m for _, row in df_h.iterrows() for m in row.get("_movs", [])]
         if all_movs:
-            mov_df = pd.DataFrame(all_movs)
-            tick_f = st.selectbox("Filtrar por ticker", ["Todos"] + sorted(df_hist["Ticker"].unique()), key="mvtick")
-            if tick_f != "Todos": mov_df = mov_df[mov_df["Ticker"] == tick_f]
+            mv = pd.DataFrame(all_movs)
+            tf = st.selectbox("Ticker", ["Todos"] + sorted(df_h["Ticker"].unique()), key="mvt")
+            if tf != "Todos": mv = mv[mv["Ticker"] == tf]
             st.dataframe(
-                mov_df[["Ticker","Nombre","Cpbt","Numero","Fecha_Concertacion",
-                         "Fecha_Liquidacion","Cantidad","Precio","Neto_ARS","Moneda","Neto_USD"]],
-                use_container_width=True, hide_index=True, height=500
+                mv[["Ticker","Nombre","Cpbt","Numero","Fecha_Concertacion",
+                    "Fecha_Liquidacion","Cantidad","Precio","Neto_ARS","Moneda","Neto_USD"]],
+                use_container_width=True, hide_index=True, height=480
             )
 
-    # ── Download ─────────────────────────────────────────────────────────────
-    st.markdown('<hr class="divider"/>', unsafe_allow_html=True)
-    dl_col, note_col = st.columns([0.22, 0.78], gap="large")
-    with dl_col:
+    # Download
+    st.markdown("<hr style='border:none;border-top:1px solid #E2E8F0;margin:1.5rem 0 1rem'/>", unsafe_allow_html=True)
+    dc, nc = st.columns([0.2, 0.8], gap="large")
+    with dc:
         st.download_button(
-            "⬇  Exportar todo a Excel",
-            data=build_excel(df_hist, df_res),
-            file_name="neix_portafolio_completo.xlsx",
+            "↓  Exportar Excel",
+            data=_export(df_h, df_r),
+            file_name="neix_portafolio.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-    with note_col:
-        st.caption(
-            "Dashboard consolidado: P&L realizado (Histórico por Especie) + P&L no realizado (Resultados por Especie). "
-            "El rendimiento total combina operaciones cerradas + valuación actual de posiciones abiertas."
-        )
+    with nc:
+        st.caption("Exporta Histórico · Posición Actual · Combinado en un único archivo Excel.")
 
 
 if __name__ == "__main__":
-    render()
+    main()
