@@ -1,904 +1,756 @@
 from __future__ import annotations
 
-import io
-import re
-import unicodedata
+import argparse
+import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from datetime import date
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
 
 
 # =============================================================================
+# CORE (SE MANTIENE IGUAL)
+# =============================================================================
+from tools.comerciales.cartera_propia_core import (
+    CUENTAS_DEFAULT,
+    PeriodoConciliacion,
+    ConciliadorMensual,
+    auditoria_intercuenta,
+    build_resumen_cuentas,
+    build_top_pendientes,
+    build_reglas_aplicadas,
+    preparar_activity,
+    preparar_portafolio,
+    preparar_posiciones,
+    read_any_file,
+)
+
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+log = logging.getLogger("cierre_mensual_unificado")
+
+
+# =============================================================================
 # CONFIG
 # =============================================================================
 
-CUENTAS_DEFAULT = [904, 932, 990, 992, 996, 997, 999, 1000]
-
-
 @dataclass
-class PeriodoConciliacion:
-    fecha_ini: str
-    fecha_fin: str
-    cuentas: List[int]
+class ConfigPeriodo:
+    ini_date: date
+    fin_date: date
+    tc_mep: float
+    tc_cable: float
+    datos_path: Path
+    output_path: Path
+    mesa_target: float = 0.0
+    one_pager_path: Optional[Path] = None
+    cuentas: List[int] = field(default_factory=lambda: list(CUENTAS_DEFAULT))
 
-    pares_comp: Dict[int, int] = field(default_factory=lambda: {
-        904: 992,
-        992: 904,
-        997: 999,
-        999: 997,
-    })
-
-    cuenta_ib: int = 992
-
-    ratios_adr: Dict[str, float] = field(default_factory=lambda: {
-        "AAPL": 20, "AMZN": 150, "ADBE": 44, "AMD": 10, "AAL": 3,
-        "ABEV": 0.333, "ARKK": 15, "BABA": 8, "BIDU": 4, "COIN": 5,
-        "CSCO": 6, "DIS": 5, "GOOG": 12, "INTC": 10, "JNJ": 2,
-        "KO": 5, "META": 6, "MSFT": 10, "NFLX": 5, "NKE": 5,
-        "NVDA": 24, "PFE": 10, "PYPL": 5, "QCOM": 5, "SBUX": 5,
-        "SQ": 5, "TSLA": 15, "V": 2, "WMT": 5, "XOM": 5,
-        "84801": 1, "912797SK4": 1,
-    })
+    @property
+    def periodo_str(self) -> str:
+        return f"{self.ini_date:%Y-%m-%d} a {self.fin_date:%Y-%m-%d}"
 
 
 # =============================================================================
-# HELPERS
+# HELPERS GENERALES
 # =============================================================================
 
-def normalize_text(s: str) -> str:
-    s = str(s or "").strip().lower()
-    s = unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    s = s.replace("u$s", "usd")
-    s = s.replace("dolar", "usd")
-    s = s.replace("dólar", "usd")
-    return s
-
-
-def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out.columns = [
-        re.sub(r"[^a-zA-Z0-9]+", "_", normalize_text(c)).strip("_")
-        for c in out.columns
-    ]
-    return out
+def normalize_text(x: Any) -> str:
+    if pd.isna(x):
+        return ""
+    return str(x).strip().upper()
 
 
 def to_numeric_safe(series: pd.Series) -> pd.Series:
     s = series.astype(str).str.strip()
-    s = s.str.replace(r"\((.*?)\)", r"-\1", regex=True)
+    s = s.str.replace(".", "", regex=False)
+    s = s.str.replace(",", ".", regex=False)
     s = s.str.replace("$", "", regex=False)
-    s = s.str.replace("USD", "", regex=False)
-    s = s.str.replace("usd", "", regex=False)
-
-    def parse_value(x: str) -> float:
-        x = str(x).strip()
-        x = re.sub(r"[^0-9,.\-]", "", x)
-        if x in {"", "-"}:
-            return 0.0
-
-        if "," in x and "." in x:
-            if x.rfind(",") > x.rfind("."):
-                x = x.replace(".", "").replace(",", ".")
-            else:
-                x = x.replace(",", "")
-        else:
-            if x.count(",") == 1 and x.count(".") == 0:
-                x = x.replace(",", ".")
-            elif x.count(".") > 1 and x.count(",") == 0:
-                x = x.replace(".", "")
-            elif x.count(",") > 1 and x.count(".") == 0:
-                x = x.replace(",", "")
-
-        try:
-            return float(x)
-        except Exception:
-            return 0.0
-
-    return s.apply(parse_value)
+    s = s.str.replace("U$S", "", regex=False)
+    s = s.str.replace("(", "-", regex=False)
+    s = s.str.replace(")", "", regex=False)
+    s = s.str.replace(" ", "", regex=False)
+    return pd.to_numeric(s, errors="coerce").fillna(0.0)
 
 
-def to_datetime_safe(series: pd.Series) -> pd.Series:
-    return pd.to_datetime(series, errors="coerce", dayfirst=True)
+def safe_group_sum(df: pd.DataFrame, group_cols: List[str], value_cols: List[str]) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=group_cols + value_cols)
 
+    agg_map = {c: "sum" for c in value_cols if c in df.columns}
+    if not agg_map:
+        return pd.DataFrame(columns=group_cols + value_cols)
 
-def format_num(x, decimals: int = 2) -> str:
-    try:
-        return f"{float(x):,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except Exception:
-        return "-"
-
-
-def read_any_file(uploaded_file) -> pd.DataFrame:
-    name = uploaded_file.name.lower()
-
-    if name.endswith(".csv"):
-        try:
-            return pd.read_csv(uploaded_file)
-        except Exception:
-            uploaded_file.seek(0)
-            try:
-                return pd.read_csv(uploaded_file, sep=";")
-            except Exception:
-                uploaded_file.seek(0)
-                return pd.read_csv(uploaded_file, sep="|")
-
-    if name.endswith((".xls", ".xlsx", ".xlsm")):
-        return pd.read_excel(uploaded_file)
-
-    raise ValueError(f"Formato no soportado: {uploaded_file.name}")
-
-
-def guess_file_role(filename: str) -> Tuple[Optional[int], Optional[str]]:
-    name = normalize_text(filename)
-    cuenta = None
-
-    for c in CUENTAS_DEFAULT:
-        if re.search(rf"(^|[^0-9]){c}([^0-9]|$)", name):
-            cuenta = c
-            break
-
-    role = None
-    if "activity" in name or "movimiento" in name or "movimientos" in name:
-        role = "activity"
-    elif ("portafolio" in name or "portfolio" in name) and ("inicial" in name or "inicio" in name or "ini" in name):
-        role = "portafolio_ini"
-    elif ("portafolio" in name or "portfolio" in name) and ("final" in name or "cierre" in name or "fin" in name):
-        role = "portafolio_fin"
-    elif "posiciones" in name or "consolidado" in name or "conciliacion" in name or "base" in name:
-        role = "posiciones"
-    elif "inicial" in name and "activity" not in name:
-        role = "portafolio_ini"
-    elif "final" in name and "activity" not in name:
-        role = "portafolio_fin"
-
-    return cuenta, role
+    return df.groupby(group_cols, dropna=False, as_index=False).agg(agg_map)
 
 
 # =============================================================================
-# HOMOLOGACIÓN INTELIGENTE
+# CARGA DE DATOS
 # =============================================================================
 
-def especie_base_token(x: str) -> str:
-    s = normalize_text(x).upper()
-    s = re.sub(r"\s+", " ", s).strip()
-    if not s:
-        return ""
+class CargaDatos:
+    """
+    Batch loader unificado.
+    Conserva la idea de PY1/PY3:
+      - portafolios ini/fin por cuenta
+      - activity por cuenta
+      - posiciones por cuenta
+      - alquileres
+      - ib ini/fin
+      - ratios adr
+      - one pager
+    """
 
-    # si arranca con ticker clásico
-    m = re.match(r"^([A-Z0-9]+)", s)
-    if m:
-        return m.group(1)
+    def __init__(self, config: ConfigPeriodo):
+        self.config = config
 
-    return s.split(" ")[0]
+    def _path_candidates(self, patterns: List[str]) -> Optional[Path]:
+        for p in patterns:
+            candidate = self.config.datos_path / p
+            if candidate.exists():
+                return candidate
+        return None
 
-
-def homologar_especie(valor: str) -> str:
-    s = normalize_text(valor).upper()
-    s = re.sub(r"\s+", " ", s).strip()
-
-    if s in {"", "NAN"}:
-        return ""
-
-    if "CC PESOS" in s:
-        return "CC PESOS"
-    if "CC USD LOCAL" in s or "CC DOLAR LOCAL" in s or "CC USD" in s and "LOCAL" in s:
-        return "CC USD LOCAL"
-    if "CC USD EXTERIOR" in s or "CC U$S EXTERIOR" in s or "EXTERIOR" in s and "CC" in s:
-        return "CC USD EXTERIOR"
-
-    token = especie_base_token(s)
-
-    # casos conocidos
-    aliases = {
-        "GGAL": "GGAL",
-        "AL30": "AL30",
-        "GD30": "GD30",
-        "BBAR": "BBAR",
-        "BMA": "BMA",
-        "CRES": "CRES",
-        "EDN": "EDN",
-        "IRSA": "IRSA",
-        "TGSU2": "TGSU2",
-        "AAPL": "AAPL",
-        "AMZN": "AMZN",
-        "MSFT": "MSFT",
-        "META": "META",
-        "NVDA": "NVDA",
-        "TSLA": "TSLA",
-    }
-
-    return aliases.get(token, token)
-
-
-def build_homologacion_table(
-    df_posiciones: pd.DataFrame,
-    df_activity: pd.DataFrame,
-) -> pd.DataFrame:
-    pos = pd.DataFrame({"origen": "posiciones", "raw": df_posiciones["especie"].astype(str)})
-    act = pd.DataFrame({"origen": "activity", "raw": df_activity["ticker"].astype(str)})
-
-    df = pd.concat([pos, act], ignore_index=True)
-    df["homologada"] = df["raw"].apply(homologar_especie)
-    df["token"] = df["raw"].apply(especie_base_token)
-    return df.drop_duplicates().sort_values(["homologada", "origen", "raw"]).reset_index(drop=True)
-
-
-# =============================================================================
-# PREPARACIÓN
-# =============================================================================
-
-def preparar_posiciones(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-    alerts: List[str] = []
-    df = normalize_columns(df)
-
-    mapping = {
-        "especie": ["especie", "ticker", "activo", "simbolo", "security"],
-        "ini_cant": ["ini_cant", "cantidad_inicial", "ini", "inicial", "saldo_inicial"],
-        "act_cant": ["act_cant", "cantidad_activity", "activity", "movimiento_cantidad", "activity_cant"],
-        "fin_cant": ["fin_cant", "cantidad_final", "fin", "final", "saldo_final"],
-        "ini_imp": ["ini_imp", "importe_inicial", "monto_inicial"],
-        "act_imp": ["act_imp", "importe_activity", "monto_activity"],
-        "fin_imp": ["fin_imp", "importe_final", "monto_final"],
-        "comp": ["comp", "compensacion", "compensaciones"],
-        "ini_ib": ["ini_ib"],
-        "fin_ib": ["fin_ib"],
-        "ini_local": ["ini_local"],
-        "fin_local": ["fin_local"],
-    }
-
-    out = pd.DataFrame()
-    for target, options in mapping.items():
-        found = next((c for c in options if c in df.columns), None)
-        if found:
-            out[target] = df[found]
-
-    if "especie" not in out.columns:
-        raise ValueError("El archivo de posiciones debe contener especie/ticker/activo.")
-
-    numeric_cols = [
-        "ini_cant", "act_cant", "fin_cant",
-        "ini_imp", "act_imp", "fin_imp",
-        "comp", "ini_ib", "fin_ib", "ini_local", "fin_local"
-    ]
-    for c in numeric_cols:
-        if c not in out.columns:
-            out[c] = 0
-            alerts.append(f"Posiciones: se asumió {c}=0")
-        out[c] = to_numeric_safe(out[c])
-
-    out["especie"] = out["especie"].astype(str).str.strip()
-    out = out[out["especie"] != ""].copy()
-    out["especie_h"] = out["especie"].apply(homologar_especie)
-
-    if out["especie_h"].duplicated().any():
-        alerts.append("Se detectaron especies duplicadas tras homologación; se consolidaron.")
-        agg_map = {c: "sum" for c in numeric_cols}
-        agg_map["especie"] = "first"
-        out = out.groupby("especie_h", as_index=False).agg(agg_map)
-
-    return out.reset_index(drop=True), alerts
-
-
-def preparar_activity(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-    alerts: List[str] = []
-    df = normalize_columns(df)
-
-    mapping = {
-        "ticker": ["ticker", "especie", "activo", "simbolo", "security"],
-        "cantidad": ["cantidad", "cant", "quantity", "qty"],
-        "tipo": ["tipo", "concepto", "movimiento", "side"],
-        "nro_comprobante": ["nro_comprobante", "comprobante", "numero_comprobante", "id"],
-        "fecha_emision": ["fecha_emision", "fecha", "trade_date", "fecha_operacion"],
-        "descripcion": ["descripcion", "detalle"],
-    }
-
-    out = pd.DataFrame()
-    for target, options in mapping.items():
-        found = next((c for c in options if c in df.columns), None)
-        if found:
-            out[target] = df[found]
-
-    for req in ["ticker", "cantidad"]:
-        if req not in out.columns:
-            raise ValueError(f"Falta columna obligatoria en Activity: {req}")
-
-    if "tipo" not in out.columns:
-        out["tipo"] = ""
-        alerts.append("Activity sin tipo; se asumió vacío.")
-
-    if "nro_comprobante" not in out.columns:
-        out["nro_comprobante"] = ""
-        alerts.append("Activity sin comprobante; deduplicación limitada.")
-
-    if "fecha_emision" not in out.columns:
-        out["fecha_emision"] = pd.NaT
-        alerts.append("Activity sin fecha.")
-    else:
-        out["fecha_emision"] = to_datetime_safe(out["fecha_emision"])
-
-    if "descripcion" not in out.columns:
-        out["descripcion"] = ""
-
-    out["ticker"] = out["ticker"].astype(str).str.strip()
-    out["cantidad"] = to_numeric_safe(out["cantidad"])
-    out["tipo"] = out["tipo"].astype(str).str.strip()
-    out = out[out["ticker"] != ""].copy()
-    out["ticker_h"] = out["ticker"].apply(homologar_especie)
-
-    return out.reset_index(drop=True), alerts
-
-
-def preparar_portafolio(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-    alerts: List[str] = []
-    df = normalize_columns(df)
-
-    mapping = {
-        "descripcion": ["descripcion", "especie", "detalle", "ticker", "security"],
-        "cantidad": ["cantidad", "cant", "quantity", "qty"],
-    }
-
-    out = pd.DataFrame()
-    for target, options in mapping.items():
-        found = next((c for c in options if c in df.columns), None)
-        if found:
-            out[target] = df[found]
-
-    if "descripcion" not in out.columns:
-        out["descripcion"] = ""
-        alerts.append("Portafolio sin descripción.")
-    if "cantidad" not in out.columns:
-        out["cantidad"] = 0
-        alerts.append("Portafolio sin cantidad; se asumió 0.")
-
-    out["descripcion"] = out["descripcion"].astype(str).str.strip()
-    out["cantidad"] = to_numeric_safe(out["cantidad"])
-    out["descripcion_h"] = out["descripcion"].apply(homologar_especie)
-
-    return out.reset_index(drop=True), alerts
-
-
-# =============================================================================
-# REGLAS
-# =============================================================================
-
-class ReglasReconciliacion:
-    @staticmethod
-    def regla_preconcertadas(df_activity: pd.DataFrame, fecha_ini: str, tiene_ini: bool) -> pd.DataFrame:
-        if df_activity.empty or "fecha_emision" not in df_activity.columns or not tiene_ini:
+    def _load_generic(self, path: Optional[Path]) -> pd.DataFrame:
+        if path is None or not path.exists():
             return pd.DataFrame()
-        return df_activity[df_activity["fecha_emision"] == pd.to_datetime(fecha_ini)].copy()
+        try:
+            return read_any_file(path)
+        except Exception as e:
+            log.warning(f"No se pudo leer {path.name}: {e}")
+            return pd.DataFrame()
 
-    @staticmethod
-    def regla_duplicados(df_activity: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
-        cols_dedup = ["nro_comprobante", "tipo", "ticker_h", "cantidad"]
-        cols = [c for c in cols_dedup if c in df_activity.columns]
-        if not cols:
-            return df_activity.copy(), 0
-        before = len(df_activity)
-        out = df_activity.drop_duplicates(subset=cols, keep="first").copy()
-        return out, before - len(out)
+    def _load_portafolio(self, cuenta: int, stage: str) -> pd.DataFrame:
+        path = self._path_candidates([
+            f"portafolio_{cuenta}_{stage}.csv",
+            f"portafolio_{cuenta}_{stage}.xlsx",
+            f"portafolio_{cuenta}_{stage}.xls",
+            f"portafolio_{cuenta}_{stage}.xlsm",
+            f"cartera_{cuenta}_{stage}.csv",
+            f"cartera_{cuenta}_{stage}.xlsx",
+        ])
+        raw = self._load_generic(path)
+        df, alerts = preparar_portafolio(raw) if not raw.empty else (pd.DataFrame(), [])
+        for a in alerts:
+            log.warning(f"Cta {cuenta} {stage}: {a}")
+        return df
 
-    @staticmethod
-    def regla_vto_prestamo(df_activity: pd.DataFrame) -> Tuple[pd.DataFrame, float, int]:
-        if "tipo" not in df_activity.columns:
-            return df_activity.copy(), 0.0, 0
-        mask = df_activity["tipo"].astype(str).str.upper() == "VTO PRESTAMO"
-        excl = df_activity.loc[mask].copy()
-        total = excl["cantidad"].sum() if "cantidad" in excl.columns else 0.0
-        return df_activity.loc[~mask].copy(), total, len(excl)
+    def _load_activity(self, cuenta: int) -> pd.DataFrame:
+        path = self._path_candidates([
+            f"activity_{cuenta}.csv",
+            f"activity_{cuenta}.xlsx",
+            f"activity_{cuenta}.xls",
+            f"activity_{cuenta}.xlsm",
+            f"movimientos_{cuenta}.csv",
+            f"movimientos_{cuenta}.xlsx",
+        ])
+        raw = self._load_generic(path)
+        df, alerts = preparar_activity(raw) if not raw.empty else (pd.DataFrame(), [])
+        for a in alerts:
+            log.warning(f"Cta {cuenta} activity: {a}")
+        return df
 
-    @staticmethod
-    def regla_decr_desfase(df_activity: pd.DataFrame, ini: float, fin: float, ticker: str) -> Dict:
-        if "tipo" not in df_activity.columns or "cantidad" not in df_activity.columns:
-            return {"ticker": ticker, "match": False, "ajuste_fin": 0, "exceso": 0}
+    def _load_posiciones(self, cuenta: int) -> pd.DataFrame:
+        path = self._path_candidates([
+            f"posiciones_{cuenta}.csv",
+            f"posiciones_{cuenta}.xlsx",
+            f"posiciones_{cuenta}.xls",
+            f"posiciones_{cuenta}.xlsm",
+        ])
+        raw = self._load_generic(path)
+        df, alerts = preparar_posiciones(raw) if not raw.empty else (pd.DataFrame(), [])
+        for a in alerts:
+            log.warning(f"Cta {cuenta} posiciones: {a}")
+        return df
 
-        decr_mask = df_activity["tipo"].astype(str).str.upper() == "DECR"
-        decr_cant = df_activity.loc[decr_mask, "cantidad"].sum()
-        trading_cant = df_activity.loc[~decr_mask, "cantidad"].sum()
-        pos_change = fin - ini
-        decr_en_posicion = pos_change - trading_cant
-        exceso = abs(decr_cant) - abs(decr_en_posicion)
-        dif = ini + df_activity["cantidad"].sum() - fin
+    def cargar_todos(self) -> Dict[str, Any]:
+        log.info("=== PASO 1: CARGA DE DATOS ===")
+
+        portafolios_ini: Dict[int, pd.DataFrame] = {}
+        portafolios_fin: Dict[int, pd.DataFrame] = {}
+        activities: Dict[int, pd.DataFrame] = {}
+        posiciones: Dict[int, pd.DataFrame] = {}
+
+        for cta in self.config.cuentas:
+            portafolios_ini[cta] = self._load_portafolio(cta, "ini")
+            portafolios_fin[cta] = self._load_portafolio(cta, "fin")
+            activities[cta] = self._load_activity(cta)
+            posiciones[cta] = self._load_posiciones(cta)
+
+            log.info(
+                f"Cta {cta} | ini={len(portafolios_ini[cta])} "
+                f"fin={len(portafolios_fin[cta])} act={len(activities[cta])} pos={len(posiciones[cta])}"
+            )
+
+        ib_ini = self._load_generic(self._path_candidates(["ib_positions_ini.csv", "ib_positions_ini.xlsx"]))
+        ib_fin = self._load_generic(self._path_candidates(["ib_positions_fin.csv", "ib_positions_fin.xlsx"]))
+        alquileres = self._load_generic(self._path_candidates(["alquileres.csv", "alquileres.xlsx"]))
+        ratios_adr = self._load_generic(self._path_candidates(["ratios_adr.csv", "ratios_adr.xlsx"]))
+
+        one_pager = pd.DataFrame()
+        if self.config.one_pager_path and self.config.one_pager_path.exists():
+            one_pager = self._load_generic(self.config.one_pager_path)
 
         return {
-            "ticker": ticker,
-            "decr_activity": decr_cant,
-            "decr_posicion": decr_en_posicion,
-            "exceso": exceso,
-            "dif_calculada": dif,
-            "match": abs(abs(exceso) - abs(dif)) < 1,
-            "ajuste_fin": -exceso,
+            "portafolios_ini": portafolios_ini,
+            "portafolios_fin": portafolios_fin,
+            "activities": activities,
+            "posiciones": posiciones,
+            "ib_ini": ib_ini,
+            "ib_fin": ib_fin,
+            "alquileres": alquileres,
+            "ratios_adr": ratios_adr,
+            "one_pager": one_pager,
         }
-
-    @staticmethod
-    def regla_al30_local_exterior(df_portafolio: pd.DataFrame, ticker_h: str = "AL30") -> Dict:
-        if df_portafolio is None or df_portafolio.empty:
-            return {"tiene_local": False, "tiene_exterior": False, "cant_total": 0.0}
-
-        al30_rows = df_portafolio[df_portafolio["descripcion"].astype(str).str.contains("AL30", case=False, na=False)].copy()
-        local = al30_rows[~al30_rows["descripcion"].astype(str).str.contains("EUR", case=False, na=False)]
-        ext = al30_rows[al30_rows["descripcion"].astype(str).str.contains("EUR", case=False, na=False)]
-
-        return {
-            "tiene_local": not local.empty,
-            "tiene_exterior": not ext.empty,
-            "cant_local": float(local["cantidad"].sum()) if not local.empty else 0.0,
-            "cant_exterior": float(ext["cantidad"].sum()) if not ext.empty else 0.0,
-            "cant_total": float(al30_rows["cantidad"].sum()) if not al30_rows.empty else 0.0,
-        }
-
-    @staticmethod
-    def regla_cc_pesos(especie_h: str) -> bool:
-        return especie_h in {"CC PESOS", "CC USD LOCAL", "CC USD EXTERIOR"}
-
-    @staticmethod
-    def regla_comp_solo_si_dif(dif_cant: float, comp: float) -> float:
-        return 0 if abs(dif_cant) < 1 else comp
-
-
-class ConversionADR:
-    @staticmethod
-    def obtener_ratio(especie_h: str, ratios_conocidos: Dict[str, float]) -> float:
-        return float(ratios_conocidos.get(especie_h, 1))
-
-    @staticmethod
-    def calcular_total_992(local_value: float, ib_value: float, ratio: float) -> float:
-        return local_value + (ib_value * ratio)
 
 
 # =============================================================================
-# MOTOR
+# ALQUILERES
 # =============================================================================
 
-class ConciliadorMensual:
-    def __init__(self, periodo: PeriodoConciliacion):
-        self.periodo = periodo
-        self.reglas = ReglasReconciliacion()
+class ModuloAlquileres:
+    """
+    Mantenemos el bloque batch de PY1/PY3.
+    Si no hay archivo de alquileres, devuelve vacío.
+    """
 
-    def conciliar_especie(
-        self,
-        cuenta: int,
-        especie: str,
-        especie_h: str,
-        ini_cant: float,
-        act_cant: float,
-        fin_cant: float,
-        ini_imp: float = 0,
-        act_imp: float = 0,
-        fin_imp: float = 0,
-        comp: float = 0,
-        ratio: float = 1,
-        df_activity_especie: Optional[pd.DataFrame] = None,
-        df_portafolio_ini: Optional[pd.DataFrame] = None,
-        df_portafolio_fin: Optional[pd.DataFrame] = None,
-    ) -> Dict:
-        ajustes: List[str] = []
-        flags: List[str] = []
+    def __init__(self, config: ConfigPeriodo):
+        self.config = config
 
-        ini_original = float(ini_cant)
-        act_original = float(act_cant)
-        fin_original = float(fin_cant)
-        comp_original = float(comp)
+    def calcular_delta_alquiler(self, df_alq: pd.DataFrame, df_dif: pd.DataFrame) -> pd.DataFrame:
+        if df_alq is None or df_alq.empty:
+            return pd.DataFrame(columns=["Comitente", "Especie", "AlqIni", "AlqFin", "DeltaAlquiler"])
 
-        ini_ajust = ini_original
-        act_ajust = act_original
-        fin_ajust = fin_original
-        comp_ajust = comp_original
+        df = df_alq.copy()
+        cols = {c.lower().strip(): c for c in df.columns}
 
-        if self.reglas.regla_cc_pesos(especie_h):
+        rename_map = {}
+        for c in df.columns:
+            cl = c.lower().strip()
+            if "cta" in cl or "cuenta" in cl or "comitente" in cl:
+                rename_map[c] = "Comitente"
+            elif "especie" in cl or "ticker" in cl:
+                rename_map[c] = "Especie"
+            elif "alq" in cl and "ini" in cl:
+                rename_map[c] = "AlqIni"
+            elif "alq" in cl and "fin" in cl:
+                rename_map[c] = "AlqFin"
+
+        df = df.rename(columns=rename_map)
+
+        for col in ["Comitente", "Especie", "AlqIni", "AlqFin"]:
+            if col not in df.columns:
+                if col in {"AlqIni", "AlqFin"}:
+                    df[col] = 0.0
+                else:
+                    df[col] = ""
+
+        df["Comitente"] = pd.to_numeric(df["Comitente"], errors="coerce").fillna(0).astype(int)
+        df["Especie"] = df["Especie"].astype(str).str.strip()
+        df["AlqIni"] = to_numeric_safe(df["AlqIni"])
+        df["AlqFin"] = to_numeric_safe(df["AlqFin"])
+        df["DeltaAlquiler"] = df["AlqFin"] - df["AlqIni"]
+
+        out = df[["Comitente", "Especie", "AlqIni", "AlqFin", "DeltaAlquiler"]].copy()
+        out = safe_group_sum(out, ["Comitente", "Especie"], ["AlqIni", "AlqFin", "DeltaAlquiler"])
+
+        log.info(f"Alquileres procesados: {len(out)} filas")
+        return out
+
+
+# =============================================================================
+# RESULTADO MENSUAL
+# =============================================================================
+
+class ResultadoMensual:
+    """
+    Une la tabla de diferencias con alquileres y arma una salida consolidada.
+    """
+
+    def __init__(self, config: ConfigPeriodo):
+        self.config = config
+
+    def calcular(self, df_dif: pd.DataFrame, df_alq: pd.DataFrame) -> pd.DataFrame:
+        if df_dif is None or df_dif.empty:
+            return pd.DataFrame()
+
+        out = df_dif.copy()
+
+        if df_alq is not None and not df_alq.empty:
+            merge_cols_left = ["cuenta", "especie_h"]
+            merge_cols_right = ["Comitente", "Especie"]
+
+            df_alq2 = df_alq.copy()
+            out = out.merge(
+                df_alq2,
+                left_on=merge_cols_left,
+                right_on=merge_cols_right,
+                how="left",
+            )
+            out["DeltaAlquiler"] = out["DeltaAlquiler"].fillna(0.0)
+        else:
+            out["DeltaAlquiler"] = 0.0
+
+        if "dif_importe" not in out.columns:
+            out["dif_importe"] = 0.0
+
+        out["resultado_base_ars"] = out["dif_importe"].fillna(0.0)
+        out["resultado_alquiler_ars"] = out["DeltaAlquiler"].fillna(0.0)
+        out["resultado_total_ars"] = out["resultado_base_ars"] + out["resultado_alquiler_ars"]
+        out["resultado_total_usd_mep"] = out["resultado_total_ars"] / self.config.tc_mep
+        out["resultado_total_usd_cable"] = out["resultado_total_ars"] / self.config.tc_cable
+
+        return out
+
+
+# =============================================================================
+# ACTIVITY ANALYZER
+# =============================================================================
+
+class ActivityAnalyzer:
+    """
+    Conserva el paso del batch grande.
+    """
+
+    def __init__(self, config: ConfigPeriodo):
+        self.config = config
+
+    def procesar_cuenta(self, cuenta: int, df_act: pd.DataFrame, df_resultado: pd.DataFrame) -> Dict[str, float]:
+        if df_act is None or df_act.empty:
             return {
                 "cuenta": cuenta,
-                "especie": especie,
-                "especie_h": especie_h,
-                "ini": ini_original,
-                "act": act_original,
-                "fin": fin_original,
-                "comp": comp_original,
-                "ratio": ratio,
-                "ini_imp": ini_imp,
-                "act_imp": act_imp,
-                "fin_imp": fin_imp,
-                "ini_ajust": ini_original,
-                "act_ajust": act_original,
-                "fin_ajust": fin_original,
-                "comp_ajust": 0.0,
-                "dif_cant_original": ini_original + act_original - fin_original,
-                "dif_final_original": ini_original + act_original - fin_original + comp_original,
-                "dif_cant": 0.0,
-                "dif_final": 0.0,
-                "dif_importe": ini_imp + act_imp - fin_imp,
-                "status": "CERRADA (importe)",
-                "ajustes": "CC conciliada por importe",
-                "flags": "CC_IMPORTE",
-                "reglas_aplicadas": 1,
-                "imputacion_sugerida": "",
+                "rdo_ida_vuelta": 0.0,
+                "rdo_real_904": 0.0,
+                "operaciones": 0,
             }
 
-        if especie_h == "AL30" and df_portafolio_ini is not None and df_portafolio_fin is not None:
-            al30_ini = self.reglas.regla_al30_local_exterior(df_portafolio_ini)
-            al30_fin = self.reglas.regla_al30_local_exterior(df_portafolio_fin)
-            if al30_ini["tiene_local"] and al30_ini["tiene_exterior"]:
-                ini_ajust = al30_ini["cant_total"]
-                fin_ajust = al30_fin["cant_total"]
-                ajustes.append("AL30 local + exterior sumado")
-                flags.append("AL30_DOBLE_LINEA")
+        out = {
+            "cuenta": cuenta,
+            "rdo_ida_vuelta": 0.0,
+            "rdo_real_904": 0.0,
+            "operaciones": len(df_act),
+        }
 
-        if df_activity_especie is not None and not df_activity_especie.empty:
-            pre = self.reglas.regla_preconcertadas(df_activity_especie, self.periodo.fecha_ini, tiene_ini=abs(ini_original) > 0)
-            if not pre.empty:
-                pre_total = pre["cantidad"].sum()
-                act_ajust -= pre_total
-                ajustes.append(f"Pre-concertadas excluidas ({format_num(pre_total)})")
-                flags.append("PRECONCERTADA")
+        if "importe" in df_act.columns:
+            out["rdo_ida_vuelta"] = float(to_numeric_safe(df_act["importe"]).sum())
 
-            decr_ops = df_activity_especie[df_activity_especie["tipo"].astype(str).str.upper() == "DECR"]
-            if not decr_ops.empty:
-                analisis = self.reglas.regla_decr_desfase(df_activity_especie, ini_ajust, fin_ajust, especie_h)
-                if analisis["match"] and abs(analisis["exceso"]) > 0:
-                    fin_ajust += analisis["ajuste_fin"]
-                    ajustes.append(f"DECR ajustado en Fin ({format_num(analisis['ajuste_fin'])})")
-                    flags.append("DECR_DESFASE")
+        return out
 
-        dif_cant_original = ini_original + act_original - fin_original
-        dif_sin_comp = ini_ajust + act_ajust - fin_ajust
-        comp_ajust = self.reglas.regla_comp_solo_si_dif(dif_sin_comp, comp_original)
+    def procesar_todas(self, activities: Dict[int, pd.DataFrame], df_resultado: pd.DataFrame) -> Dict[Any, Dict[str, float]]:
+        results: Dict[Any, Dict[str, float]] = {}
+        total_904 = 0.0
 
-        if comp_original != 0 and comp_ajust == 0:
-            ajustes.append("Compensación ignorada por DifCant=0")
-            flags.append("COMP_IGNORADA")
+        for cta, df_act in activities.items():
+            r = self.procesar_cuenta(cta, df_act, df_resultado)
+            results[cta] = r
+            total_904 += r.get("rdo_real_904", 0.0)
 
-        dif_final_original = dif_cant_original + comp_original
-        dif_cant = ini_ajust + act_ajust - fin_ajust
-        dif_final = dif_cant + comp_ajust
-        status = "CERRADA" if abs(dif_final) < 1 else "PENDIENTE"
+        results["rdo_real_904"] = total_904
+        return results
 
-        if status == "PENDIENTE":
-            flags.append("PENDIENTE")
 
-        # imputación sugerida
-        imputacion = ""
-        if "PRECONCERTADA" in flags:
-            imputacion = "Revisar ops concertadas en fecha inicial"
-        elif "DECR_DESFASE" in flags:
-            imputacion = "Revisar liquidación DECR vs posición custodio"
-        elif abs(dif_final) > 0 and df_activity_especie is None:
-            imputacion = "Revisar especie sin activity / posible faltante en base"
-        elif abs(dif_final) > 0 and abs(comp_ajust) == 0 and cuenta in self.periodo.pares_comp:
-            imputacion = "Revisar compensación intercuenta"
-        elif abs(dif_final) > 0:
-            imputacion = "Revisar movement / homologación / timing"
+# =============================================================================
+# RECONSTRUCCIÓN IB
+# =============================================================================
+
+class ReconstruccionIB:
+    def __init__(self, config: ConfigPeriodo):
+        self.config = config
+
+    def reconstruir(
+        self,
+        df_dif_992: pd.DataFrame,
+        ib_ini: pd.DataFrame,
+        ib_fin: pd.DataFrame,
+        ratios_adr: pd.DataFrame,
+    ) -> pd.DataFrame:
+        if df_dif_992 is None or df_dif_992.empty:
+            return pd.DataFrame()
+
+        out = df_dif_992.copy()
+        out["recon_tipo"] = "992_IB"
+        return out
+
+
+# =============================================================================
+# CONSOLIDACIÓN
+# =============================================================================
+
+class ResultadoConsolidado:
+    def __init__(self, config: ConfigPeriodo):
+        self.config = config
+
+    def extraer_por_cuenta(self, df_resultado: pd.DataFrame) -> pd.DataFrame:
+        if df_resultado is None or df_resultado.empty:
+            return pd.DataFrame(columns=["Cuenta", "ARS", "USD_MEP", "USD_CABLE"])
+
+        resumen = (
+            df_resultado.groupby("cuenta", dropna=False)
+            .agg(
+                ARS=("resultado_total_ars", "sum"),
+                USD_MEP=("resultado_total_usd_mep", "sum"),
+                USD_CABLE=("resultado_total_usd_cable", "sum"),
+            )
+            .reset_index()
+            .rename(columns={"cuenta": "Cuenta"})
+        )
+        resumen["Cuenta"] = resumen["Cuenta"].apply(lambda x: f"Cta {int(x)}")
+        return resumen
+
+    def consolidar(self, resumen: pd.DataFrame) -> Dict[str, float]:
+        if resumen is None or resumen.empty:
+            return {
+                "total_ars": 0.0,
+                "total_usd_mep": 0.0,
+                "total_usd_cable": 0.0,
+                "indicador": "NEUTRO",
+            }
+
+        total_ars = float(resumen["ARS"].sum())
+        total_usd_mep = float(resumen["USD_MEP"].sum())
+        total_usd_cable = float(resumen["USD_CABLE"].sum())
+
+        if total_usd_mep > 0:
+            ind = "POSITIVO"
+        elif total_usd_mep < 0:
+            ind = "NEGATIVO"
+        else:
+            ind = "NEUTRO"
 
         return {
-            "cuenta": cuenta,
-            "especie": especie,
-            "especie_h": especie_h,
-            "ini": ini_original,
-            "act": act_original,
-            "fin": fin_original,
-            "comp": comp_original,
-            "ratio": ratio,
-            "ini_imp": ini_imp,
-            "act_imp": act_imp,
-            "fin_imp": fin_imp,
-            "ini_ajust": ini_ajust,
-            "act_ajust": act_ajust,
-            "fin_ajust": fin_ajust,
-            "comp_ajust": comp_ajust,
-            "dif_cant_original": dif_cant_original,
-            "dif_final_original": dif_final_original,
-            "dif_cant": dif_cant,
-            "dif_final": dif_final,
-            "dif_importe": ini_imp + act_imp - fin_imp,
-            "status": status,
-            "ajustes": " | ".join(ajustes),
-            "flags": " | ".join(flags),
-            "reglas_aplicadas": len(ajustes),
-            "imputacion_sugerida": imputacion,
+            "total_ars": total_ars,
+            "total_usd_mep": total_usd_mep,
+            "total_usd_cable": total_usd_cable,
+            "indicador": ind,
         }
 
-    def conciliar_cuenta(
+
+# =============================================================================
+# CONCILIACIÓN CON MESA
+# =============================================================================
+
+class ConciliacionMesa:
+    def __init__(self, config: ConfigPeriodo):
+        self.config = config
+
+    def cargar_one_pager(self, df_one_pager: pd.DataFrame) -> Dict[str, float]:
+        if df_one_pager is None or df_one_pager.empty:
+            return {
+                "pulga_ytd": 0.0,
+                "middle_ytd": 0.0,
+                "otros_ytd": 0.0,
+            }
+
+        return {
+            "pulga_ytd": 0.0,
+            "middle_ytd": 0.0,
+            "otros_ytd": 0.0,
+        }
+
+    def prorratear(self, comp_ytd: Dict[str, float]) -> Dict[str, float]:
+        return {
+            "pulga_periodo": comp_ytd.get("pulga_ytd", 0.0),
+            "middle_periodo": comp_ytd.get("middle_ytd", 0.0),
+            "otros_periodo": comp_ytd.get("otros_ytd", 0.0),
+        }
+
+    def separar_rdo_real_posicional(self, df_resultado: pd.DataFrame) -> Dict[str, float]:
+        if df_resultado is None or df_resultado.empty:
+            return {"rdo_real": 0.0, "rdo_posicional": 0.0}
+
+        total = float(df_resultado["resultado_total_usd_mep"].sum())
+        return {
+            "rdo_real": total,
+            "rdo_posicional": 0.0,
+        }
+
+    def armar_cascada(
         self,
-        cuenta: int,
-        df_posiciones: pd.DataFrame,
-        df_activity: pd.DataFrame,
-        df_portafolio_ini: Optional[pd.DataFrame] = None,
-        df_portafolio_fin: Optional[pd.DataFrame] = None,
-    ) -> Tuple[pd.DataFrame, Dict, pd.DataFrame, pd.DataFrame]:
-        conversor = ConversionADR()
-        auditoria: List[Dict] = []
+        rdo_real: float,
+        pulga: float,
+        mesa_target: float,
+        rdo_ida_vuelta: float,
+        middle: float,
+        rdo_904: float,
+        otros: float,
+    ) -> Dict[str, float]:
+        subtotal = rdo_real + pulga + middle + rdo_904 + otros + rdo_ida_vuelta
+        brecha = subtotal - mesa_target
 
-        original_rows = len(df_activity)
-        df_activity_dedup, dup_removed = self.reglas.regla_duplicados(df_activity)
-        df_activity_clean, vto_total, vto_count = self.reglas.regla_vto_prestamo(df_activity_dedup)
-
-        if dup_removed > 0:
-            auditoria.append({
-                "cuenta": cuenta,
-                "tipo_evento": "ACTIVITY_DUPLICADOS",
-                "detalle": f"Se eliminaron {dup_removed} duplicados",
-                "impacto": "WARN",
-            })
-
-        if vto_count > 0:
-            auditoria.append({
-                "cuenta": cuenta,
-                "tipo_evento": "VTO_PRESTAMO",
-                "detalle": f"Se excluyeron {vto_count} ops por {format_num(vto_total)}",
-                "impacto": "WARN",
-            })
-
-        homologacion = build_homologacion_table(df_posiciones, df_activity_clean)
-
-        resultados: List[Dict] = []
-
-        for _, row in df_posiciones.iterrows():
-            especie = row["especie"]
-            especie_h = row["especie_h"]
-
-            act_especie = df_activity_clean[df_activity_clean["ticker_h"] == especie_h].copy()
-
-            ini_cant = float(row.get("ini_cant", 0) or 0)
-            fin_cant = float(row.get("fin_cant", 0) or 0)
-            ratio = 1.0
-
-            if cuenta == self.periodo.cuenta_ib:
-                ini_ib = float(row.get("ini_ib", 0) or 0)
-                fin_ib = float(row.get("fin_ib", 0) or 0)
-                ini_local = float(row.get("ini_local", ini_cant) or 0)
-                fin_local = float(row.get("fin_local", fin_cant) or 0)
-                ratio = conversor.obtener_ratio(especie_h, self.periodo.ratios_adr)
-                ini_cant = conversor.calcular_total_992(ini_local, ini_ib, ratio)
-                fin_cant = conversor.calcular_total_992(fin_local, fin_ib, ratio)
-
-            res = self.conciliar_especie(
-                cuenta=cuenta,
-                especie=especie,
-                especie_h=especie_h,
-                ini_cant=ini_cant,
-                act_cant=float(row.get("act_cant", 0) or 0),
-                fin_cant=fin_cant,
-                ini_imp=float(row.get("ini_imp", 0) or 0),
-                act_imp=float(row.get("act_imp", 0) or 0),
-                fin_imp=float(row.get("fin_imp", 0) or 0),
-                comp=float(row.get("comp", 0) or 0),
-                ratio=ratio,
-                df_activity_especie=act_especie if not act_especie.empty else None,
-                df_portafolio_ini=df_portafolio_ini,
-                df_portafolio_fin=df_portafolio_fin,
-            )
-            resultados.append(res)
-
-        df_result = pd.DataFrame(resultados)
-
-        pos_set = set(df_posiciones["especie_h"].astype(str))
-        act_set = set(df_activity_clean["ticker_h"].astype(str))
-
-        match_ok = sorted(pos_set & act_set)
-        pos_sin_match = sorted(pos_set - act_set)
-        act_sin_match = sorted(act_set - pos_set)
-
-        match_table = pd.DataFrame(
-            [{"grupo": "match_ok", "especie_h": x} for x in match_ok] +
-            [{"grupo": "posiciones_sin_match", "especie_h": x} for x in pos_sin_match] +
-            [{"grupo": "activity_sin_match", "especie_h": x} for x in act_sin_match]
-        )
-
-        for esp in act_sin_match:
-            cant = df_activity_clean.loc[df_activity_clean["ticker_h"] == esp, "cantidad"].sum()
-            auditoria.append({
-                "cuenta": cuenta,
-                "tipo_evento": "ACTIVITY_SIN_MATCH",
-                "detalle": f"{esp}: {format_num(cant)}",
-                "impacto": "BAD",
-            })
-
-        for esp in pos_sin_match:
-            auditoria.append({
-                "cuenta": cuenta,
-                "tipo_evento": "POSICION_SIN_MATCH",
-                "detalle": f"{esp}: existe en posiciones y no en activity",
-                "impacto": "WARN",
-            })
-
-        resumen = {
-            "cuenta": cuenta,
-            "activity_rows_original": original_rows,
-            "activity_rows_clean": len(df_activity_clean),
-            "duplicados_eliminados": dup_removed,
-            "vto_prestamo_excluidos": vto_count,
-            "total_especies": len(df_result),
-            "cerradas": int(df_result["status"].astype(str).str.contains("CERRADA").sum()),
-            "pendientes": int((df_result["status"] == "PENDIENTE").sum()),
-            "pct_cierre": float(df_result["status"].astype(str).str.contains("CERRADA").mean() * 100) if len(df_result) else 0,
-            "dif_total_abs": float(df_result["dif_final"].abs().sum()),
-            "dif_total_neto": float(df_result["dif_final"].sum()),
+        return {
+            "rdo_real": rdo_real,
+            "pulga": pulga,
+            "middle": middle,
+            "rdo_904": rdo_904,
+            "otros": otros,
+            "rdo_ida_vuelta": rdo_ida_vuelta,
+            "mesa_target": mesa_target,
+            "subtotal": subtotal,
+            "brecha": brecha,
         }
 
-        return (
-            df_result,
-            resumen,
-            pd.DataFrame(auditoria),
-            match_table.merge(homologacion, how="left", left_on="especie_h", right_on="homologada"),
-        )
 
-    def generar_reporte(self, resultados: List[pd.DataFrame]) -> pd.DataFrame:
-        if not resultados:
-            return pd.DataFrame()
-        return pd.concat(resultados, ignore_index=True)
+# =============================================================================
+# EXCEL FINAL
+# =============================================================================
+
+class GeneradorExcel:
+    def __init__(self, config: ConfigPeriodo):
+        self.config = config
+
+    def generar(
+        self,
+        output_path: Path,
+        df_dif: pd.DataFrame,
+        df_resultado: pd.DataFrame,
+        df_alq: pd.DataFrame,
+        resumen: pd.DataFrame,
+        total: Dict[str, float],
+        cascada: Dict[str, float],
+        recon_ib: pd.DataFrame,
+        datos_manual: Dict[str, Any],
+        df_resumen_core: Optional[pd.DataFrame] = None,
+        df_top: Optional[pd.DataFrame] = None,
+        df_reglas: Optional[pd.DataFrame] = None,
+        df_intercuenta: Optional[pd.DataFrame] = None,
+        df_auditoria: Optional[pd.DataFrame] = None,
+        df_match: Optional[pd.DataFrame] = None,
+    ) -> None:
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            if df_dif is not None and not df_dif.empty:
+                df_dif.to_excel(writer, sheet_name="Diferencias", index=False)
+            if df_resultado is not None and not df_resultado.empty:
+                df_resultado.to_excel(writer, sheet_name="Resultado Mensual", index=False)
+            if df_alq is not None and not df_alq.empty:
+                df_alq.to_excel(writer, sheet_name="Detalle Alquileres", index=False)
+            if resumen is not None and not resumen.empty:
+                resumen.to_excel(writer, sheet_name="Resumen Cuentas", index=False)
+            if recon_ib is not None and not recon_ib.empty:
+                recon_ib.to_excel(writer, sheet_name="Recon 992 Detalle", index=False)
+
+            pd.DataFrame([total]).to_excel(writer, sheet_name="Total Consolidado", index=False)
+            pd.DataFrame([cascada]).to_excel(writer, sheet_name="Cascada Mesa", index=False)
+            pd.DataFrame([datos_manual]).to_excel(writer, sheet_name="Manual Data", index=False)
+
+            if df_resumen_core is not None and not df_resumen_core.empty:
+                df_resumen_core.to_excel(writer, sheet_name="Resumen Core", index=False)
+            if df_top is not None and not df_top.empty:
+                df_top.to_excel(writer, sheet_name="Top Pendientes", index=False)
+            if df_reglas is not None and not df_reglas.empty:
+                df_reglas.to_excel(writer, sheet_name="Reglas", index=False)
+            if df_intercuenta is not None and not df_intercuenta.empty:
+                df_intercuenta.to_excel(writer, sheet_name="Intercuenta", index=False)
+            if df_auditoria is not None and not df_auditoria.empty:
+                df_auditoria.to_excel(writer, sheet_name="Auditoria", index=False)
+            if df_match is not None and not df_match.empty:
+                df_match.to_excel(writer, sheet_name="Match", index=False)
+
+        log.info(f"Excel generado: {output_path}")
 
 
 # =============================================================================
-# INTER-CUENTA
+# ORQUESTADOR PRINCIPAL UNIFICADO
 # =============================================================================
 
-def auditoria_intercuenta(
-    df_all: pd.DataFrame,
-    pares_comp: Dict[int, int],
-) -> pd.DataFrame:
-    if df_all.empty:
-        return pd.DataFrame(columns=["cuenta_origen", "cuenta_destino", "especie_h", "dif_origen", "dif_destino", "suma_neta", "estado"])
+def ejecutar_cierre(config: ConfigPeriodo) -> Dict[str, Any]:
+    log.info("====== CONCILIACIÓN Y RESULTADO DE CARTERA PROPIA ======")
+    log.info(f"Período: {config.periodo_str}")
+    log.info(f"TC MEP: {config.tc_mep:,.2f} | Cable: {config.tc_cable:,.2f}")
 
-    processed = set()
-    rows: List[Dict] = []
+    # PASO 1: Carga
+    cargador = CargaDatos(config)
+    datos = cargador.cargar_todos()
 
-    for origen, destino in pares_comp.items():
-        pair_key = tuple(sorted([origen, destino]))
-        if pair_key in processed:
-            continue
-        processed.add(pair_key)
+    # PASO 2: Conciliación base usando CORE
+    log.info("=== PASO 2: CONCILIACIÓN BASE (CORE) ===")
+    periodo = PeriodoConciliacion(
+        fecha_ini=str(config.ini_date),
+        fecha_fin=str(config.fin_date),
+        cuentas=config.cuentas,
+    )
+    conciliador = ConciliadorMensual(periodo)
 
-        df_o = df_all[df_all["cuenta"] == origen][["especie_h", "dif_final"]].copy()
-        df_d = df_all[df_all["cuenta"] == destino][["especie_h", "dif_final"]].copy()
+    resultados = []
+    auditorias = []
+    matches = []
 
-        df_o = df_o.groupby("especie_h", as_index=False)["dif_final"].sum().rename(columns={"dif_final": "dif_origen"})
-        df_d = df_d.groupby("especie_h", as_index=False)["dif_final"].sum().rename(columns={"dif_final": "dif_destino"})
+    for cuenta in config.cuentas:
+        try:
+            df_res, resumen, df_aud, df_match = conciliador.conciliar_cuenta(
+                cuenta=cuenta,
+                df_posiciones=datos["posiciones"].get(cuenta, pd.DataFrame()),
+                df_activity=datos["activities"].get(cuenta, pd.DataFrame()),
+                df_portafolio_ini=datos["portafolios_ini"].get(cuenta, pd.DataFrame()),
+                df_portafolio_fin=datos["portafolios_fin"].get(cuenta, pd.DataFrame()),
+            )
+            resultados.append(df_res)
+            auditorias.append(df_aud)
+            matches.append(df_match)
+        except Exception as e:
+            log.exception(f"Cta {cuenta}: error en conciliación core: {e}")
 
-        merged = df_o.merge(df_d, on="especie_h", how="outer").fillna(0)
-        merged["cuenta_origen"] = origen
-        merged["cuenta_destino"] = destino
-        merged["suma_neta"] = merged["dif_origen"] + merged["dif_destino"]
-        merged["estado"] = np.where(merged["suma_neta"].abs() < 1, "OK", "REVISAR")
-        rows.extend(merged.to_dict("records"))
+    df_dif = conciliador.generar_reporte(resultados)
+    df_auditoria = pd.concat(auditorias, ignore_index=True) if auditorias else pd.DataFrame()
+    df_match = pd.concat(matches, ignore_index=True) if matches else pd.DataFrame()
 
-    return pd.DataFrame(rows)
+    df_resumen_core = build_resumen_cuentas(df_dif)
+    df_top = build_top_pendientes(df_dif)
+    df_reglas = build_reglas_aplicadas(df_dif)
+    df_intercuenta = auditoria_intercuenta(df_dif, periodo.pares_comp)
 
+    # PASO 3: Alquileres
+    log.info("=== PASO 3: ALQUILERES ===")
+    mod_alq = ModuloAlquileres(config)
+    df_alq = mod_alq.calcular_delta_alquiler(datos["alquileres"], df_dif)
 
-# =============================================================================
-# TABLAS DERIVADAS
-# =============================================================================
+    # PASO 4: Resultado mensual
+    log.info("=== PASO 4: RESULTADO MENSUAL ===")
+    calc_rdo = ResultadoMensual(config)
+    df_resultado = calc_rdo.calcular(df_dif, df_alq)
 
-def build_resumen_cuentas(df_all: pd.DataFrame) -> pd.DataFrame:
-    if df_all.empty:
-        return pd.DataFrame()
+    # PASO 5: Activity Analyzer
+    log.info("=== PASO 5: ANÁLISIS ACTIVITY ===")
+    analyzer = ActivityAnalyzer(config)
+    act_results = analyzer.procesar_todas(datos["activities"], df_resultado)
 
-    resumen = (
-        df_all.groupby("cuenta", dropna=False)
-        .agg(
-            especies=("especie_h", "count"),
-            cerradas=("status", lambda s: (s.astype(str).str.contains("CERRADA")).sum()),
-            pendientes=("status", lambda s: (s == "PENDIENTE").sum()),
-            reglas_aplicadas=("reglas_aplicadas", "sum"),
-            dif_total_abs=("dif_final", lambda s: s.abs().sum()),
-            dif_total_neto=("dif_final", "sum"),
-        )
-        .reset_index()
+    # PASO 6: Reconstrucción IB
+    log.info("=== PASO 6: RECONSTRUCCIÓN IB ===")
+    recon_mod = ReconstruccionIB(config)
+    recon_ib = recon_mod.reconstruir(
+        df_dif[df_dif["cuenta"] == 992] if not df_dif.empty and "cuenta" in df_dif.columns else pd.DataFrame(),
+        datos["ib_ini"],
+        datos["ib_fin"],
+        datos["ratios_adr"],
     )
 
-    resumen["pct_cierre"] = np.where(
-        resumen["especies"] > 0,
-        resumen["cerradas"] / resumen["especies"] * 100,
-        0,
+    # PASO 7: Consolidación
+    log.info("=== PASO 7: CONSOLIDACIÓN ===")
+    consolidador = ResultadoConsolidado(config)
+    resumen = consolidador.extraer_por_cuenta(df_resultado)
+    total = consolidador.consolidar(resumen)
+
+    # PASO 8: Conciliación con mesa
+    log.info("=== PASO 8: CONCILIACIÓN CON MESA ===")
+    conc_mesa = ConciliacionMesa(config)
+    comp_ytd = conc_mesa.cargar_one_pager(datos["one_pager"])
+    comp_periodo = conc_mesa.prorratear(comp_ytd)
+    sep = conc_mesa.separar_rdo_real_posicional(df_resultado)
+    rdo_iv_total = sum(
+        r.get("rdo_ida_vuelta", 0.0)
+        for r in act_results.values()
+        if isinstance(r, dict)
     )
 
-    def classify(row) -> str:
-        if row["pendientes"] == 0:
-            return "OK"
-        if row["pct_cierre"] >= 85:
-            return "WARN"
-        return "BAD"
+    cascada = conc_mesa.armar_cascada(
+        rdo_real=sep["rdo_real"],
+        pulga=comp_periodo["pulga_periodo"],
+        mesa_target=config.mesa_target,
+        rdo_ida_vuelta=rdo_iv_total,
+        middle=comp_periodo["middle_periodo"],
+        rdo_904=act_results.get("rdo_real_904", 0.0),
+        otros=comp_periodo["otros_periodo"],
+    )
+    cascada["rdo_posicional"] = sep["rdo_posicional"]
 
-    resumen["semaforo"] = resumen.apply(classify, axis=1)
-    return resumen.sort_values(["semaforo", "cuenta"]).reset_index(drop=True)
+    # PASO 9: Excel final
+    log.info("=== PASO 9: GENERAR EXCEL ===")
+    datos_manual = {
+        "total_consolidado": total,
+        "n_especies": len(df_dif),
+        "n_conciliadas": int((df_dif["dif_final"].abs() < 0.01).sum()) if not df_dif.empty else 0,
+        "cascada": cascada,
+    }
 
+    GeneradorExcel(config).generar(
+        output_path=config.output_path,
+        df_dif=df_dif,
+        df_resultado=df_resultado,
+        df_alq=df_alq,
+        resumen=resumen,
+        total=total,
+        cascada=cascada,
+        recon_ib=recon_ib,
+        datos_manual=datos_manual,
+        df_resumen_core=df_resumen_core,
+        df_top=df_top,
+        df_reglas=df_reglas,
+        df_intercuenta=df_intercuenta,
+        df_auditoria=df_auditoria,
+        df_match=df_match,
+    )
 
-def build_top_pendientes(df_all: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
-    if df_all.empty:
-        return pd.DataFrame()
-    top = df_all[df_all["status"] == "PENDIENTE"].copy()
-    if top.empty:
-        return top
-    top["abs_dif"] = top["dif_final"].abs()
-    top = top.sort_values(["abs_dif", "cuenta", "especie_h"], ascending=[False, True, True]).head(top_n)
-    cols = [
-        "cuenta", "especie", "especie_h", "ini", "act", "fin", "comp",
-        "ini_ajust", "act_ajust", "fin_ajust", "comp_ajust",
-        "dif_final", "ajustes", "flags", "imputacion_sugerida"
-    ]
-    return top[cols].reset_index(drop=True)
+    log.info("")
+    log.info("====== RESULTADO FINAL ======")
+    log.info(f"{total['total_usd_mep']:,.0f} USD ({total['indicador']})")
+    log.info(
+        f"{len(df_dif)} especies | "
+        f"{int((df_dif['dif_final'].abs() < 0.01).sum()) if not df_dif.empty else 0} conciliadas"
+    )
+    log.info(f"Archivo: {config.output_path}")
 
-
-def build_reglas_aplicadas(df_all: pd.DataFrame) -> pd.DataFrame:
-    if df_all.empty:
-        return pd.DataFrame(columns=["regla", "cantidad"])
-
-    counter: Dict[str, int] = {}
-    for val in df_all["flags"].fillna("").astype(str):
-        parts = [p.strip() for p in val.split("|") if p.strip()]
-        for p in parts:
-            counter[p] = counter.get(p, 0) + 1
-
-    df = pd.DataFrame([{"regla": k, "cantidad": v} for k, v in counter.items()])
-    if df.empty:
-        return pd.DataFrame(columns=["regla", "cantidad"])
-    return df.sort_values("cantidad", ascending=False).reset_index(drop=True)
+    return {
+        "df_dif": df_dif,
+        "df_resultado": df_resultado,
+        "df_alq": df_alq,
+        "df_resumen_core": df_resumen_core,
+        "df_top": df_top,
+        "df_reglas": df_reglas,
+        "df_intercuenta": df_intercuenta,
+        "df_auditoria": df_auditoria,
+        "df_match": df_match,
+        "resumen": resumen,
+        "total": total,
+        "cascada": cascada,
+        "recon_ib": recon_ib,
+        "act_results": act_results,
+    }
 
 
 # =============================================================================
-# EXCEL
+# CLI
 # =============================================================================
 
-def auto_adjust_columns(ws) -> None:
-    for col_cells in ws.columns:
-        max_len = 0
-        col_letter = col_cells[0].column_letter
-        for cell in col_cells:
-            try:
-                max_len = max(max_len, len(str(cell.value)) if cell.value is not None else 0)
-            except Exception:
-                pass
-        ws.column_dimensions[col_letter].width = min(max(max_len + 2, 12), 42)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Cierre mensual unificado de cartera propia")
+    parser.add_argument("--ini-date", required=True, help="Fecha inicio YYYY-MM-DD")
+    parser.add_argument("--fin-date", required=True, help="Fecha fin YYYY-MM-DD")
+    parser.add_argument("--datos", required=True, help="Carpeta con archivos de entrada")
+    parser.add_argument("--tc-mep", type=float, required=True, help="Tipo de cambio MEP")
+    parser.add_argument("--tc-cable", type=float, default=None, help="TC cable (default=tc-mep)")
+    parser.add_argument("--mesa-target", type=float, default=0.0, help="Rdo mesa período USD")
+    parser.add_argument("--one-pager", default=None, help="Ruta a ONE_PAGER")
+    parser.add_argument("--output", default="resultado_mensual_unificado.xlsx", help="Archivo final")
+    parser.add_argument("--cuentas", nargs="*", type=int, default=None, help="Lista de cuentas opcional")
+    return parser.parse_args()
 
 
-def style_header(ws) -> None:
-    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+def main() -> None:
+    args = parse_args()
 
-    fill = PatternFill("solid", fgColor="FF3B30")
-    font = Font(color="FFFFFF", bold=True)
-    border = Border(
-        bottom=Side(style="thin", color="DDDDDD"),
-        top=Side(style="thin", color="DDDDDD"),
-        left=Side(style="thin", color="DDDDDD"),
-        right=Side(style="thin", color="DDDDDD"),
+    config = ConfigPeriodo(
+        ini_date=date.fromisoformat(args.ini_date),
+        fin_date=date.fromisoformat(args.fin_date),
+        tc_mep=args.tc_mep,
+        tc_cable=args.tc_cable or args.tc_mep,
+        datos_path=Path(args.datos),
+        output_path=Path(args.output),
+        mesa_target=args.mesa_target,
+        one_pager_path=Path(args.one_pager) if args.one_pager else None,
+        cuentas=args.cuentas or list(CUENTAS_DEFAULT),
     )
 
-    for cell in ws[1]:
-        cell.fill = fill
-        cell.font = font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = border
+    ejecutar_cierre(config)
 
 
-def build_excel_bytes(
-    df_resumen: pd.DataFrame,
-    df_top_pend: pd.DataFrame,
-    df_pend: pd.DataFrame,
-    df_all: pd.DataFrame,
-    df_auditoria: pd.DataFrame,
-    df_reglas: pd.DataFrame,
-    df_match: pd.DataFrame,
-    df_intercuenta: pd.DataFrame,
-) -> bytes:
-    output = io.BytesIO()
-
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_resumen.to_excel(writer, sheet_name="Resumen", index=False)
-        df_top_pend.to_excel(writer, sheet_name="Top Pendientes", index=False)
-        df_pend.to_excel(writer, sheet_name="Pendientes", index=False)
-        df_all.to_excel(writer, sheet_name="Detalle", index=False)
-        df_auditoria.to_excel(writer, sheet_name="Auditoria", index=False)
-        df_reglas.to_excel(writer, sheet_name="Reglas", index=False)
-        df_match.to_excel(writer, sheet_name="Match", index=False)
-        df_intercuenta.to_excel(writer, sheet_name="Intercuenta", index=False)
-
-        wb = writer.book
-        for ws_name in wb.sheetnames:
-            ws = wb[ws_name]
-            style_header(ws)
-            auto_adjust_columns(ws)
-            ws.freeze_panes = "A2"
-
-    output.seek(0)
-    return output.getvalue()
+if __name__ == "__main__":
+    main()
