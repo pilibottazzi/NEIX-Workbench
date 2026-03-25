@@ -312,7 +312,6 @@ def render_management_summary(df_resumen: pd.DataFrame, df_top: pd.DataFrame) ->
 
 def main() -> None:
     inject_css()
-    render_header()
 
     fecha_ini, fecha_fin, cuentas_sel, bulk_files, auto_naming = render_toolbar()
 
