@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import pandas as pd
 import streamlit as st
 
@@ -215,11 +216,121 @@ def pill_html(text: str, level: str) -> str:
 
 
 # =============================================================================
+# HELPERS
+# =============================================================================
+
+def init_cuentas_data(cuentas_sel):
+    return {
+        c: {
+            "posiciones": None,
+            "activity": None,
+            "portafolio_ini": None,
+            "portafolio_fin": None,
+            "errores": [],
+            "alertas": [],
+            "fuentes": [],
+        }
+        for c in cuentas_sel
+    }
+
+
+def _call_guess_file_role(file_name: str, cuentas_sel, auto_naming: bool):
+    """
+    Intenta soportar distintas firmas posibles de guess_file_role
+    sin romper si en el core cambió.
+    """
+    try:
+        sig = inspect.signature(guess_file_role)
+        params = list(sig.parameters.keys())
+
+        if len(params) == 1:
+            return guess_file_role(file_name)
+        if len(params) == 2:
+            return guess_file_role(file_name, cuentas_sel)
+        if len(params) >= 3:
+            return guess_file_role(file_name, cuentas_sel, auto_naming)
+
+        return guess_file_role(file_name)
+    except Exception:
+        # fallback defensivo
+        try:
+            return guess_file_role(file_name, cuentas_sel, auto_naming)
+        except TypeError:
+            try:
+                return guess_file_role(file_name, cuentas_sel)
+            except TypeError:
+                return guess_file_role(file_name)
+
+
+def process_single_file(file_obj, role: str):
+    df_raw = read_any_file(file_obj)
+
+    if role == "posiciones":
+        return preparar_posiciones(df_raw)
+    if role == "activity":
+        return preparar_activity(df_raw)
+    if role in ("portafolio_ini", "portafolio_fin"):
+        return preparar_portafolio(df_raw)
+
+    raise ValueError(f"Rol de archivo no reconocido: {role}")
+
+
+def process_bulk_files(bulk_files, cuentas_sel, cuentas_data, auto_naming: bool) -> None:
+    if not bulk_files:
+        return
+
+    for f in bulk_files:
+        try:
+            guess = _call_guess_file_role(f.name, cuentas_sel, auto_naming)
+
+            if not guess:
+                # No se pudo inferir
+                continue
+
+            if isinstance(guess, dict):
+                cuenta = guess.get("cuenta")
+                role = guess.get("role")
+            else:
+                # asumimos tuple/list -> (cuenta, role)
+                cuenta, role = guess
+
+            if cuenta not in cuentas_data:
+                continue
+            if role not in {"posiciones", "activity", "portafolio_ini", "portafolio_fin"}:
+                continue
+
+            df_ready, alerts = process_single_file(f, role)
+            cuentas_data[cuenta][role] = df_ready
+            cuentas_data[cuenta]["alertas"].extend(alerts)
+            cuentas_data[cuenta]["fuentes"].append(f"{role}: {f.name}")
+
+        except Exception as e:
+            # Intento de registrar el error en la cuenta si se pudo inferir
+            try:
+                guess = _call_guess_file_role(f.name, cuentas_sel, auto_naming)
+                if isinstance(guess, dict):
+                    cuenta = guess.get("cuenta")
+                else:
+                    cuenta = guess[0]
+
+                if cuenta in cuentas_data:
+                    cuentas_data[cuenta]["errores"].append(f"{f.name}: {e}")
+            except Exception:
+                pass
+
+            st.warning(f"No se pudo procesar {f.name}: {e}")
+
+
+# =============================================================================
 # RENDER HELPERS
 # =============================================================================
 
 def render_toolbar():
-    st.markdown('<div class="section-title">Conciliación mensual de cartera propia</div>', unsafe_allow_html=True)    
+    st.markdown('<div class="toolbar">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-title">Conciliación mensual de cartera propia</div>',
+        unsafe_allow_html=True,
+    )
 
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
@@ -240,7 +351,7 @@ def render_toolbar():
         auto_naming = st.toggle("Auto naming", value=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
-    return fecha_ini, fecha_fin, cuentas_sel
+    return fecha_ini, fecha_fin, cuentas_sel, bulk_files, auto_naming
 
 
 def render_kpis(df_all: pd.DataFrame) -> None:
@@ -290,7 +401,10 @@ def render_management_summary(df_resumen: pd.DataFrame, df_top: pd.DataFrame) ->
     texto = f"Se procesaron {total} cuentas. {ok} quedaron en OK, {warn} en observación y {bad} con desvíos relevantes."
     if not df_top.empty:
         r = df_top.iloc[0]
-        texto += f" El principal pendiente corresponde a la cuenta {int(r['cuenta'])}, especie {r['especie_h']}, con diferencia {format_num(r['dif_final'], 0)}."
+        texto += (
+            f" El principal pendiente corresponde a la cuenta {int(r['cuenta'])}, "
+            f"especie {r['especie_h']}, con diferencia {format_num(r['dif_final'], 0)}."
+        )
 
     st.markdown(
         f"""
@@ -310,7 +424,7 @@ def render_management_summary(df_resumen: pd.DataFrame, df_top: pd.DataFrame) ->
 def main() -> None:
     inject_css()
 
-    fecha_ini, fecha_fin, cuentas_sel = render_toolbar()
+    fecha_ini, fecha_fin, cuentas_sel, bulk_files, auto_naming = render_toolbar()
 
     periodo = PeriodoConciliacion(
         fecha_ini=str(fecha_ini),
@@ -319,38 +433,15 @@ def main() -> None:
     )
     conciliador = ConciliadorMensual(periodo)
 
-    cuentas_data = {
-        c: {
-            "posiciones": None,
-            "activity": None,
-            "portafolio_ini": None,
-            "portafolio_fin": None,
-            "errores": [],
-            "alertas": [],
-            "fuentes": [],
-        }
-        for c in cuentas_sel
-    }
+    cuentas_data = init_cuentas_data(cuentas_sel)
 
-            try:
-                df_raw = read_any_file(f)
-                if role == "posiciones":
-                    df_ready, alerts = preparar_posiciones(df_raw)
-                elif role == "activity":
-                    df_ready, alerts = preparar_activity(df_raw)
-                elif role == "portafolio_ini":
-                    df_ready, alerts = preparar_portafolio(df_raw)
-                elif role == "portafolio_fin":
-                    df_ready, alerts = preparar_portafolio(df_raw)
-                else:
-                    continue
-
-                cuentas_data[cuenta][role] = df_ready
-                cuentas_data[cuenta]["alertas"].extend(alerts)
-                cuentas_data[cuenta]["fuentes"].append(f"{role}: {f.name}")
-
-            except Exception as e:
-                cuentas_data[cuenta]["errores"].append(f"{role}: {f.name} → {e}")
+    # Procesamiento opcional de carga masiva
+    process_bulk_files(
+        bulk_files=bulk_files,
+        cuentas_sel=cuentas_sel,
+        cuentas_data=cuentas_data,
+        auto_naming=auto_naming,
+    )
 
     st.markdown('<div class="section-title">Carga y control por cuenta</div>', unsafe_allow_html=True)
     tabs_in = st.tabs([f"Cta {c}" for c in cuentas_sel]) if cuentas_sel else []
@@ -384,16 +475,16 @@ def main() -> None:
                 )
 
             manual_map = [
-                ("posiciones", pos_file, preparar_posiciones),
-                ("activity", act_file, preparar_activity),
-                ("portafolio_ini", ini_file, preparar_portafolio),
-                ("portafolio_fin", fin_file, preparar_portafolio),
+                ("posiciones", pos_file),
+                ("activity", act_file),
+                ("portafolio_ini", ini_file),
+                ("portafolio_fin", fin_file),
             ]
 
-            for role, file_obj, prep_fn in manual_map:
+            for role, file_obj in manual_map:
                 if file_obj is not None:
                     try:
-                        df_ready, alerts = prep_fn(read_any_file(file_obj))
+                        df_ready, alerts = process_single_file(file_obj, role)
                         cuentas_data[cuenta][role] = df_ready
                         cuentas_data[cuenta]["alertas"].extend(alerts)
                         cuentas_data[cuenta]["fuentes"].append(f"{role}: {file_obj.name}")
@@ -401,11 +492,24 @@ def main() -> None:
                         cuentas_data[cuenta]["errores"].append(f"{role}: {e}")
 
             p = cuentas_data[cuenta]
-            status_row = []
-            status_row.append(pill_html("Posiciones OK" if p["posiciones"] is not None else "Falta posiciones", "OK" if p["posiciones"] is not None else "BAD"))
-            status_row.append(pill_html("Activity OK" if p["activity"] is not None else "Falta activity", "OK" if p["activity"] is not None else "BAD"))
-            status_row.append(pill_html("Portafolio ini" if p["portafolio_ini"] is not None else "Ini opcional", "OK" if p["portafolio_ini"] is not None else "WARN"))
-            status_row.append(pill_html("Portafolio fin" if p["portafolio_fin"] is not None else "Fin opcional", "OK" if p["portafolio_fin"] is not None else "WARN"))
+            status_row = [
+                pill_html(
+                    "Posiciones OK" if p["posiciones"] is not None else "Falta posiciones",
+                    "OK" if p["posiciones"] is not None else "BAD",
+                ),
+                pill_html(
+                    "Activity OK" if p["activity"] is not None else "Falta activity",
+                    "OK" if p["activity"] is not None else "BAD",
+                ),
+                pill_html(
+                    "Portafolio ini" if p["portafolio_ini"] is not None else "Ini opcional",
+                    "OK" if p["portafolio_ini"] is not None else "WARN",
+                ),
+                pill_html(
+                    "Portafolio fin" if p["portafolio_fin"] is not None else "Fin opcional",
+                    "OK" if p["portafolio_fin"] is not None else "WARN",
+                ),
+            ]
             st.markdown(" ".join(status_row), unsafe_allow_html=True)
 
             with st.expander("Fuentes / alertas / preview"):
@@ -413,10 +517,12 @@ def main() -> None:
                     st.markdown("**Fuentes**")
                     for x in p["fuentes"]:
                         st.write(f"- {x}")
+
                 if p["alertas"]:
                     st.markdown("**Alertas**")
                     for x in p["alertas"]:
                         st.write(f"- {x}")
+
                 if p["errores"]:
                     st.markdown("**Errores**")
                     for x in p["errores"]:
@@ -425,6 +531,7 @@ def main() -> None:
                 if p["posiciones"] is not None:
                     st.markdown("**Preview posiciones**")
                     st.dataframe(p["posiciones"].head(8), use_container_width=True, hide_index=True)
+
                 if p["activity"] is not None:
                     st.markdown("**Preview activity**")
                     st.dataframe(p["activity"].head(8), use_container_width=True, hide_index=True)
@@ -434,7 +541,6 @@ def main() -> None:
         return
 
     resultados = []
-    resumenes = []
     auditorias = []
     matches = []
     errores_globales = []
@@ -459,7 +565,6 @@ def main() -> None:
                 df_portafolio_fin=df_fin,
             )
             resultados.append(df_res)
-            resumenes.append(resumen)
             auditorias.append(df_aud)
             matches.append(df_match)
         except Exception as e:
