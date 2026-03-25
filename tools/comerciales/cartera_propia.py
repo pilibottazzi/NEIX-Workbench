@@ -240,7 +240,7 @@ def render_toolbar():
         auto_naming = st.toggle("Auto naming", value=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
-    return fecha_ini, fecha_fin, cuentas_sel, bulk_files, auto_naming
+    return fecha_ini, fecha_fin, cuentas_sel
 
 
 def render_kpis(df_all: pd.DataFrame) -> None:
@@ -310,7 +310,7 @@ def render_management_summary(df_resumen: pd.DataFrame, df_top: pd.DataFrame) ->
 def main() -> None:
     inject_css()
 
-    fecha_ini, fecha_fin, cuentas_sel, bulk_files, auto_naming = render_toolbar()
+    fecha_ini, fecha_fin, cuentas_sel = render_toolbar()
 
     periodo = PeriodoConciliacion(
         fecha_ini=str(fecha_ini),
@@ -331,12 +331,6 @@ def main() -> None:
         }
         for c in cuentas_sel
     }
-
-    if bulk_files and auto_naming:
-        for f in bulk_files:
-            cuenta, role = guess_file_role(f.name)
-            if cuenta not in cuentas_data or role is None:
-                continue
 
             try:
                 df_raw = read_any_file(f)
