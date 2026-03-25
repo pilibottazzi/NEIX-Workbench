@@ -461,13 +461,14 @@ def render(_=None):
             else:
                 st.markdown(f"#### Pendientes · {len(df_pend)} especie(s)")
                 df_pend_display = pd.DataFrame({
-                    "Cuenta":     df_pend["cuenta"],
-                    "Especie":    df_pend["especie_h"],
-                    "Moneda":     df_pend["moneda"],
-                    "Posición ini": [_fmt_moneda(v, m) for v, m in zip(df_pend["ini"], df_pend["moneda"])],
-                    "Activity":     [_fmt_moneda(v, m) for v, m in zip(df_pend["act"], df_pend["moneda"])],
-                    "Posición fin": [_fmt_moneda(v, m) for v, m in zip(df_pend["fin"], df_pend["moneda"])],
-                    "Diferencia":   [_fmt_moneda(v, m) for v, m in zip(df_pend["dif_final"], df_pend["moneda"])],
+                    "Cuenta":        df_pend["cuenta"],
+                    "Especie":       df_pend["especie_h"],
+                    "Moneda":        df_pend["moneda"],
+                    "Nominal ini":   df_pend["ini"].map(lambda x: _fmt_num(x, 0)),
+                    "Activity":      df_pend["act"].map(lambda x: _fmt_num(x, 0)),
+                    "Nominal fin":   df_pend["fin"].map(lambda x: _fmt_num(x, 0)),
+                    "Dif. nominal":  df_pend["dif_final"].map(lambda x: _fmt_num(x, 0)),
+                    "Dif. importe":  [_fmt_moneda(v, m) for v, m in zip(df_pend["dif_importe"], df_pend["moneda"])],
                 })
                 # ordenar por abs diferencia descendente
                 df_pend_display["_abs"] = df_pend["dif_final"].abs().values
@@ -512,10 +513,11 @@ def render(_=None):
                     "Cuenta":       df_view["cuenta"],
                     "Especie":      df_view["especie_h"],
                     "Moneda":       df_view["moneda"],
-                    "Posición ini": [_fmt_moneda(v, m) for v, m in zip(df_view["ini"],       df_view["moneda"])],
-                    "Activity":     [_fmt_moneda(v, m) for v, m in zip(df_view["act"],       df_view["moneda"])],
-                    "Posición fin": [_fmt_moneda(v, m) for v, m in zip(df_view["fin"],       df_view["moneda"])],
-                    "Diferencia":   [_fmt_moneda(v, m) for v, m in zip(df_view["dif_final"], df_view["moneda"])],
+                    "Nominal ini":  df_view["ini"].map(lambda x: _fmt_num(x, 0)),
+                    "Activity":     df_view["act"].map(lambda x: _fmt_num(x, 0)),
+                    "Nominal fin":  df_view["fin"].map(lambda x: _fmt_num(x, 0)),
+                    "Dif. nominal": df_view["dif_final"].map(lambda x: _fmt_num(x, 0)),
+                    "Dif. importe": [_fmt_moneda(v, m) for v, m in zip(df_view["dif_importe"], df_view["moneda"])],
                 })
                 st.dataframe(df_clean, use_container_width=True, hide_index=True)
 
