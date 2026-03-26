@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# cartera_propia.py
+# Módulo Streamlit — se integra al NEIX Workbench vía render()
+
 from __future__ import annotations
 
 from datetime import date
@@ -253,7 +258,8 @@ def _show_kpis(resumenes: list[dict], df_all: pd.DataFrame | None = None) -> Non
             valor_en_juego_ars = float(df_pend.loc[~mask_usd, "dif_importe"].abs().sum())
             valor_en_juego_usd = float(df_pend.loc[ mask_usd, "dif_importe"].abs().sum())
 
-    c1, c2, c3, c4 = st.columns(4)
+    _help = "Valor económico estimado (nominal × precio de referencia) — ARS y USD nunca se suman"
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Especies", _fmt_num(total_esp, 0))
     c2.metric("Conciliadas ✅", f"{_fmt_num(total_cerr, 0)}  ({pct_global:.1f}%)")
     c3.metric(
@@ -261,20 +267,16 @@ def _show_kpis(resumenes: list[dict], df_all: pd.DataFrame | None = None) -> Non
         delta=None if total_pend == 0 else f"-{total_pend}",
         delta_color="inverse",
     )
-    # Valor en juego: mostrar ARS y USD por separado si hay ambos
-    _help = "Valor económico estimado de las diferencias sin conciliar (nominal × precio de referencia)"
-    if valor_en_juego_usd > 0 and valor_en_juego_ars > 0:
-        c4.metric(
-            "Valor sin conciliar",
-            _fmt_usd_compacto(valor_en_juego_usd),
-            delta=_fmt_ars_compacto(valor_en_juego_ars),
-            delta_color="off",
-            help=_help,
-        )
-    elif valor_en_juego_usd > 0:
-        c4.metric("Valor sin conciliar", _fmt_usd_compacto(valor_en_juego_usd), help=_help)
-    else:
-        c4.metric("Valor sin conciliar", _fmt_ars_compacto(valor_en_juego_ars), help=_help)
+    c4.metric(
+        "Brecha ARS",
+        _fmt_ars_compacto(valor_en_juego_ars) if valor_en_juego_ars > 0 else "$ 0",
+        help=_help,
+    )
+    c5.metric(
+        "Brecha USD",
+        _fmt_usd_compacto(valor_en_juego_usd) if valor_en_juego_usd > 0 else "U$S 0",
+        help=_help,
+    )
 
 
 # =============================================================================
@@ -491,7 +493,7 @@ def render(_=None):
 
             st.divider()
 
-            # ── Resumen por cuenta (tabla limpia) ─────────────────────────────
+            # ── Resumen por cuenta ────────────────────────────────────────────
             st.markdown("#### Resumen por cuenta")
             df_res = build_resumen_cuentas(df_all)
             if not df_res.empty:
@@ -505,26 +507,73 @@ def render(_=None):
                 })
                 st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-            # ── Pendientes (tabla clara) ───────────────────────────────────────
+            # ── Brecha por moneda (resumen rápido, sin mezclar) ───────────────
+            if not df_all.empty and "dif_importe" in df_all.columns:
+                df_pend_all = df_all[df_all["status"] == "PENDIENTE"]
+                if not df_pend_all.empty:
+                    resumen_mon = (
+                        df_pend_all.groupby("moneda", as_index=False)
+                        .agg(
+                            pendientes=("especie_h", "count"),
+                            brecha_importe=("dif_importe", lambda s: s.abs().sum()),
+                        )
+                        .sort_values("moneda")
+                    )
+                    resumen_mon["Brecha"] = [
+                        _fmt_moneda(v, m)
+                        for v, m in zip(resumen_mon["brecha_importe"], resumen_mon["moneda"])
+                    ]
+                    df_mon_display = pd.DataFrame({
+                        "Moneda":     resumen_mon["moneda"],
+                        "Pendientes": resumen_mon["pendientes"],
+                        "Brecha":     resumen_mon["Brecha"],
+                    })
+                    st.dataframe(df_mon_display, use_container_width=True, hide_index=True)
+
+            # ── Pendientes separados por moneda ───────────────────────────────
             df_pend = df_all[df_all["status"] == "PENDIENTE"].copy() if not df_all.empty else pd.DataFrame()
             if df_pend.empty:
                 st.success("🎉 Sin diferencias pendientes.")
             else:
                 st.markdown(f"#### Pendientes · {len(df_pend)} especie(s)")
-                df_pend_display = pd.DataFrame({
-                    "Cuenta":        df_pend["cuenta"],
-                    "Especie":       df_pend["especie_h"],
-                    "Moneda":        df_pend["moneda"],
-                    "Nominal ini":   df_pend["ini"].map(lambda x: _fmt_num(x, 0)),
-                    "Activity":      df_pend["act"].map(lambda x: _fmt_num(x, 0)),
-                    "Nominal fin":   df_pend["fin"].map(lambda x: _fmt_num(x, 0)),
-                    "Dif. nominal":  df_pend["dif_final"].map(lambda x: _fmt_num(x, 0)),
-                    "Dif. importe":  [_fmt_moneda(v, m) for v, m in zip(df_pend["dif_importe"], df_pend["moneda"])],
-                })
-                # ordenar por abs diferencia descendente
-                df_pend_display["_abs"] = df_pend["dif_final"].abs().values
-                df_pend_display = df_pend_display.sort_values("_abs", ascending=False).drop(columns=["_abs"])
-                st.dataframe(df_pend_display, use_container_width=True, hide_index=True)
+
+                def _tabla_pendientes(df_bloque: pd.DataFrame) -> None:
+                    """Renderiza una tabla de pendientes limpia y ordenada."""
+                    if df_bloque.empty:
+                        return
+                    df_d = pd.DataFrame({
+                        "Cuenta":       df_bloque["cuenta"],
+                        "Especie":      df_bloque["especie_h"],
+                        "Nominal ini":  df_bloque["ini"].map(lambda x: _fmt_num(x, 0)),
+                        "Activity":     df_bloque["act"].map(lambda x: _fmt_num(x, 0)),
+                        "Nominal fin":  df_bloque["fin"].map(lambda x: _fmt_num(x, 0)),
+                        "Dif. nominal": df_bloque["dif_final"].map(lambda x: _fmt_num(x, 0)),
+                        "Dif. importe": [_fmt_moneda(v, m) for v, m in
+                                         zip(df_bloque["dif_importe"], df_bloque["moneda"])],
+                    })
+                    df_d["_abs"] = df_bloque["dif_importe"].abs().values
+                    df_d = df_d.sort_values("_abs", ascending=False).drop(columns=["_abs"])
+                    st.dataframe(df_d, use_container_width=True, hide_index=True)
+
+                # ── ARS ───────────────────────────────────────────────────────
+                pend_ars = df_pend[df_pend["moneda"] == "ARS"]
+                if not pend_ars.empty:
+                    total_imp_ars = pend_ars["dif_importe"].abs().sum()
+                    st.markdown(
+                        f"**Pesos (ARS)** · {len(pend_ars)} especie(s) · "
+                        f"Valor en juego: {_fmt_ars_compacto(total_imp_ars)}"
+                    )
+                    _tabla_pendientes(pend_ars)
+
+                # ── USD ───────────────────────────────────────────────────────
+                pend_usd = df_pend[df_pend["moneda"] != "ARS"]
+                if not pend_usd.empty:
+                    total_imp_usd = pend_usd["dif_importe"].abs().sum()
+                    st.markdown(
+                        f"**Dólares (USD)** · {len(pend_usd)} especie(s) · "
+                        f"Valor en juego: {_fmt_usd_compacto(total_imp_usd)}"
+                    )
+                    _tabla_pendientes(pend_usd)
 
     # =========================================================================
     # TAB 4 — Detalle
