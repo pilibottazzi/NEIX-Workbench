@@ -44,10 +44,32 @@ def _fmt_num(x, dec=0) -> str:
     """Número con separadores estilo AR: punto para miles, coma para decimal."""
     try:
         v = float(x)
-        # Formatear con separadores anglosajones y luego invertir
-        s = f"{v:,.{dec}f}"          # ej: "1,234,567.89"
-        s = s.replace(",", "X").replace(".", ",").replace("X", ".")  # → "1.234.567,89"
+        s = f"{v:,.{dec}f}"
+        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
         return s
+    except Exception:
+        return str(x)
+
+
+def _fmt_compacto(x) -> str:
+    """
+    Formato compacto para métricas grandes: M para millones, K para miles.
+    Estilo AR con punto de miles en la parte entera.
+    Ej: 14.809.962.000 → 14.810 M  |  78.528.435 → 78.528 K
+    """
+    try:
+        v = abs(float(x))
+        signo = "-" if float(x) < 0 else ""
+        if v >= 1_000_000_000:
+            # miles de millones → mostrar en millones con separador
+            m = v / 1_000_000
+            return f"{signo}{_fmt_num(m, 0)} M"
+        if v >= 1_000_000:
+            m = v / 1_000_000
+            return f"{signo}{_fmt_num(m, 1)} M"
+        if v >= 1_000:
+            return f"{signo}{_fmt_num(v / 1_000, 1)} K"
+        return f"{signo}{_fmt_num(v, 0)}"
     except Exception:
         return str(x)
 
@@ -55,9 +77,15 @@ def _fmt_num(x, dec=0) -> str:
 def _fmt_ars(x, dec=0) -> str:
     """Importe en ARS: $ 1.234.567"""
     try:
-        v = float(x)
-        num = _fmt_num(v, dec)
-        return f"$ {num}"
+        return f"$ {_fmt_num(float(x), dec)}"
+    except Exception:
+        return str(x)
+
+
+def _fmt_ars_compacto(x) -> str:
+    """Importe en ARS compacto para métricas: $ 14.810 M"""
+    try:
+        return f"$ {_fmt_compacto(x)}"
     except Exception:
         return str(x)
 
@@ -65,9 +93,15 @@ def _fmt_ars(x, dec=0) -> str:
 def _fmt_usd(x, dec=0) -> str:
     """Importe en USD: U$S 1.234.567"""
     try:
-        v = float(x)
-        num = _fmt_num(v, dec)
-        return f"U$S {num}"
+        return f"U$S {_fmt_num(float(x), dec)}"
+    except Exception:
+        return str(x)
+
+
+def _fmt_usd_compacto(x) -> str:
+    """Importe en USD compacto para métricas: U$S 14.810 M"""
+    try:
+        return f"U$S {_fmt_compacto(x)}"
     except Exception:
         return str(x)
 
@@ -233,26 +267,19 @@ def _show_kpis(resumenes: list[dict], df_all: pd.DataFrame | None = None) -> Non
         delta_color="inverse",
     )
     # Valor en juego: mostrar ARS y USD por separado si hay ambos
+    _help = "Valor económico estimado de las diferencias sin conciliar (nominal × precio de referencia)"
     if valor_en_juego_usd > 0 and valor_en_juego_ars > 0:
         c4.metric(
             "Valor sin conciliar",
-            _fmt_usd(valor_en_juego_usd),
-            delta=_fmt_ars(valor_en_juego_ars),
+            _fmt_usd_compacto(valor_en_juego_usd),
+            delta=_fmt_ars_compacto(valor_en_juego_ars),
             delta_color="off",
-            help="Importe económico estimado de las diferencias pendientes (nominal × precio de referencia)",
+            help=_help,
         )
     elif valor_en_juego_usd > 0:
-        c4.metric(
-            "Valor sin conciliar",
-            _fmt_usd(valor_en_juego_usd),
-            help="Importe económico estimado de las diferencias pendientes (nominal × precio de referencia)",
-        )
+        c4.metric("Valor sin conciliar", _fmt_usd_compacto(valor_en_juego_usd), help=_help)
     else:
-        c4.metric(
-            "Valor sin conciliar",
-            _fmt_ars(valor_en_juego_ars),
-            help="Importe económico estimado de las diferencias pendientes (nominal × precio de referencia)",
-        )
+        c4.metric("Valor sin conciliar", _fmt_ars_compacto(valor_en_juego_ars), help=_help)
 
 
 # =============================================================================
