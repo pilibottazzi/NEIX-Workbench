@@ -863,7 +863,7 @@ def build_excel(df_h: pd.DataFrame, df_movs: pd.DataFrame, df_r: pd.DataFrame, m
 
 
 # ─── Streamlit App ────────────────────────────────────────────────────────────
-def main():
+def render():
     _write_config()
     st.set_page_config(page_title="NEIX · Portfolio", page_icon="📊",
                        layout="wide", initial_sidebar_state="collapsed")
@@ -1170,4 +1170,4 @@ def main():
 
 
 # Llamada directa para que funcione tanto con `streamlit run` como embebido en NEIX Workbench
-main()
+render()
