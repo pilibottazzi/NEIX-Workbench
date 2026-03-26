@@ -210,14 +210,26 @@ def parse_historico(b: bytes):
                       "Cantidad":_n(cells[4]),"Precio":_n(cells[5]),
                       "Neto ARS":_n(cells[6]),"Moneda":cells[7],"Neto USD":_n(cells[8])}
                 bm.append(mv); movs.append(mv)
-        comp = sum(abs(m["Neto ARS"]) for m in bm if m["Comprobante"]=="COMPRA" and m["Neto ARS"]<0)
-        vent = sum(m["Neto ARS"] for m in bm if m["Comprobante"]=="VENTA" and m["Neto ARS"]>0)
-        divs = sum(m["Neto ARS"] for m in bm if m["Comprobante"] in {"DIVIDENDOS","RTA/AMORT","CREDITO RTA"} and m["Neto ARS"]>0)
-        qc   = sum(m["Cantidad"] for m in bm if m["Comprobante"]=="COMPRA" and m["Cantidad"]>0)
-        qv   = sum(abs(m["Cantidad"]) for m in bm if m["Comprobante"]=="VENTA" and m["Cantidad"]<0)
+        # Compras: COMPRA + SUSCRIPCION (fondos) + COL CAUCION + TOMADOR CAUC
+        CPBT_COMPRA = {"COMPRA","SUSCRIPCION","COL CAUCION","TOMADOR CAUC"}
+        # Ventas/cobros: VENTA + RESCATE (fondos) + RETIRO (letras al vencimiento) + CIERRE CAUC
+        CPBT_VENTA  = {"VENTA","RESCATE","RETIRO","CIERRE CAUC"}
+        # Solo DIVIDENDOS reales (acciones/CEDEARs) — RTA/AMORT es amortización de letra, va en ventas
+        CPBT_DIV    = {"DIVIDENDOS","CREDITO RTA"}
+        # RTA/AMORT: para LECAPs/bonos es cobro de capital+renta → va en cobros, no dividendos
+        CPBT_RTA    = {"RTA/AMORT"}
+
+        comp = sum(abs(m["Neto ARS"]) for m in bm if m["Comprobante"] in CPBT_COMPRA and m["Neto ARS"]<0)
+        vent = sum(m["Neto ARS"] for m in bm if m["Comprobante"] in CPBT_VENTA  and m["Neto ARS"]>0)
+        rta  = sum(m["Neto ARS"] for m in bm if m["Comprobante"] in CPBT_RTA    and m["Neto ARS"]>0)
+        divs = sum(m["Neto ARS"] for m in bm if m["Comprobante"] in CPBT_DIV    and m["Neto ARS"]>0)
+        qc   = sum(m["Cantidad"] for m in bm if m["Comprobante"] in CPBT_COMPRA and m["Cantidad"]>0)
+        qv   = sum(abs(m["Cantidad"]) for m in bm if m["Comprobante"] in CPBT_VENTA  and m["Cantidad"]<0)
+        # Para RTA/AMORT sin cantidad (letras): no afecta qty, es solo flujo de caja
         summ.append({"Ticker":ticker,"Especie":nombre,"Categoria":_cat(ticker),
                      "Qty Comprada":qc,"Qty Vendida":qv,"Saldo":qc-qv,
-                     "Compras ARS":comp,"Ventas ARS":vent,"Dividendos ARS":divs,
+                     "Compras ARS":comp,"Ventas ARS":vent,
+                     "Rentas/Amort ARS":rta,"Dividendos ARS":divs,
                      "PnL ARS":ta,"PnL USD":tu,"N Movs":len(bm)})
     return pd.DataFrame(summ), pd.DataFrame(movs), meta
 
@@ -586,7 +598,7 @@ def build_excel(df_h, df_movs, df_r, meta):
             ws2.cell(row=row,column=c).fill=PatternFill("solid",fgColor=bg)
             ws2.cell(row=row,column=c).border=bdr
             ws2.cell(row=row,column=c).alignment=Alignment(horizontal="right")
-        for c,col in enumerate(["Compras ARS","Ventas ARS","Dividendos ARS","PnL ARS","PnL USD"],7):
+        for c,col in enumerate(["Compras ARS","Ventas ARS","Rentas/Amort ARS","Dividendos ARS","PnL ARS","PnL USD"],7):
             vcell(ws2,row,c,r[col],"#,##0" if "USD" not in col else "#,##0.00",bg=bg)
     tr=3+len(df_h)
     for c in range(1,12):
@@ -595,7 +607,7 @@ def build_excel(df_h, df_movs, df_r, meta):
         ws2.cell(row=tr,column=c).border=bdr_t
         ws2.cell(row=tr,column=c).alignment=Alignment(horizontal="right")
     ws2.cell(row=tr,column=1,value="TOTAL").alignment=Alignment(horizontal="left")
-    for c,col in enumerate(["Compras ARS","Ventas ARS","Dividendos ARS","PnL ARS","PnL USD"],7):
+    for c,col in enumerate(["Compras ARS","Ventas ARS","Rentas/Amort ARS","Dividendos ARS","PnL ARS","PnL USD"],7):
         ws2.cell(row=tr,column=c,value=df_h[col].sum())
         ws2.cell(row=tr,column=c).number_format="#,##0" if "USD" not in col else "#,##0.00"
     ws2.freeze_panes="A3"; ws2.auto_filter.ref=ws2.dimensions
@@ -721,7 +733,10 @@ def render():
 
     # Números
     pnl_r  = df_h["PnL ARS"].sum(); cap = df_h["Compras ARS"].sum()
-    divs   = df_h["Dividendos ARS"].sum(); rp = pnl_r/cap*100 if cap else 0.0
+    divs   = df_h["Dividendos ARS"].sum()
+    rta    = df_h["Rentas/Amort ARS"].sum()
+    carry  = divs + rta
+    rp = pnl_r/cap*100 if cap else 0.0
     pnl_nr = df_r["Diferencia"].sum()  if not df_r.empty else 0.0
     val_h  = df_r["Valuacion"].sum()   if not df_r.empty else 0.0
     inv_ab = df_r["Inversion"].sum()   if not df_r.empty else 0.0
@@ -745,7 +760,7 @@ def render():
         '<div class="bridge">'
         + bc("ink","c-ink","Capital invertido",_ars(cap),str(len(df_h))+" especies")
         + bc("red" if pnl_r<0 else "grn",_cls(pnl_r),"P&amp;L realizado",_ars(pnl_r),_pct(rp)+" s/capital")
-        + bc("grn" if divs>=0 else "red",_cls(divs),"Dividendos / carry",_ars(divs),"cobrado")
+        + bc("grn" if carry>=0 else "red",_cls(carry),"Dividendos / rentas",_ars(carry),"carry cobrado")
         + no_r + val_b
         + bc("red" if pnl_t<0 else "grn",_cls(pnl_t),"P&amp;L total",_ars(pnl_t),_pct(rp_t)+" combinado")
         + '</div>', unsafe_allow_html=True)
@@ -760,7 +775,8 @@ def render():
             st.markdown('<div class="slbl">Cuadro de resultados</div>', unsafe_allow_html=True)
             rows = [("Capital total invertido",_ars(cap),INK,False),
                     ("Total ventas realizadas",_ars(df_h["Ventas ARS"].sum()),INK,False),
-                    ("Dividendos / rentas cobrados",_ars(divs),GRN,False),
+                    ("Dividendos cobrados (acciones/CEDEARs)",_ars(divs),GRN,False),
+                    ("Rentas / amort. cobradas (LECAPs/bonos)",_ars(rta),GRN,False),
                     ("P&amp;L realizado",_ars(pnl_r),_col(pnl_r),True)]
             if not df_r.empty:
                 rows += [("Inversión posiciones abiertas",_ars(inv_ab),INK,False),
@@ -779,20 +795,20 @@ def render():
             st.markdown('<div class="slbl">Por categoría</div>', unsafe_allow_html=True)
             cat = df_h.groupby("Categoria").agg(
                 N=("Ticker","count"), Capital=("Compras ARS","sum"),
-                PnL=("PnL ARS","sum"), Divs=("Dividendos ARS","sum")
+                PnL=("PnL ARS","sum"), Divs=("Dividendos ARS","sum"), Rta=("Rentas/Amort ARS","sum")
             ).reset_index().sort_values("PnL")
             hdr = ('<tr><th>Categoría</th><th class="r">Especies</th>'
-                   '<th class="r">Capital</th><th class="r">Dividendos</th><th class="r">P&amp;L ARS</th></tr>')
+                   '<th class="r">Capital</th><th class="r">Rentas/Amort</th><th class="r">Dividendos</th><th class="r">P&amp;L ARS</th></tr>')
             trs = "".join(
                 '<tr><td><strong>' + str(r["Categoria"]) + '</strong></td>'
                 '<td class="r sm">' + str(int(r["N"])) + '</td>'
                 '<td class="r">' + _ars(r["Capital"]) + '</td>'
-                '<td class="r" style="color:' + GRN + '">' + _ars(r["Divs"]) + '</td>'
+                '<td class="r" style="color:' + GRN + '">' + _ars(r["Divs"] + r.get("Rta",0)) + '</td>'
                 '<td class="r">' + _bg(r["PnL"]) + '</td></tr>'
                 for _,r in cat.iterrows())
             trs += ('<tr class="tot"><td>TOTAL</td><td class="r sm">' + str(len(df_h)) + '</td>'
                     '<td class="r">' + _ars(cap) + '</td>'
-                    '<td class="r" style="color:' + GRN + '">' + _ars(divs) + '</td>'
+                    '<td class="r" style="color:' + GRN + '">' + _ars(carry) + '</td>'
                     '<td class="r">' + _bg(pnl_r) + '</td></tr>')
             st.markdown('<div class="card"><table class="etbl">' + hdr + trs + '</table></div>', unsafe_allow_html=True)
 
@@ -811,7 +827,7 @@ def render():
         hdr = ('<tr><th>Ticker</th><th>Especie</th><th>Cat.</th>'
                '<th class="r">Compradas</th><th class="r">Vendidas</th><th class="r">Saldo</th>'
                '<th class="r">Compras ARS</th><th class="r">Ventas ARS</th>'
-               '<th class="r">Dividendos</th><th class="r">P&amp;L ARS</th></tr>')
+               '<th class="r">Rentas/Amort</th><th class="r">Dividendos</th><th class="r">P&amp;L ARS</th></tr>')
         trs = "".join(
             '<tr><td><strong>' + str(r["Ticker"]) + '</strong></td>'
             '<td class="sm">' + str(r["Especie"])[:32] + '</td>'
@@ -821,12 +837,14 @@ def render():
             '<td class="r">' + "{:,.0f}".format(r["Saldo"]) + '</td>'
             '<td class="r">' + _ars(r["Compras ARS"]) + '</td>'
             '<td class="r">' + _ars(r["Ventas ARS"]) + '</td>'
+            '<td class="r" style="color:' + GRN + '">' + _ars(r.get("Rentas/Amort ARS",0)) + '</td>'
             '<td class="r" style="color:' + GRN + '">' + _ars(r["Dividendos ARS"]) + '</td>'
             '<td class="r">' + _bg(r["PnL ARS"]) + '</td></tr>'
             for _,r in dh.sort_values("PnL ARS").iterrows())
         trs += ('<tr class="tot"><td colspan="6">TOTAL ' + str(len(dh)) + ' especies</td>'
                 '<td class="r">' + _ars(dh["Compras ARS"].sum()) + '</td>'
                 '<td class="r">' + _ars(dh["Ventas ARS"].sum()) + '</td>'
+                '<td class="r" style="color:' + GRN + '">' + _ars(dh["Rentas/Amort ARS"].sum()) + '</td>'
                 '<td class="r" style="color:' + GRN + '">' + _ars(dh["Dividendos ARS"].sum()) + '</td>'
                 '<td class="r">' + _bg(dh["PnL ARS"].sum()) + '</td></tr>')
         st.markdown('<div class="card" style="overflow-x:auto"><table class="etbl">' + hdr + trs + '</table></div>', unsafe_allow_html=True)
