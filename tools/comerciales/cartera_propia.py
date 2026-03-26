@@ -136,85 +136,6 @@ def _file_cache() -> dict:
         st.session_state["cp_files"] = {}
     return st.session_state["cp_files"]
 
-
-# =============================================================================
-# GRÁFICOS  (FIX #5)
-# =============================================================================
-
-def _grafico_pendientes_por_cuenta(df_all: pd.DataFrame) -> None:
-    """Bar chart: pendientes y cerradas por cuenta."""
-    try:
-        import altair as alt
-    except ImportError:
-        st.info("Instalá `altair` para ver los gráficos: `pip install altair`")
-        return
-
-    df_res = build_resumen_cuentas(df_all)
-    if df_res.empty:
-        return
-
-    df_melt = df_res[["cuenta", "cerradas", "pendientes"]].melt(
-        id_vars="cuenta", var_name="tipo", value_name="cantidad"
-    )
-    df_melt["cuenta"] = df_melt["cuenta"].astype(str)
-
-    color_scale = alt.Scale(
-        domain=["cerradas", "pendientes"],
-        range=["#22c55e", "#ef4444"],
-    )
-    chart = (
-        alt.Chart(df_melt)
-        .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
-        .encode(
-            x=alt.X("cuenta:N", title="Cuenta", axis=alt.Axis(labelAngle=0)),
-            y=alt.Y("cantidad:Q", title="Especies", stack=True),
-            color=alt.Color("tipo:N", scale=color_scale, legend=alt.Legend(title="")),
-            tooltip=["cuenta:N", "tipo:N", "cantidad:Q"],
-        )
-        .properties(height=280, title="Especies por cuenta")
-        .configure_axis(grid=False)
-        .configure_view(strokeWidth=0)
-    )
-    st.altair_chart(chart, use_container_width=True)
-
-
-def _grafico_dif_por_moneda(df_all: pd.DataFrame) -> None:
-    """Bar chart horizontal: diferencia absoluta acumulada por moneda."""
-    try:
-        import altair as alt
-    except ImportError:
-        return
-
-    if df_all.empty or "moneda" not in df_all.columns:
-        return
-
-    df_pend = df_all[df_all["status"] == "PENDIENTE"].copy()
-    if df_pend.empty:
-        st.success("Sin pendientes — nada que mostrar en el breakdown por moneda.")
-        return
-
-    df_mon = (
-        df_pend.groupby("moneda", as_index=False)
-        .agg(dif_abs=("dif_final", lambda s: float(s.abs().sum())),
-             n_especies=("especie_h", "count"))
-        .sort_values("dif_abs", ascending=False)
-    )
-
-    chart = (
-        alt.Chart(df_mon)
-        .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4, color="#ef4444")
-        .encode(
-            y=alt.Y("moneda:N", sort="-x", title="Moneda"),
-            x=alt.X("dif_abs:Q", title="Diferencia absoluta acumulada"),
-            tooltip=["moneda:N", "dif_abs:Q", "n_especies:Q"],
-        )
-        .properties(height=max(120, len(df_mon) * 40), title="Diferencia acumulada por moneda (pendientes)")
-        .configure_axis(grid=False)
-        .configure_view(strokeWidth=0)
-    )
-    st.altair_chart(chart, use_container_width=True)
-
-
 def _grafico_pct_cierre(df_all: pd.DataFrame) -> None:
     """Barra de cierre ejecutiva."""
     df_res = build_resumen_cuentas(df_all)
@@ -727,13 +648,6 @@ def render(_=None):
             # ── Barra de cierre global ────────────────────────────────────────
             _grafico_pct_cierre(df_all)
             st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-
-            # ── Gráficos ──────────────────────────────────────────────────────
-            col_g1, col_g2 = st.columns(2)
-            with col_g1:
-                _grafico_pendientes_por_cuenta(df_all)
-            with col_g2:
-                _grafico_dif_por_moneda(df_all)
 
             st.divider()
 
