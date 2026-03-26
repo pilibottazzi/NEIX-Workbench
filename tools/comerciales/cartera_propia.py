@@ -207,22 +207,52 @@ def _grafico_pct_cierre(df_all: pd.DataFrame) -> None:
     )
 
 
-def _show_kpis(resumenes: list[dict]) -> None:
-    total_esp  = sum(r["especies"]       for r in resumenes)
-    total_cerr = sum(r["cerradas"]       for r in resumenes)
-    total_pend = sum(r["pendientes"]     for r in resumenes)
-    total_dif  = sum(r["dif_total_abs"]  for r in resumenes)
+def _show_kpis(resumenes: list[dict], df_all: pd.DataFrame | None = None) -> None:
+    total_esp  = sum(r["especies"]   for r in resumenes)
+    total_cerr = sum(r["cerradas"]   for r in resumenes)
+    total_pend = sum(r["pendientes"] for r in resumenes)
     pct_global = (total_cerr / total_esp * 100) if total_esp else 0.0
 
+    # Valor en juego: suma del importe de las diferencias pendientes
+    # (dif_importe = dif_final * precio_ref → valor económico real de la brecha)
+    valor_en_juego_ars = 0.0
+    valor_en_juego_usd = 0.0
+    if df_all is not None and not df_all.empty and "dif_importe" in df_all.columns:
+        df_pend = df_all[df_all["status"] == "PENDIENTE"]
+        if not df_pend.empty:
+            mask_usd = df_pend["moneda"].str.upper().str.contains("USD", na=False)
+            valor_en_juego_ars = float(df_pend.loc[~mask_usd, "dif_importe"].abs().sum())
+            valor_en_juego_usd = float(df_pend.loc[ mask_usd, "dif_importe"].abs().sum())
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Especies totales", _fmt_num(total_esp, 0))
-    c2.metric("Cerradas", f"{_fmt_num(total_cerr, 0)}  ({pct_global:.1f}%)")
+    c1.metric("Especies", _fmt_num(total_esp, 0))
+    c2.metric("Conciliadas ✅", f"{_fmt_num(total_cerr, 0)}  ({pct_global:.1f}%)")
     c3.metric(
-        "Pendientes", _fmt_num(total_pend, 0),
+        "Sin conciliar 🔴", _fmt_num(total_pend, 0),
         delta=None if total_pend == 0 else f"-{total_pend}",
         delta_color="inverse",
     )
-    c4.metric("Dif. total abs.", _fmt_ars(total_dif))
+    # Valor en juego: mostrar ARS y USD por separado si hay ambos
+    if valor_en_juego_usd > 0 and valor_en_juego_ars > 0:
+        c4.metric(
+            "Valor sin conciliar",
+            _fmt_usd(valor_en_juego_usd),
+            delta=_fmt_ars(valor_en_juego_ars),
+            delta_color="off",
+            help="Importe económico estimado de las diferencias pendientes (nominal × precio de referencia)",
+        )
+    elif valor_en_juego_usd > 0:
+        c4.metric(
+            "Valor sin conciliar",
+            _fmt_usd(valor_en_juego_usd),
+            help="Importe económico estimado de las diferencias pendientes (nominal × precio de referencia)",
+        )
+    else:
+        c4.metric(
+            "Valor sin conciliar",
+            _fmt_ars(valor_en_juego_ars),
+            help="Importe económico estimado de las diferencias pendientes (nominal × precio de referencia)",
+        )
 
 
 # =============================================================================
@@ -423,7 +453,7 @@ def render(_=None):
             df_all: pd.DataFrame  = s["df_all"]
 
             # ── KPIs ─────────────────────────────────────────────────────────
-            _show_kpis(resumenes)
+            _show_kpis(resumenes, df_all)
             st.divider()
 
             # ── Barra de cierre global ────────────────────────────────────────
@@ -444,13 +474,12 @@ def render(_=None):
             df_res = build_resumen_cuentas(df_all)
             if not df_res.empty:
                 df_display = pd.DataFrame({
-                    "Estado":     df_res["semaforo"].map(_SEMAFORO),
-                    "Cuenta":     df_res["cuenta"],
-                    "Especies":   df_res["especies"],
-                    "Cerradas":   df_res["cerradas"],
-                    "Pendientes": df_res["pendientes"],
-                    "% Cierre":   df_res["pct_cierre"].map(lambda x: f"{x:.1f}%"),
-                    "Dif. neta (ARS)": df_res["dif_total_neto"].map(_fmt_ars),
+                    "Estado":      df_res["semaforo"].map(_SEMAFORO),
+                    "Cuenta":      df_res["cuenta"],
+                    "Especies":    df_res["especies"],
+                    "Conciliadas": df_res["cerradas"],
+                    "Pendientes":  df_res["pendientes"],
+                    "% Cierre":    df_res["pct_cierre"].map(lambda x: f"{x:.1f}%"),
                 })
                 st.dataframe(df_display, use_container_width=True, hide_index=True)
 
