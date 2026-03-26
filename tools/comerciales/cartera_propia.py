@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-# cartera_propia.py
-# Módulo Streamlit — se integra al NEIX Workbench vía render()
-
 from __future__ import annotations
 
 from datetime import date
