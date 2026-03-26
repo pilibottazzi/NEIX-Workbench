@@ -1169,5 +1169,5 @@ def main():
                    "Excel: 4 hojas — Resumen · G/P Realizadas · Tenencia Actual · Movimientos")
 
 
-if __name__ == "__main__":
-    main()
+# Llamada directa para que funcione tanto con `streamlit run` como embebido en NEIX Workbench
+main()
