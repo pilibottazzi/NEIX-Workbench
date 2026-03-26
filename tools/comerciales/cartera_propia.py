@@ -216,29 +216,24 @@ def _grafico_dif_por_moneda(df_all: pd.DataFrame) -> None:
 
 
 def _grafico_pct_cierre(df_all: pd.DataFrame) -> None:
-    """Gauge-like: % de cierre global con una barra de progreso estilizada."""
+    """Barra de cierre ejecutiva."""
     df_res = build_resumen_cuentas(df_all)
     if df_res.empty:
         return
-
     total_esp  = int(df_res["especies"].sum())
     total_cerr = int(df_res["cerradas"].sum())
     pct = (total_cerr / total_esp * 100) if total_esp else 0.0
-
-    color = "#22c55e" if pct >= 99 else ("#f59e0b" if pct >= 90 else "#ef4444")
-    st.markdown(
-        f"""
-        <div style="margin-bottom:8px;">
-            <span style="font-size:.9rem;color:#64748b;">Cierre global</span>
-            <span style="font-size:1.5rem;font-weight:800;color:{color};margin-left:10px;">{pct:.1f}%</span>
-            <span style="font-size:.85rem;color:#94a3b8;margin-left:6px;">({total_cerr}/{total_esp} especies)</span>
+    color = "#166534" if pct >= 99 else ("#92400e" if pct >= 90 else "#b91c1c")
+    st.markdown(f"""
+        <div class="cp-progress-wrap">
+            <div class="cp-progress-label">Cierre del período</div>
+            <span class="cp-progress-pct" style="color:{color}">{pct:.1f}%</span>
+            <span class="cp-progress-detail">{total_cerr} de {total_esp} especies conciliadas</span>
+            <div class="cp-bar-outer">
+                <div class="cp-bar-inner" style="width:{pct:.2f}%;background:{color};"></div>
+            </div>
         </div>
-        <div style="background:#f1f5f9;border-radius:999px;height:10px;width:100%;overflow:hidden;">
-            <div style="background:{color};width:{pct:.1f}%;height:100%;border-radius:999px;transition:width .4s;"></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    """, unsafe_allow_html=True)
 
 
 def _show_kpis(resumenes: list[dict], df_all: pd.DataFrame | None = None) -> None:
@@ -283,19 +278,268 @@ def _show_kpis(resumenes: list[dict], df_all: pd.DataFrame | None = None) -> Non
 # render()
 # =============================================================================
 
+# CSS ejecutivo inyectado una sola vez
+_CSS = """
+<style>
+/* ── Importar tipografías ─────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600&family=DM+Sans:wght@300;400;500&display=swap');
+
+/* ── Variables ───────────────────────────────────────────────────────────── */
+:root {
+    --cp-ink:      #0d1117;
+    --cp-ink-2:    #374151;
+    --cp-ink-3:    #6b7280;
+    --cp-line:     #e5e7eb;
+    --cp-line-2:   #f3f4f6;
+    --cp-red:      #b91c1c;
+    --cp-red-light:#fef2f2;
+    --cp-green:    #166534;
+    --cp-green-light:#f0fdf4;
+    --cp-gold:     #92400e;
+    --cp-gold-light:#fffbeb;
+}
+
+/* ── Encabezado del módulo ───────────────────────────────────────────────── */
+.cp-header {
+    padding: 28px 0 20px 0;
+    border-bottom: 1px solid var(--cp-line);
+    margin-bottom: 8px;
+}
+.cp-header-eyebrow {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--cp-red);
+    margin-bottom: 6px;
+}
+.cp-header-title {
+    font-family: 'Playfair Display', Georgia, serif;
+    font-size: 26px;
+    font-weight: 600;
+    color: var(--cp-ink);
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    margin-bottom: 4px;
+}
+.cp-header-sub {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    font-weight: 300;
+    color: var(--cp-ink-3);
+    letter-spacing: 0.01em;
+}
+
+/* ── Tabs ─────────────────────────────────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0;
+    border-bottom: 1px solid var(--cp-line) !important;
+    background: transparent !important;
+}
+.stTabs [data-baseweb="tab"] {
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    color: var(--cp-ink-3) !important;
+    padding: 10px 20px 12px !important;
+    border-radius: 0 !important;
+    border: none !important;
+    background: transparent !important;
+}
+.stTabs [aria-selected="true"] {
+    color: var(--cp-ink) !important;
+    border-bottom: 2px solid var(--cp-ink) !important;
+    font-weight: 500 !important;
+}
+
+/* ── Métricas (KPIs) ─────────────────────────────────────────────────────── */
+div[data-testid="metric-container"] {
+    background: transparent !important;
+    border: none !important;
+    border-top: 2px solid var(--cp-ink) !important;
+    border-radius: 0 !important;
+    padding: 16px 0 8px 0 !important;
+    box-shadow: none !important;
+}
+div[data-testid="metric-container"] label {
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 10px !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.12em !important;
+    text-transform: uppercase !important;
+    color: var(--cp-ink-3) !important;
+}
+div[data-testid="metric-container"] div[data-testid="stMetricValue"] {
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 22px !important;
+    font-weight: 400 !important;
+    color: var(--cp-ink) !important;
+    letter-spacing: -0.02em !important;
+}
+div[data-testid="metric-container"] div[data-testid="stMetricDelta"] {
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 11px !important;
+}
+
+/* ── Tablas ───────────────────────────────────────────────────────────────── */
+div[data-testid="stDataFrame"] {
+    border: 1px solid var(--cp-line) !important;
+    border-radius: 2px !important;
+    overflow: hidden !important;
+}
+div[data-testid="stDataFrame"] thead tr th {
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 10px !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.1em !important;
+    text-transform: uppercase !important;
+    color: var(--cp-ink-3) !important;
+    background: var(--cp-line-2) !important;
+    border-bottom: 1px solid var(--cp-line) !important;
+    padding: 10px 12px !important;
+}
+div[data-testid="stDataFrame"] tbody tr td {
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 13px !important;
+    font-weight: 300 !important;
+    color: var(--cp-ink) !important;
+    border-bottom: 1px solid var(--cp-line-2) !important;
+    padding: 9px 12px !important;
+}
+div[data-testid="stDataFrame"] tbody tr:last-child td {
+    border-bottom: none !important;
+}
+
+/* ── Secciones internas ───────────────────────────────────────────────────── */
+.cp-section {
+    font-family: 'Playfair Display', Georgia, serif;
+    font-size: 16px;
+    font-weight: 400;
+    color: var(--cp-ink);
+    letter-spacing: -0.01em;
+    margin: 28px 0 12px 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--cp-line);
+}
+.cp-sub {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--cp-ink-3);
+    margin: 20px 0 8px 0;
+}
+.cp-label-ars {
+    display: inline-block;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: var(--cp-line-2);
+    color: var(--cp-ink-2);
+    border: 1px solid var(--cp-line);
+    border-radius: 2px;
+    padding: 2px 8px;
+    margin-right: 6px;
+}
+.cp-label-usd {
+    display: inline-block;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: #eff6ff;
+    color: #1d4ed8;
+    border: 1px solid #bfdbfe;
+    border-radius: 2px;
+    padding: 2px 8px;
+    margin-right: 6px;
+}
+.cp-stat {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12px;
+    color: var(--cp-ink-3);
+    display: inline;
+}
+.cp-stat-val {
+    font-weight: 500;
+    color: var(--cp-ink);
+}
+
+/* ── Divider ───────────────────────────────────────────────────────────────── */
+hr[data-testid="stDivider"] {
+    border-color: var(--cp-line) !important;
+    margin: 20px 0 !important;
+}
+
+/* ── Barra de progreso ────────────────────────────────────────────────────── */
+.cp-progress-wrap {
+    margin: 16px 0 24px 0;
+}
+.cp-progress-label {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--cp-ink-3);
+    margin-bottom: 10px;
+}
+.cp-progress-pct {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 32px;
+    font-weight: 300;
+    letter-spacing: -0.03em;
+    color: var(--cp-ink);
+    display: inline;
+}
+.cp-progress-detail {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12px;
+    color: var(--cp-ink-3);
+    margin-left: 10px;
+    display: inline;
+}
+.cp-bar-outer {
+    background: var(--cp-line);
+    border-radius: 0;
+    height: 3px;
+    width: 100%;
+    overflow: hidden;
+    margin-top: 10px;
+}
+.cp-bar-inner {
+    height: 100%;
+    border-radius: 0;
+    transition: width .6s cubic-bezier(.4,0,.2,1);
+}
+</style>
+"""
+
+
 def render(_=None):
-    st.markdown("<div class='section-title'>Cartera Propia</div>", unsafe_allow_html=True)
-    st.markdown(
-        "<div class='section-sub'>Conciliación mensual: Ini + Activity = Fin</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(_CSS, unsafe_allow_html=True)
+
+    st.markdown("""
+        <div class="cp-header">
+            <div class="cp-header-eyebrow">NEIX · Comercial</div>
+            <div class="cp-header-title">Conciliación de Cartera Propia</div>
+            <div class="cp-header-sub">Ini + Activity = Fin &nbsp;·&nbsp; Por cuenta, especie y moneda</div>
+        </div>
+    """, unsafe_allow_html=True)
 
     tab_config, tab_archivos, tab_resultado, tab_detalle, tab_export = st.tabs([
-        "⚙️ Configuración",
-        "📁 Archivos",
-        "📊 Resultado",
-        "🔍 Detalle",
-        "⬇️ Exportar",
+        "Configuración",
+        "Archivos",
+        "Resultado",
+        "Detalle",
+        "Exportar",
     ])
 
     s  = _state()
@@ -305,7 +549,7 @@ def render(_=None):
     # TAB 1 — Configuración
     # =========================================================================
     with tab_config:
-        st.markdown("#### Período y parámetros")
+        st.markdown("<div class='cp-section'>Período y parámetros</div>", unsafe_allow_html=True)
 
         col1, col2 = st.columns(2)
         with col1:
@@ -319,14 +563,14 @@ def render(_=None):
             fecha_fin = st.date_input("Fecha fin", value=date(2026, 2, 28), key="cp_fecha_fin")
 
         st.divider()
-        st.markdown("#### Cuentas a conciliar")
+        st.markdown("<div class='cp-sub'>Cuentas a conciliar</div>", unsafe_allow_html=True)
         cuentas_str = st.text_input(
             "Cuentas (separadas por coma)",
             value=", ".join(str(c) for c in CUENTAS_DEFAULT),
             key="cp_cuentas",
         )
 
-        st.markdown("#### Pares inter-cuenta")
+        st.markdown("<div class='cp-sub'>Pares inter-cuenta</div>", unsafe_allow_html=True)
         pares_str = st.text_input(
             "Pares (formato: 904-992, 997-999)",
             value=", ".join(f"{a}-{b}" for a, b in DEFAULT_PARES_COMP),
@@ -402,7 +646,7 @@ def render(_=None):
         col_ini, col_fin = st.columns(2)
 
         with col_ini:
-            st.markdown("**Portafolios iniciales**")
+            st.markdown("<div class='cp-sub'>Portafolios iniciales</div>", unsafe_allow_html=True)
             for cta in periodo.cuentas:
                 key = f"cp_port_ini_{cta}"
                 st.file_uploader(
@@ -413,7 +657,7 @@ def render(_=None):
                     st.caption(f"✅ {fc[key]['name']}")
 
         with col_fin:
-            st.markdown("**Portafolios finales**")
+            st.markdown("<div class='cp-sub'>Portafolios finales</div>", unsafe_allow_html=True)
             for cta in periodo.cuentas:
                 key = f"cp_port_fin_{cta}"
                 st.file_uploader(
@@ -423,7 +667,7 @@ def render(_=None):
                 if key in fc:
                     st.caption(f"✅ {fc[key]['name']}")
 
-        st.markdown("**Activity**")
+        st.markdown("<div class='cp-sub'>Activity</div>", unsafe_allow_html=True)
         cols_act = st.columns(min(len(periodo.cuentas), 4))
         for i, cta in enumerate(periodo.cuentas):
             with cols_act[i % len(cols_act)]:
@@ -435,7 +679,7 @@ def render(_=None):
                 if key in fc:
                     st.caption(f"✅ {fc[key]['name']}")
 
-        st.markdown("**Posiciones (auxiliar, opcional)**")
+        st.markdown("<div class='cp-sub'>Posiciones (auxiliar, opcional)</div>", unsafe_allow_html=True)
         cols_pos = st.columns(min(len(periodo.cuentas), 4))
         for i, cta in enumerate(periodo.cuentas):
             with cols_pos[i % len(cols_pos)]:
@@ -494,7 +738,7 @@ def render(_=None):
             st.divider()
 
             # ── Resumen por cuenta ────────────────────────────────────────────
-            st.markdown("#### Resumen por cuenta")
+            st.markdown("<div class='cp-section'>Resumen por cuenta</div>", unsafe_allow_html=True)
             df_res = build_resumen_cuentas(df_all)
             if not df_res.empty:
                 df_display = pd.DataFrame({
@@ -523,6 +767,7 @@ def render(_=None):
                         _fmt_moneda(v, m)
                         for v, m in zip(resumen_mon["brecha_importe"], resumen_mon["moneda"])
                     ]
+                    st.markdown("<div class='cp-sub'>Brecha por moneda</div>", unsafe_allow_html=True)
                     df_mon_display = pd.DataFrame({
                         "Moneda":     resumen_mon["moneda"],
                         "Pendientes": resumen_mon["pendientes"],
@@ -535,7 +780,7 @@ def render(_=None):
             if df_pend.empty:
                 st.success("🎉 Sin diferencias pendientes.")
             else:
-                st.markdown(f"#### Pendientes · {len(df_pend)} especie(s)")
+                st.markdown(f"<div class='cp-section'>Pendientes &nbsp;<span style='font-family:DM Sans,sans-serif;font-size:13px;font-weight:300;color:#6b7280;'>{len(df_pend)} especie(s)</span></div>", unsafe_allow_html=True)
 
                 def _tabla_pendientes(df_bloque: pd.DataFrame) -> None:
                     """Renderiza una tabla de pendientes limpia y ordenada."""
@@ -560,8 +805,10 @@ def render(_=None):
                 if not pend_ars.empty:
                     total_imp_ars = pend_ars["dif_importe"].abs().sum()
                     st.markdown(
-                        f"**Pesos (ARS)** · {len(pend_ars)} especie(s) · "
-                        f"Valor en juego: {_fmt_ars_compacto(total_imp_ars)}"
+                        f"<span class='cp-label-ars'>ARS</span>"
+                        f"<span class='cp-stat'>{len(pend_ars)} especie(s) &nbsp;·&nbsp; "
+                        f"<span class='cp-stat-val'>{_fmt_ars_compacto(total_imp_ars)}</span> en juego</span>",
+                        unsafe_allow_html=True,
                     )
                     _tabla_pendientes(pend_ars)
 
@@ -570,8 +817,10 @@ def render(_=None):
                 if not pend_usd.empty:
                     total_imp_usd = pend_usd["dif_importe"].abs().sum()
                     st.markdown(
-                        f"**Dólares (USD)** · {len(pend_usd)} especie(s) · "
-                        f"Valor en juego: {_fmt_usd_compacto(total_imp_usd)}"
+                        f"<span class='cp-label-usd'>USD</span>"
+                        f"<span class='cp-stat'>{len(pend_usd)} especie(s) &nbsp;·&nbsp; "
+                        f"<span class='cp-stat-val'>{_fmt_usd_compacto(total_imp_usd)}</span> en juego</span>",
+                        unsafe_allow_html=True,
                     )
                     _tabla_pendientes(pend_usd)
 
@@ -625,7 +874,7 @@ def render(_=None):
             df_ic = s.get("df_intercuenta")
             if df_ic is not None and not df_ic.empty:
                 st.divider()
-                st.markdown("#### Movimientos entre cuentas")
+                st.markdown("<div class='cp-section'>Movimientos entre cuentas</div>", unsafe_allow_html=True)
                 df_ic_clean = pd.DataFrame({
                     "Cuenta origen":  df_ic["cuenta_origen"],
                     "Cuenta destino": df_ic["cuenta_destino"],
