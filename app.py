@@ -6,7 +6,6 @@ from tools.comerciales import (
     cauciones_byma,
     alquileres,
     cn,
-    transactions_analyzer,
     filtro_especies_exterior,
     cartera_propia,
 )
@@ -462,10 +461,6 @@ if tool:
             alquileres.render(None)
             st.stop()
 
-        elif tool == "transactions_analyzer":
-            transactions_analyzer.render()
-            st.stop()
-
         elif tool == "filtro_especies_exterior":
             filtro_especies_exterior.render()
             st.stop()
@@ -537,7 +532,6 @@ with tabs[0]:
             ("Alquileres", "alquileres"),
             ("Tenencia", "tenencia"),
             ("CN", "cn"),
-            ("Movimientos CV", "transactions_analyzer"),
             ("Filtro Especies Exterior", "filtro_especies_exterior"),
             ("Cartera Propia", "cartera_propia"),
         ],
