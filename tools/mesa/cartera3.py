@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import os
 import datetime as dt
 from dataclasses import dataclass
@@ -9,6 +10,10 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+from tools._ui import inject_tool_css
+
+logger = logging.getLogger(__name__)
 
 # =========================
 # PDF (ReportLab)
@@ -551,44 +556,20 @@ def build_excel_bytes(table_df: pd.DataFrame) -> bytes:
 # =========================
 # UI
 # =========================
-def _ui_css():
-    st.markdown(
-        """
-<style>
-  .wrap{ max-width: 1180px; margin: 0 auto; }
-  .block-container { padding-top: 1.1rem; padding-bottom: 1.8rem; }
-  .title{ font-size: 28px; font-weight: 850; letter-spacing: .02em; color:#111827; margin: 0; }
-  .sub{ color: rgba(17,24,39,.62); font-size: 13px; margin-top: 4px; }
-  .soft-hr{ height:1px; background:rgba(17,24,39,.10); margin: 14px 0 18px; }
-  div[data-testid="stDataFrame"] {
-    border-radius: 14px;
-    overflow: hidden;
-    border: 1px solid rgba(17,24,39,.10);
-  }
-</style>
-""",
-        unsafe_allow_html=True,
-    )
-
-
 def _height_for_rows(n: int, row_h: int = 34, header: int = 42, pad: int = 18, max_h: int = 900) -> int:
     n = int(max(0, n))
     h = header + pad + row_h * max(1, n + 1)
     return int(min(max_h, h))
 
 
-def render(back_to_home=None):
-    _ui_css()
-    st.markdown('<div class="wrap">', unsafe_allow_html=True)
+def render():
+    inject_tool_css()
 
-    left, right = st.columns([0.72, 0.28], vertical_alignment="center")
-    with left:
-        st.markdown('<div class="title">Herramienta para armar carteras (Dólar MEP)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub">SOLO USD MEP. Siempre convierte vía Especies.xlsx (Pesos → USD). Si no existe, usa ticker + D.</div>', unsafe_allow_html=True)
-    with right:
-        refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_mep_refresh")
+    st.caption("SOLO USD MEP. Siempre convierte vía Especies.xlsx (Pesos → USD). Si no existe, usa ticker + D.")
 
-    st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
+    refresh = st.button("Actualizar precios", use_container_width=False, key="cartera_mep_refresh")
+
+    st.divider()
 
     if refresh or "cartera_mep_prices" not in st.session_state:
         with st.spinner("Actualizando precios (MEP / especie D)..."):
@@ -597,14 +578,12 @@ def render(back_to_home=None):
     prices = st.session_state.get("cartera_mep_prices")
     if prices is None or prices.empty:
         st.warning("No pude cargar el universo MEP (especie D). Puede haber cambiado el formato de IOL.")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     # ✅ mapa pesos -> usd (desde Excel)
     especies_map = load_especies_map()
     if not especies_map:
         st.warning("No pude leer data/Especies.xlsx (necesito columnas: Pesos | Usd).")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     c1, c2 = st.columns([0.42, 0.58], vertical_alignment="bottom")
@@ -618,7 +597,7 @@ def render(back_to_home=None):
             key="cartera_mep_capital",
         )
     with c2:
-        calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_mep_calc")
+        calc = st.button("Calcular cartera", use_container_width=True, key="cartera_mep_calc")
 
     # ✅ UI: solo tickers en PESOS (los del Excel). Internamente calcula en USD MEP.
     opts_pesos = sorted(especies_map.keys())
@@ -634,7 +613,6 @@ def render(back_to_home=None):
 
     if not selected:
         st.info("Seleccioná al menos un activo.")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     st.markdown("### Asignación por activo")
@@ -657,7 +635,6 @@ def render(back_to_home=None):
     pct_map = {r["Ticker"]: float(r["%"]) for _, r in edited.iterrows()}
 
     if not calc:
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     df, missing = build_simple_portfolio_usd(
@@ -673,7 +650,6 @@ def render(back_to_home=None):
 
     if df.empty:
         st.warning("No se pudo construir la cartera (ningún ticker resolvió a un precio USD MEP disponible).")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     st.markdown("### Detalle de cartera (USD MEP)")
@@ -720,6 +696,7 @@ def render(back_to_home=None):
                 key="cartera_mep_xlsx",
             )
         except Exception as e:
+            logger.exception("Error generando Excel de cartera MEP")
             st.warning(f"No pude generar el Excel: {e}")
 
     with cpdf:
@@ -739,6 +716,5 @@ def render(back_to_home=None):
                 key="cartera_mep_pdf",
             )
         except Exception as e:
+            logger.exception("Error generando PDF de cartera MEP")
             st.warning(f"No pude generar el PDF: {e}")
-
-    st.markdown("</div>", unsafe_allow_html=True)

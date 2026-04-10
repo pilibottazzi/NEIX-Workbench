@@ -1,8 +1,14 @@
 # tools/cheques.py
+import logging
 import os
-import re
+
 import pandas as pd
 import streamlit as st
+
+from tools._ui import inject_tool_css
+from tools._parsers import parse_float
+
+logger = logging.getLogger(__name__)
 
 # =========================
 # Config
@@ -16,16 +22,8 @@ MANAGERS_PATH = os.path.join("data", "managers_neix.xlsx")
 def limpiar_monto(x):
     if pd.isna(x):
         return pd.NA
-    s = str(x)
-    s = re.sub(r"[^\d,.\-]", "", s)
-    if "," in s and "." in s:
-        s = s.replace(".", "").replace(",", ".")
-    elif "," in s and "." not in s:
-        s = s.replace(",", ".")
-    try:
-        return float(s)
-    except Exception:
-        return pd.NA
+    result = parse_float(x)
+    return pd.NA if result is None else result
 
 
 def _fmt_money(x):
@@ -90,8 +88,8 @@ def _require_password_gate():
 # =========================
 # Render
 # =========================
-def render(back_to_home=None):
-    st.markdown("## Dashboard cheques y pagarés")
+def render():
+    inject_tool_css()
     st.caption("Carga obligatoria de Excel + cruce con Managers (Excel: data/managers_neix.xlsx)")
 
     _require_password_gate()
@@ -107,13 +105,14 @@ def render(back_to_home=None):
         st.info("Debés subir un archivo Excel para habilitar el dashboard.")
         st.stop()
 
-    if not st.button("Cargar datos", type="primary", key="cheques_cargar"):
+    if not st.button("Cargar datos", key="cheques_cargar"):
         st.caption("Una vez subido el archivo, tocá **Cargar datos**.")
         st.stop()
 
     try:
         df = pd.read_excel(archivo, header=0)
     except Exception as e:
+        logger.exception("Error leyendo el archivo de cheques")
         st.error(f"Error leyendo el archivo: {e}")
         st.stop()
 
@@ -153,8 +152,8 @@ def render(back_to_home=None):
         with st.spinner("Cargando Managers desde managers_neix.xlsx…"):
             df_manager = cargar_managers_excel()
     except Exception as e:
-        st.error("No pude cargar managers_neix.xlsx")
-        st.exception(e)
+        logger.exception("No pude cargar managers_neix.xlsx")
+        st.error(f"No pude cargar managers_neix.xlsx: {e}")
         df_manager = pd.DataFrame()
 
     if not df_manager.empty:

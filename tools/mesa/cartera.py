@@ -1,6 +1,7 @@
 # tools/cartera.py
 from __future__ import annotations
 
+import logging
 import os
 import io
 import datetime as dt
@@ -11,6 +12,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from scipy import optimize
+
+from tools._ui import inject_tool_css
+
+logger = logging.getLogger(__name__)
 
 # =========================
 # PDF (ReportLab)
@@ -986,23 +991,11 @@ def get_prices_cached() -> pd.DataFrame:
 # =========================
 # UI helpers
 # =========================
-def _ui_css():
+def _inject_kpi_css():
+    """Tool-specific KPI card styles used in the Resumen block."""
     st.markdown(
         """
 <style>
-  .wrap{ max-width: 1180px; margin: 0 auto; }
-  .block-container { padding-top: 1.1rem; padding-bottom: 1.8rem; }
-
-  .title{ font-size: 28px; font-weight: 850; letter-spacing: .02em; color:#111827; margin: 0; }
-  .sub{ color: rgba(17,24,39,.62); font-size: 13px; margin-top: 4px; }
-  .soft-hr{ height:1px; background:rgba(17,24,39,.10); margin: 14px 0 18px; }
-
-  div[data-testid="stDataFrame"] {
-    border-radius: 14px;
-    overflow: hidden;
-    border: 1px solid rgba(17,24,39,.10);
-  }
-
   .kpi{
     border: 1px solid rgba(17,24,39,.10);
     border-radius: 16px;
@@ -1045,27 +1038,23 @@ def _make_cartera_view(cartera_raw: pd.DataFrame) -> pd.DataFrame:
 # =========================
 # UI main
 # =========================
-def render(back_to_home=None):
-    _ui_css()
-    st.markdown('<div class="wrap">', unsafe_allow_html=True)
+def render():
+    inject_tool_css()
+    _inject_kpi_css()
 
-    # Header
-    left, right = st.columns([0.72, 0.28], vertical_alignment="center")
-    with left:
-        st.markdown('<div class="title">NEIX · Cartera Comercial</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub">Arma tu cartera con precios online.</div>', unsafe_allow_html=True)
-    with right:
-        refresh = st.button("Actualizar precios", use_container_width=True, key="cartera_refresh")
+    st.caption("Arma tu cartera con precios online.")
 
-    st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
+    refresh = st.button("Actualizar precios", use_container_width=False, key="cartera_refresh")
+
+    st.divider()
     _spacer(18)
 
     # Cashflows (cache)
     try:
         df_cf = get_cashflows_cached(CASHFLOW_PATH)
     except Exception as e:
+        logger.exception("Error cargando cashflows de cartera")
         st.error(str(e))
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     # Prices (cache + refresh)
@@ -1076,19 +1065,17 @@ def render(back_to_home=None):
         try:
             prices = get_prices_cached()
         except Exception as e:
+            logger.exception("Error cargando precios de cartera")
             st.error(str(e))
-            st.markdown("</div>", unsafe_allow_html=True)
             return
 
     if prices is None or prices.empty:
         st.warning("No pude cargar precios de mercado (tabla vacía o cambió el formato).")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     universe = build_eligible_universe(df_cf, prices, plazo=1)
     if universe.empty:
         st.warning("No hay activos elegibles con TIR dentro del rango y precio disponible.")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     # Selección
@@ -1115,7 +1102,7 @@ def render(back_to_home=None):
             key="cartera_capital",
         )
     with c2:
-        calc = st.button("Calcular cartera", type="primary", use_container_width=True, key="cartera_calc")
+        calc = st.button("Calcular cartera", use_container_width=True, key="cartera_calc")
 
     _spacer(6)
 
@@ -1125,7 +1112,6 @@ def render(back_to_home=None):
 
     if not selected:
         st.info("Seleccioná al menos un activo.")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     default_pct = round(100.0 / len(selected), 2) if selected else 0.0
@@ -1148,11 +1134,10 @@ def render(back_to_home=None):
         st.info(f"Los % suman {total_pct:.2f}. Se reescala automáticamente a 100 al calcular.")
 
     _spacer(10)
-    st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
+    st.divider()
     _spacer(6)
 
     if not calc:
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     # Calcular cartera (raw numérica)
@@ -1167,7 +1152,6 @@ def render(back_to_home=None):
 
     if cartera_raw.empty:
         st.warning("No pude armar cartera con la selección actual (faltan precios o flujos).")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     # KPIs
@@ -1221,7 +1205,6 @@ def render(back_to_home=None):
     st.markdown("### Flujo de fondos")
     if flows_pivot is None or flows_pivot.empty:
         st.info("No hay flujos futuros para mostrar.")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     flows_view = _make_flows_view(flows_pivot)
@@ -1265,6 +1248,7 @@ def render(back_to_home=None):
                     logo_path=LOGO_PATH,
                 )
             except Exception as e:
+                logger.exception("Error generando PDF de cartera")
                 st.session_state["cartera_pdf_bytes"] = None
                 st.warning(f"No pude generar el PDF: {e}")
 
@@ -1277,6 +1261,7 @@ def render(back_to_home=None):
                     capital_usd=float(capital),
                 )
             except Exception as e:
+                logger.exception("Error generando Excel de cartera")
                 st.session_state["cartera_xlsx_bytes"] = None
                 st.warning(f"No pude generar el Excel: {e}")
 
@@ -1316,5 +1301,3 @@ def render(back_to_home=None):
             )
         else:
             st.button("Excel", use_container_width=True, disabled=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)

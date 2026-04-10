@@ -1,12 +1,17 @@
 # tools/ons.py
 from __future__ import annotations
 
+import logging
 import os
 import datetime as dt
 import numpy as np
 import pandas as pd
 import streamlit as st
 from scipy import optimize
+
+from tools._ui import inject_tool_css
+
+logger = logging.getLogger(__name__)
 
 CASHFLOW_PATH = os.path.join("data", "cashflows_ON.xlsx")
 
@@ -231,32 +236,6 @@ def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 0
 # ======================================================
 # 6) UI helpers
 # ======================================================
-def _ui_css():
-    st.markdown(
-        """
-<style>
-  .wrap{ max-width: 1250px; margin: 0 auto; }
-  .title{ font-size:22px; font-weight:800; letter-spacing:.05em; color:#111827; }
-  .sub{ color:rgba(17,24,39,.65); font-size:13px; margin-top:2px; }
-  .soft-hr{ height:1px; background:rgba(17,24,39,.08); margin: 14px 0 18px; }
-
-  .block-container { padding-top: 1.2rem; }
-  label { margin-bottom: 0.25rem !important; }
-
-  .stSelectbox div[data-baseweb="select"]{ border-radius: 12px; }
-  .stMultiSelect div[data-baseweb="select"]{ border-radius: 12px; }
-  div[data-baseweb="tag"]{ border-radius:999px !important; }
-
-  .stButton > button { border-radius: 14px; padding: 0.60rem 1.0rem; }
-
-  /* Expander prolijo */
-  details summary { font-size: 14px; }
-</style>
-""",
-        unsafe_allow_html=True,
-    )
-
-
 def _select_all_multiselect(label: str, options: list[str], key_base: str, default_all: bool = True) -> list[str]:
     """
     Multiselect con buscador + checkbox "Seleccionar todo".
@@ -319,22 +298,16 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
 # ======================================================
 # 7) Render
 # ======================================================
-def render(back_to_home=None):
-    _ui_css()
-    st.markdown('<div class="wrap">', unsafe_allow_html=True)
+def render():
+    inject_tool_css()
 
-    # Header
-    h1, h2 = st.columns([0.78, 0.22])
-    with h1:
-        st.markdown('<div class="title">NEIX · ONs</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub">Rendimientos y duration con precios online.</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
+    st.caption("Rendimientos y duration con precios online.")
 
     # Load cashflows
     try:
         df_cf = load_cashflows_from_repo(CASHFLOW_PATH)
     except Exception as e:
+        logger.exception("Error cargando cashflows de ONs")
         st.error(str(e))
         st.info("El Excel debe tener: species, root_key, Fecha y FlujoTotal/Cupon (+ law opcional).")
         return
@@ -363,7 +336,7 @@ def render(back_to_home=None):
         if "Vencimiento" not in cols_pick:
             cols_pick = cols_pick + ["Vencimiento"]
 
-    st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
+    st.divider()
 
     p1, p2, p3, p4 = st.columns([0.22, 0.22, 0.22, 0.34], vertical_alignment="bottom")
 
@@ -380,7 +353,7 @@ def render(back_to_home=None):
         traer_precios = st.button("Actualizar precios", use_container_width=True)
 
     with p3:
-        calcular = st.button("Calcular", type="primary", use_container_width=True)
+        calcular = st.button("Calcular", use_container_width=True)
 
     # Cache precios
     if traer_precios or "ons_iol_prices" not in st.session_state:
@@ -396,7 +369,7 @@ def render(back_to_home=None):
         st.warning("No hay precios cargados.")
         return
 
-    st.markdown('<div class="soft-hr"></div>', unsafe_allow_html=True)
+    st.divider()
 
 
     tab_arg, tab_ny = st.tabs([law_label("ARG"), law_label("NY")])
@@ -460,6 +433,4 @@ def render(back_to_home=None):
         _render_tab("ARG")
     with tab_ny:
         _render_tab("NY")
-
-    st.markdown("</div>", unsafe_allow_html=True)
 

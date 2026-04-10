@@ -1,7 +1,14 @@
 # tools/cauciones_mae.py
+import logging
 import os
-import streamlit as st
+
 import pandas as pd
+import streamlit as st
+
+from tools._ui import inject_tool_css
+from tools._parsers import parse_float
+
+logger = logging.getLogger(__name__)
 
 
 # =========================
@@ -14,20 +21,6 @@ REQUIRED_COLS = ["ESPECIE", "AFORO", "CONCENTRACIÓN (EN PESOS)", "ACTIVO"]
 # =========================
 # Helpers
 # =========================
-def _to_float_amount(s: str):
-    if s is None:
-        return None
-    s = str(s).strip()
-    if not s:
-        return None
-    s = s.replace(" ", "")
-    s = s.replace(".", "").replace(",", ".")
-    try:
-        return float(s)
-    except ValueError:
-        return None
-
-
 def _fmt_ars(x) -> str:
     try:
         return f"{int(round(float(x))):,}".replace(",", ".")
@@ -113,17 +106,15 @@ def cargar_aforos_mae() -> pd.DataFrame:
 # =========================
 # Main render
 # =========================
-def render(back_to_home=None):
-    # IMPORTANTE: NO llamar back_to_home() acá.
-    # El botón "Volver al Workbench" ya lo renderiza app.py
-    st.markdown("## 🧾 Calculadora de Garantías MAE")
+def render():
+    inject_tool_css()
     st.caption("Calculá garantía admitida por especie según aforos MAE (Excel pre-cargado en el repo).")
 
     try:
         df_aforos = cargar_aforos_mae()
     except Exception as e:
-        st.error("No pude cargar el Excel de aforos MAE.")
-        st.exception(e)
+        logger.exception("No pude cargar el Excel de aforos MAE")
+        st.error(f"No pude cargar el Excel de aforos MAE: {e}")
         st.stop()
 
     if "mae_operaciones" not in st.session_state:
@@ -152,14 +143,14 @@ def render(back_to_home=None):
 
         if metodo == "Por monto":
             monto_txt = st.text_input("Monto (AR$)", placeholder="Ej: 1.000.000", key="mae_monto")
-            monto = _to_float_amount(monto_txt)
+            monto = parse_float(monto_txt)
         else:
             c1, c2 = st.columns(2)
             precio_txt = c1.text_input("Precio", placeholder="Ej: 68,75", key="mae_precio")
             nominales_txt = c2.text_input("Nominales", placeholder="Ej: 100.000", key="mae_nominales")
 
-            precio = _to_float_amount(precio_txt)
-            nominales = _to_float_amount(nominales_txt)
+            precio = parse_float(precio_txt)
+            nominales = parse_float(nominales_txt)
 
             if precio is not None and nominales is not None:
                 monto = precio * nominales
@@ -172,7 +163,7 @@ def render(back_to_home=None):
                 f"{'Se divide' if dividir_por_100 else 'No se divide'} por 100 para valor de mercado (regla MAE)."
             )
 
-        submitted = st.form_submit_button("Agregar", type="primary")
+        submitted = st.form_submit_button("Agregar")
 
         if submitted:
             if not especie:

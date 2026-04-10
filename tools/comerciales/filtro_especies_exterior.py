@@ -1,118 +1,16 @@
 # tools/mesa/filtro_especies_exterior.py
 from __future__ import annotations
 
+import logging
 from io import BytesIO
 
 import openpyxl
 import pandas as pd
 import streamlit as st
 
+from tools._ui import inject_tool_css
 
-# =========================================================
-# UI / ESTILO NEIX
-# =========================================================
-NEIX_RED = "#ff3b30"
-TEXT = "#111827"
-MUTED = "#6b7280"
-BORDER = "rgba(17,24,39,0.10)"
-CARD_BG = "rgba(255,255,255,0.96)"
-
-
-def _inject_ui_css() -> None:
-    st.markdown(
-        f"""
-        <style>
-          .block-container {{
-            max-width: 980px;
-            padding-top: 1.2rem;
-            padding-bottom: 2rem;
-          }}
-
-          .fes-wrap {{
-            background: {CARD_BG};
-            border: 1px solid {BORDER};
-            border-radius: 18px;
-            padding: 1.2rem 1.2rem 1rem 1.2rem;
-            box-shadow: 0 10px 30px rgba(17,24,39,0.05);
-            margin-bottom: 1rem;
-          }}
-
-          .fes-title {{
-            font-size: 1.55rem;
-            font-weight: 700;
-            color: {TEXT};
-            margin-bottom: 0.2rem;
-          }}
-
-          .fes-subtitle {{
-            font-size: 0.95rem;
-            color: {MUTED};
-            margin-bottom: 0.8rem;
-          }}
-
-          .fes-line {{
-            height: 3px;
-            width: 100%;
-            background: linear-gradient(90deg, {NEIX_RED}, rgba(255,59,48,0.18));
-            border-radius: 999px;
-            margin: 0.35rem 0 1rem 0;
-          }}
-
-          .fes-kpi-row {{
-            display: flex;
-            gap: 0.8rem;
-            flex-wrap: wrap;
-            margin-top: 0.2rem;
-            margin-bottom: 0.2rem;
-          }}
-
-          .fes-kpi {{
-            flex: 1 1 180px;
-            background: white;
-            border: 1px solid {BORDER};
-            border-radius: 14px;
-            padding: 0.9rem 1rem;
-          }}
-
-          .fes-kpi-label {{
-            font-size: 0.80rem;
-            color: {MUTED};
-            margin-bottom: 0.2rem;
-          }}
-
-          .fes-kpi-value {{
-            font-size: 1.25rem;
-            font-weight: 700;
-            color: {TEXT};
-          }}
-
-          .stDownloadButton > button,
-          .stButton > button {{
-            width: 100%;
-            border-radius: 12px;
-            min-height: 2.8rem;
-            font-weight: 600;
-            border: 1px solid {NEIX_RED};
-          }}
-
-          .stDownloadButton > button {{
-            background: {NEIX_RED};
-            color: white;
-          }}
-
-          .stDownloadButton > button:hover {{
-            background: #e1342a;
-            color: white;
-            border-color: #e1342a;
-          }}
-
-          .stAlert {{
-            border-radius: 14px;
-          }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+logger = logging.getLogger(__name__)
 
 
 # =========================================================
@@ -220,21 +118,11 @@ def process_excel_file(file) -> tuple[pd.DataFrame, BytesIO, dict]:
 # RENDER
 # =========================================================
 def render() -> None:
+    inject_tool_css()
 
-    _inject_ui_css()
-
-    st.markdown(
-        """
-        <div class="fes-wrap">
-            <div class="fes-title">Filtro Especies Exterior</div>
-            <div class="fes-subtitle">
-                Filtra especies con <b>Fuente = BBG</b> y <b>Moneda = USD EXTERIOR</b>.
-                Devuelve un Excel con columnas <b>CSVA</b> y <b>Precio</b>.
-            </div>
-            <div class="fes-line"></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    st.caption(
+        "Filtra especies con **Fuente = BBG** y **Moneda = USD EXTERIOR**. "
+        "Devuelve un Excel con columnas **CSVA** y **Precio**."
     )
 
     archivo = st.file_uploader(
@@ -251,29 +139,11 @@ def render() -> None:
         with st.spinner("Procesando archivo..."):
             df_final, output, stats = process_excel_file(archivo)
 
-        st.markdown(
-            f"""
-            <div class="fes-kpi-row">
-                <div class="fes-kpi">
-                    <div class="fes-kpi-label">Filas leídas</div>
-                    <div class="fes-kpi-value">{stats['total_filas']:,}</div>
-                </div>
-                <div class="fes-kpi">
-                    <div class="fes-kpi-label">Fuente = BBG</div>
-                    <div class="fes-kpi-value">{stats['filas_bbg']:,}</div>
-                </div>
-                <div class="fes-kpi">
-                    <div class="fes-kpi-label">Moneda = USD EXTERIOR</div>
-                    <div class="fes-kpi-value">{stats['filas_usd_exterior']:,}</div>
-                </div>
-                <div class="fes-kpi">
-                    <div class="fes-kpi-label">Filas finales</div>
-                    <div class="fes-kpi-value">{stats['filas_finales']:,}</div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Filas leídas", f"{stats['total_filas']:,}")
+        c2.metric("Fuente = BBG", f"{stats['filas_bbg']:,}")
+        c3.metric("Moneda = USD EXTERIOR", f"{stats['filas_usd_exterior']:,}")
+        c4.metric("Filas finales", f"{stats['filas_finales']:,}")
 
         st.markdown("### Vista previa")
         st.dataframe(df_final, use_container_width=True, hide_index=True)
@@ -286,4 +156,5 @@ def render() -> None:
         )
 
     except Exception as e:
+        logger.exception("Error procesando el archivo de filtro especies exterior")
         st.error(f"Error procesando el archivo: {e}")

@@ -1,12 +1,17 @@
 # tools/bonos.py
 from __future__ import annotations
 
+import logging
 import os
 import datetime as dt
 import numpy as np
 import pandas as pd
 import streamlit as st
 from scipy import optimize
+
+from tools._ui import inject_tool_css
+
+logger = logging.getLogger(__name__)
 
 # =========================
 # Config
@@ -331,43 +336,6 @@ def modified_duration(cashflow: pd.DataFrame, precio: float, plazo_dias: int = 1
 # =========================
 # UI helpers
 # =========================
-def _ui_css():
-    st.markdown(
-        """
-<style>
-  .wrap{ max-width: 1250px; margin: 0 auto; }
-  .top-title{ font-size: 26px; font-weight: 850; letter-spacing: .04em; color:#111827; margin-bottom: 2px;}
-  .top-sub{ color: rgba(17,24,39,.60); font-size: 13px; margin-top: 0px; }
-  .section-title{ font-size: 18px; font-weight: 800; color:#111827; margin: 12px 0 8px; }
-  .block-container { padding-top: 1.10rem; padding-bottom: 2.2rem; }
-  label { margin-bottom: .18rem !important; }
-  .stButton > button { border-radius: 14px; padding: .68rem 1.0rem; font-weight: 700; }
-  .stSelectbox div[data-baseweb="select"]{ border-radius: 14px; }
-  .stMultiSelect div[data-baseweb="select"]{ border-radius: 14px; }
-
-  /* ✅ tags (chips) gris clarito */
-  div[data-baseweb="tag"]{
-    background: rgba(17,24,39,.06) !important;
-    color:#111827 !important;
-    border: 1px solid rgba(17,24,39,.10) !important;
-    border-radius: 999px !important;
-    font-weight: 650 !important;
-  }
-  div[data-baseweb="tag"] svg{
-    color: rgba(17,24,39,.55) !important;
-  }
-
-  div[data-testid="stDataFrame"] {
-    border-radius: 16px;
-    overflow: hidden;
-    border: 1px solid rgba(17,24,39,.10);
-  }
-</style>
-""",
-        unsafe_allow_html=True,
-    )
-
-
 def _multiselect_with_all(label: str, options: list[str], key: str, default_all: bool = True) -> list[str]:
     if not options:
         return []
@@ -450,23 +418,17 @@ def _compute_table(df_cf: pd.DataFrame, prices: pd.DataFrame, plazo: int) -> pd.
 # =========================
 # Entry
 # =========================
-def render(back_to_home=None):
-    _ui_css()
-    st.markdown('<div class="wrap">', unsafe_allow_html=True)
+def render():
+    inject_tool_css()
 
-    c1, c2 = st.columns([0.78, 0.22], vertical_alignment="center")
-    with c1:
-        st.markdown('<div class="top-title">NEIX · Bonos USD</div>', unsafe_allow_html=True)
-        st.markdown('<div class="top-sub">Rendimientos y duration.</div>', unsafe_allow_html=True)
-
-    st.divider()
+    st.caption("Rendimientos y duration.")
 
     # cashflows
     try:
         df_cf = load_cashflows_bonos(CASHFLOW_PATH)
     except Exception as e:
+        logger.exception("Error cargando cashflows de bonos")
         st.error(str(e))
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     # controles superiores
@@ -482,7 +444,7 @@ def render(back_to_home=None):
     with top[1]:
         traer_precios = st.button("Actualizar precios", use_container_width=True, key="bonos_refresh")
     with top[2]:
-        calcular = st.button("Calcular", type="primary", use_container_width=True, key="bonos_calc")
+        calcular = st.button("Calcular", use_container_width=True, key="bonos_calc")
 
     # cache precios
     if traer_precios or "bonos_iol_prices" not in st.session_state:
@@ -492,13 +454,12 @@ def render(back_to_home=None):
     prices = st.session_state.get("bonos_iol_prices")
     if prices is None or prices.empty:
         st.warning("No pude leer precios desde IOL (tabla vacía o cambió el formato). Probá 'Actualizar precios'.")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     # =========================
     # Filtros arriba + columnas
     # =========================
-    st.markdown('<div class="section-title">Filtros</div>', unsafe_allow_html=True)
+    st.subheader("Filtros")
 
     laws = sorted(df_cf["law_norm"].dropna().unique().tolist())
     issuers = sorted(df_cf["issuer_norm"].dropna().unique().tolist())
@@ -536,14 +497,12 @@ def render(back_to_home=None):
 
     if not calcular:
         st.info("Ajustá filtros y tocá **Calcular**.")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     out = _compute_table(df_use, prices, plazo)
 
     if out.empty:
         st.warning("No se generaron resultados con esta selección.")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     # ✅ aplicar filtro fijo de TIR (sin slider)
@@ -553,13 +512,12 @@ def render(back_to_home=None):
 
     if out.empty:
         st.warning("No quedaron filas dentro del rango de TIR (-15 a 20).")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     # =========================
     # Resultados
     # =========================
-    st.markdown("## Resultados")
+    st.subheader("Resultados")
     show = out.copy()
     show["Vencimiento"] = pd.to_datetime(show["Vencimiento"], errors="coerce").dt.date
     show["Ley"] = show["Ley"].apply(law_cell_label)
@@ -587,5 +545,3 @@ def render(back_to_home=None):
             "Volumen": st.column_config.NumberColumn("Volumen", format="%.0f"),
         },
     )
-
-    st.markdown("</div>", unsafe_allow_html=True)

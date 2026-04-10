@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import os
 import io
+import logging
 import re
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
+from tools._ui import inject_tool_css
+
+logger = logging.getLogger(__name__)
 
 MANAGERS_PATH = os.path.join("data", "managers_neix.xlsx")
 
@@ -201,8 +206,8 @@ def _to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
 # =========================
 # UI
 # =========================
-def render(back_to_home=None):
-    st.markdown("## Tenencia")
+def render():
+    inject_tool_css()
     st.caption("RUTA GALLO: Consulta tenencias")
 
     # 1) managers obligatorio
@@ -210,8 +215,8 @@ def render(back_to_home=None):
         with st.spinner("Cargando managers_neix.xlsx…"):
             df_mgr = cargar_managers_excel()
     except Exception as e:
-        st.error("No puedo seguir: el cruce con managers es obligatorio y el archivo no cargó.")
-        st.exception(e)
+        logger.exception("Error cargando managers_neix.xlsx")
+        st.error(f"No puedo seguir: el cruce con managers es obligatorio y el archivo no cargó. {e}")
         st.stop()
 
     # 2) uploader

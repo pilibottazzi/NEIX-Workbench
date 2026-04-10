@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 import pandas as pd
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 from tools.comerciales.cartera_propia_core import (
     CUENTAS_DEFAULT,
@@ -444,7 +447,7 @@ hr[data-testid="stDivider"] {
 """
 
 
-def render(_=None):
+def render():
     st.markdown(_CSS, unsafe_allow_html=True)
 
     st.markdown("""
@@ -617,7 +620,7 @@ def render(_=None):
         with col_btn1:
             run = st.button(
                 f"🚀 Ejecutar conciliación ({n_cargados} archivo(s) cargado(s))",
-                type="primary", use_container_width=True, key="cp_run",
+                use_container_width=True, key="cp_run",
                 disabled=n_cargados == 0,
             )
         with col_btn2:
@@ -835,7 +838,7 @@ def render(_=None):
                 label="⬇️ Descargar Excel completo",
                 data=excel_bytes, file_name=nombre,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True, type="primary",
+                use_container_width=True,
             )
             st.markdown("**Hojas:** Resumen · Top Pendientes · Pendientes · Detalle · Auditoria · Reglas · Match · Intercuenta")
 

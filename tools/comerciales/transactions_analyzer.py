@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import re
 from io import BytesIO
 from pathlib import Path
@@ -8,6 +9,8 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -711,12 +714,15 @@ def render():
     try:
         df_h, df_movs, meta = parse_historico(up_h.getvalue())
     except Exception as e:
+        logger.exception("No se pudo leer el Histórico")
         st.error("No se pudo leer el Histórico: " + str(e)); return
 
     df_r = pd.DataFrame()
     if up_r:
         try: df_r = parse_resultados(up_r.getvalue())
-        except Exception as e: st.warning("No se pudo leer Resultados: " + str(e))
+        except Exception as e:
+            logger.exception("No se pudo leer Resultados")
+            st.warning("No se pudo leer Resultados: " + str(e))
 
     if df_h.empty:
         st.warning("El archivo no contiene datos."); return
@@ -916,6 +922,7 @@ def render():
                                file_name="neix_portafolio_" + meta.get("comitente","") + ".pdf",
                                mime="application/pdf", key="dl_pdf")
         except Exception as ex:
+            logger.exception("Error generando PDF")
             st.error("Error PDF: " + str(ex))
     with e2:
         try:
@@ -925,6 +932,7 @@ def render():
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                key="dl_xl")
         except Exception as ex:
+            logger.exception("Error generando Excel")
             st.error("Error Excel: " + str(ex))
 
 render()

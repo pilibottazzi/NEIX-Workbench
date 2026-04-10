@@ -1,7 +1,13 @@
 # tools/alquileres.py
+import logging
 import os
+
 import pandas as pd
 import streamlit as st
+
+from tools._ui import inject_tool_css
+
+logger = logging.getLogger(__name__)
 
 MANAGERS_PATH = os.path.join("data", "managers_neix.xlsx")
 
@@ -38,8 +44,8 @@ def cargar_managers_excel() -> pd.DataFrame:
     return df
 
 
-def render(back_to_home=None):
-    st.markdown("## Alquileres")
+def render():
+    inject_tool_css()
     st.caption("Subí el Excel y cruzamos con Manager / Oficial desde managers_neix.xlsx (sin SQL).")
 
     archivo = st.file_uploader(
@@ -56,8 +62,8 @@ def render(back_to_home=None):
     try:
         df_excel = pd.read_excel(archivo, header=1)  # dejo tu header=1
     except Exception as e:
-        st.error("No pude leer el Excel.")
-        st.exception(e)
+        logger.exception("No pude leer el Excel de alquileres")
+        st.error(f"No pude leer el Excel: {e}")
         return
 
     df_excel.columns = df_excel.columns.astype(str).str.strip()
@@ -80,8 +86,8 @@ def render(back_to_home=None):
         with st.spinner("Cargando Managers desde managers_neix.xlsx…"):
             df_managers = cargar_managers_excel()
     except Exception as e:
-        st.error("No pude cargar managers_neix.xlsx")
-        st.exception(e)
+        logger.exception("No pude cargar managers_neix.xlsx")
+        st.error(f"No pude cargar managers_neix.xlsx: {e}")
         df_managers = pd.DataFrame()
 
     if df_managers.empty:

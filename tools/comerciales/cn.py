@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import io
+import logging
 from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
 import streamlit as st
+
+from tools._ui import inject_tool_css
+
+logger = logging.getLogger(__name__)
 
 
 SHEETS = ["WSC A", "WSC B", "INSIGNEO"]
@@ -24,37 +29,7 @@ OUTPUT_COLS = [
     "OFICIAL",
 ]
 
-NEIX_RED = "#ff3b30"
-
 TEMPLATE_PATH = Path("data") / "Capital N - herramienta de datos.xlsx"
-
-
-# =========================
-# UI CSS
-# =========================
-def _inject_css() -> None:
-    st.markdown(
-        f"""
-<style>
-  .block-container {{
-    max-width: 1180px;
-    padding-top: 1.2rem;
-    padding-bottom: 2rem;
-  }}
-
-  div[data-testid="stDownloadButton"] > button {{
-    width: 100% !important;
-    background: {NEIX_RED} !important;
-    color: white !important;
-    border-radius: 14px !important;
-    font-weight: 800 !important;
-    padding: 0.95rem 1rem !important;
-    border: 0 !important;
-  }}
-</style>
-""",
-        unsafe_allow_html=True,
-    )
 
 
 # =========================
@@ -250,8 +225,8 @@ def _to_excel_bytes(df: pd.DataFrame) -> bytes:
 # =========================
 # RENDER
 # =========================
-def render(back_to_home=None) -> None:
-    _inject_css()
+def render() -> None:
+    inject_tool_css()
 
     template_bytes = _read_template_bytes()
 
@@ -278,8 +253,9 @@ def render(back_to_home=None) -> None:
 
     try:
         xls = pd.ExcelFile(io.BytesIO(up.getvalue()))
-    except Exception:
-        st.error("No pude leer el archivo.")
+    except Exception as e:
+        logger.exception("No pude leer el archivo de CN")
+        st.error(f"No pude leer el archivo: {e}")
         return
 
     dfs: List[pd.DataFrame] = []
